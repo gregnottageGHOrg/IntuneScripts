@@ -1,3 +1,3 @@
 ﻿# Upload-IntuneWin
 
-Description goes here
+Upload IntuneWin samples

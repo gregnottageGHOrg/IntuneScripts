@@ -3,7 +3,7 @@
 	<!-- Apart from username, leave Azure_Settings unchanged -->
 	<!-- Completely remove the <Username> element and script will prompt -->
 	<Azure_Settings>
-		<Username>gregn@modernitpro.onmicrosoft.com</Username>
+		<Username>IntuneUser@YourTenantName.com</Username>
 		<baseUrl>https://graph.microsoft.com/beta/deviceAppManagement/</baseUrl>
 		<logRequestUris>$true</logRequestUris>
 		<logHeaders>$false</logHeaders>
@@ -41,6 +41,6 @@
 		<!-- Edit the LogoFile element to provide a logo shown in Company Portal -->
 		<LogoFile>MSLogo.png</LogoFile>
 		<!-- Edit the AADGroupName element used for the required/available/uninstall group creation -->
-		<AADGroupName>MIP-WIN10-OBJECT-CONFIG-GroupName Here v1.0</AADGroupName>
+		<AADGroupName>ID-WIN10-OBJECT-CONFIG-GroupName Here v1.0</AADGroupName>
 	</IntuneWin_Settings>
 </CONFIG>

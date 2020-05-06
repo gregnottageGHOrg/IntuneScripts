@@ -41,6 +41,6 @@
 		<!-- Edit the LogoFile element to provide a logo shown in Company Portal -->
 		<LogoFile>visual-studio-code-logo-png-transparent.png</LogoFile>
 		<!-- Edit the AADGroupName element used for the required/available/uninstall group creation -->
-		<AADGroupName>MIP-WIN10-OBJECT-APP-Install VSCode v1.0</AADGroupName>
+		<AADGroupName>ID-WIN10-OBJECT-APP-Install VSCode v1.0</AADGroupName>
 	</IntuneWin_Settings>
 </CONFIG>
