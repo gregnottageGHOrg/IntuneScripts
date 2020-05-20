@@ -2371,8 +2371,8 @@ NAME: Get-ApplicationAssignment
 
         else {
         
-            $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-            (Invoke-RestMethod -Uri $uri ï¿½Headers $authToken ï¿½Method Get)
+        $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+        (Invoke-RestMethod -Uri $uri –Headers $authToken –Method Get)
         
         }
     
