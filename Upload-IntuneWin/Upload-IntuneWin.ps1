@@ -12,12 +12,20 @@ See LICENSE in the project root for license information.
 ####################################################
 [CmdLetBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 1,
+    [Parameter(Mandatory = $true, Position = 1, ValueFromPipelineByPropertyName = $true,
+        ValueFromPipeline = $True,
+        HelpMessage = 'Please specify an Azure/Intune admin user name'
+    )]
+    [ValidateNotNullOrEmpty()]
+    [string] $userName, 
+    [Parameter(Mandatory = $true, Position = 2, ValueFromPipelineByPropertyName = $true,
+        ValueFromPipeline = $True,
         HelpMessage = 'Please enter path to package folder, containing Config.xml file'
     )]
-    [string] $packagePath,
+    [Alias("PackageName")]
+    [string[]] $packagePath,
 
-    [Parameter(Mandatory = $true, Position = 2,
+    [Parameter(Position = 3,
         HelpMessage = 'Please enter folder path containing IntuneWinAppUtil.exe'
     )]
     [string] $intuneWinAppUtilPath,
@@ -43,14 +51,21 @@ $logFile = "$logPath\$LogName.log"
 Add-Type -AssemblyName Microsoft.VisualBasic
 $script:EventLogName = "Application"
 $script:EventLogSource = "EventSystem"
-$SourcePath = $packagePath + "\Source"
-$intuneWinAppUtilPath = $intuneWinAppUtilPath.Trim('"')
-#Strip trailing \
-$lastChar = $intuneWinAppUtilPath.Substring($intuneWinAppUtilPath.Length - 1)
-Write-Host "lastChar: $lastChar"
-If ($lastChar -eq "\") { $script:intuneWinAppUtilPath = $intuneWinAppUtilPath.Substring(0, $intuneWinAppUtilPath.Length - 1) }
-Write-Host "script:intuneWinAppUtilPath: $script:intuneWinAppUtilPath"
-$IntuneWinAppUtil = "$intuneWinAppUtilPath\IntuneWinAppUtil.exe"
+$packagePath = $packagePath.Trim()
+$SourcePath = "$packagePath\Source"
+
+If (!($intuneWinAppUtilPath)) {
+    $IntuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
+}
+Else {
+    $intuneWinAppUtilPath = $intuneWinAppUtilPath.Trim('"')
+    #Strip trailing \
+    $lastChar = $intuneWinAppUtilPath.Substring($intuneWinAppUtilPath.Length - 1)
+    Write-Host "lastChar: $lastChar"
+    If ($lastChar -eq "\") { $script:intuneWinAppUtilPath = $intuneWinAppUtilPath.Substring(0, $intuneWinAppUtilPath.Length - 1) }
+    Write-Host "script:intuneWinAppUtilPath: $script:intuneWinAppUtilPath"
+    $IntuneWinAppUtil = "$intuneWinAppUtilPath\IntuneWinAppUtil.exe"
+}
 
 ####################################################
 ####################################################
@@ -229,9 +244,9 @@ NAME: Get-AuthToken
 
     $tenant = $userUpn.Host
 
-    Write-Host "Checking for AzureADPreview module..."
+    Write-Host "Checking for AzureAD module..."
 
-    $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
+    $AadModule = Get-Module -Name "AzureAD" -ListAvailable
 
     <#
     if ($null -eq $AadModule) {
@@ -246,9 +261,9 @@ NAME: Get-AuthToken
 
     if ($null -eq $AadModule) {
         write-host
-        write-host "AzureADPreview Powershell module not installed..." -f Red
+        write-host "AzureAD Powershell module not installed..." -f Red
         write-host "Attempting module install now (requires Admin rights!)" -f Red
-        Install-Module -Name AzureADPreview -AllowClobber -Force
+        Install-Module -Name AzureAD -AllowClobber -Force -Scope CurrentUser
         write-host
     }
 
@@ -609,6 +624,9 @@ function GetWin32AppBody() {
         [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 1)]
         [Switch]$EXE,
 
+        [parameter(Mandatory = $true, ParameterSetName = "Edge", Position = 1)]
+        [Switch]$Edge,
+
         [parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$displayName,
@@ -621,23 +639,33 @@ function GetWin32AppBody() {
         [ValidateNotNullOrEmpty()]
         [string]$description,
 
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE")]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI")]
+        #[parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$Category,
 
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE")]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI")]
+        #[parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$filename,
 
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE")]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI")]
+        #[parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$SetupFileName,
 
-        [parameter(Mandatory = $true)]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        #[parameter()]
         [ValidateSet('system', 'user')]
         $installExperience = "system",
 
-        [parameter(Mandatory = $true)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE")]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI")]
+        #[parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$logo,
 
@@ -679,7 +707,10 @@ function GetWin32AppBody() {
         $msiInstallCommandLine,
 
         [parameter(ParameterSetName = "MSI")]
-        $msiUninstallCommandLine
+        $msiUninstallCommandLine,
+
+        [parameter(ParameterSetName = "Edge")]
+        [string] $channel
 
     )
 
@@ -752,6 +783,24 @@ function GetWin32AppBody() {
         $body.uninstallCommandLine = "$uninstallCommandLine";
         $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
 
+    }
+    ElseIf ($Edge) {
+        Write-Log -Message 'Building out Edge ODATA construct'
+        $body = @{ "@odata.type" = "#microsoft.graph.windowsMicrosoftEdgeApp" };
+        $body.displayName = $displayName;
+        $body.description = $Description;
+        $body.publisher = $Publisher;
+        $body.largeIcon = $null;
+        $body.isFeatured = $false;
+        $body.privacyInformationUrl = "https://privacy.microsoft.com/en-US/privacystatement";
+        $body.informationUrl = "https://www.microsoft.com/en-us/windows/microsoft-edge";
+        $body.owner = "Microsoft";
+        $body.developer = "Microsoft";
+        $body.notes = "";
+        #$body.uploadState = 1;
+        #$body.publishingState = "published";
+        $body.channel = $channel;
+        $body.displayLanguageLocale = $null
     }
 
     $body;
@@ -1077,98 +1126,121 @@ NAME: Upload-Win32LOB
     param
     (
         [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 1)]
-        [Switch]$MSI,
+        [Switch] $MSI,
 
         [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 1)]
-        [Switch]$EXE,
+        [Switch] $EXE,
 
         [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 1)]
-        [Switch]$PS1,
-    
-        [parameter(Mandatory = $true, Position = 1)]
-        [ValidateNotNullOrEmpty()]
-        [string]$SourceFile,
+        [Switch] $PS1,
 
-        [parameter(Mandatory = $false)]
+        [parameter(Mandatory = $true, ParameterSetName = "Edge", Position = 1)]
+        [Switch] $Edge,
+    
+        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 1)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 1)]
+        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 1)]
+        #[parameter(Mandatory = $true, Position = 1)]
         [ValidateNotNullOrEmpty()]
-        [string]$displayName,
+        [string] $SourceFile,
+
+        [parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $displayName,
 
         [parameter(Mandatory = $true, Position = 2)]
         [ValidateNotNullOrEmpty()]
-        [string]$publisher,
+        [string] $publisher,
 
         [parameter(Mandatory = $true, Position = 3)]
         [ValidateNotNullOrEmpty()]
-        [string]$description,
+        [string] $description,
 
-        [parameter(Mandatory = $true, Position = 4)]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 4)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 4)]
+        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 4)]
+        #[parameter(Mandatory = $true, Position = 4)]
         [ValidateNotNullOrEmpty()]
         $detectionRules,
 
-        [parameter(Mandatory = $true, Position = 5)]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 5)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 5)]
+        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 5)]
+        #[parameter(Mandatory = $true, Position = 5)]
         [ValidateNotNullOrEmpty()]
         $returnCodes,
 
-        [parameter(Mandatory = $false, Position = 6)]
+        [parameter(ParameterSetName = "MSI", Position = 6)]
+        [parameter(ParameterSetName = "EXE", Position = 6)]
+        [parameter(ParameterSetName = "PS1", Position = 6)]
+        #[parameter(Mandatory = $false, Position = 6)]
         [ValidateSet('system', 'user')]
-        $installExperience = "system",
+        [string] $installExperience = "system",
 
-        [parameter(Mandatory = $false, Position = 7)]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 7)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 7)]
+        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 7)]
+        #[parameter(Mandatory = $false, Position = 7)]
         [ValidateNotNullOrEmpty()]
         $logo,
 
-        [parameter(Mandatory = $true, Position = 8)]
+        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 8)]
+        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 8)]
+        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 8)]
+        #[parameter(Mandatory = $true, Position = 8)]
         [ValidateNotNullOrEmpty()]
-        [string]$Category,
+        [string] $Category,
 
         [parameter(Mandatory = $true, ParameterSetName = "EXE")]
         [ValidateNotNullOrEmpty()]
-        $installCommandLine,
+        [string] $installCommandLine,
 
         [parameter(Mandatory = $true, ParameterSetName = "EXE")]
         [ValidateNotNullOrEmpty()]
-        $uninstallCommandLine,
+        [string] $uninstallCommandLine,
 
         [parameter(Mandatory = $true, ParameterSetName = "PS1")]
         [ValidateNotNullOrEmpty()]
-        $ps1InstallCommandLine,
+        [string] $ps1InstallCommandLine,
 
         [parameter(Mandatory = $true, ParameterSetName = "PS1")]
         [ValidateNotNullOrEmpty()]
-        $ps1UninstallCommandLine,
+        [string] $ps1UninstallCommandLine,
 
         [parameter(ParameterSetName = "MSI")]
-        $msiInstallCommandLine,
+        [string] $msiInstallCommandLine,
 
         [parameter(ParameterSetName = "MSI")]
-        $msiUninstallCommandLine
+        [string] $msiUninstallCommandLine,
+
+        [parameter(ParameterSetName = "Edge")]
+        [string] $channel
     )
 
     try	{
 
         $LOBType = "microsoft.graph.win32LobApp"
-
-        Write-Host "Testing if SourceFile '$SourceFile' Path is valid..." -ForegroundColor Yellow
-        Test-SourceFile "$SourceFile"
-
-        $Win32Path = "$SourceFile"
-
         Write-Host
         Write-Host "Creating JSON data to pass to the service..." -ForegroundColor Yellow
 
-        # Function to read Win32LOB file
-        $DetectionXML = Get-IntuneWinXML "$SourceFile" -fileName "detection.xml"
+        If ( $AppType -ne "Edge" ) {
+            Write-Host "Testing if SourceFile '$SourceFile' Path is valid..." -ForegroundColor Yellow
+            Test-SourceFile "$SourceFile"
+            #$Win32Path = "$SourceFile"
 
-        # If displayName input don't use Name from detection.xml file
-        if ($displayName) { $DisplayName = $displayName }
-        else { $DisplayName = $DetectionXML.ApplicationInfo.Name }
+            # Function to read Win32LOB file
+            $DetectionXML = Get-IntuneWinXML "$SourceFile" -fileName "detection.xml"
+
+            # If displayName input don't use Name from detection.xml file
+            if ($displayName) { $DisplayName = $displayName }
+            else { $DisplayName = $DetectionXML.ApplicationInfo.Name }
         
-        $FileName = $DetectionXML.ApplicationInfo.FileName
+            $FileName = $DetectionXML.ApplicationInfo.FileName
 
-        $SetupFileName = $DetectionXML.ApplicationInfo.SetupFile
+            $SetupFileName = $DetectionXML.ApplicationInfo.SetupFile
 
-        $Ext = [System.IO.Path]::GetExtension($SetupFileName)
-
+            #$Ext = [System.IO.Path]::GetExtension($SetupFileName)
+        }
         #if((($Ext).contains("msi") -or ($Ext).contains("Msi")) -and (!$installCmdLine -or !$uninstallCmdLine)){
         If ($MSI) {
             # MSI
@@ -1232,8 +1304,7 @@ NAME: Upload-Win32LOB
                     -logo $logo
             }
         }
-
-        If ($EXE) {
+        ElseIf ($EXE) {
             $mobileAppBody = GetWin32AppBody -EXE -displayName "$DisplayName" -publisher "$publisher" `
                 -description $description -category $Category -filename $FileName -SetupFileName "$SetupFileName" `
                 -installExperience $installExperience -logo $logo `
@@ -1245,6 +1316,25 @@ NAME: Upload-Win32LOB
                 -installExperience $installExperience -logo $logo `
                 -installCommandLine $ps1InstallCommandLine -uninstallCommandLine $ps1UninstallCommandLine
         }
+        ElseIf ($Edge) {
+            Write-Host
+            Write-Host "Creating Edge ODATA construct" -ForegroundColor Yellow
+
+            #$Publisher = 'Microsoft'
+            #$Description = 'Microsoft Edge is the browser for business with modern and legacy web compatibility, new privacy features such as Tracking prevention, and built-in productivity tools such as enterprise-grade PDF support and access to Office and corporate search right from a new tab.'
+            #$displayName = 'Microsoft Edge Stable1'
+            #$channel = 'stable'
+
+            $mobileAppBody = GetWin32AppBody -Edge -displayName "$DisplayName" -publisher "$publisher" `
+                -description $description -channel $channel
+
+            Write-Host
+            Write-Host "Creating application in Intune..." -ForegroundColor Yellow
+            $mobileApp = MakePostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json)
+
+            Return
+        }
+
 
         if ($detectionRules.'@odata.type' -contains "#microsoft.graph.win32LobAppPowerShellScriptDetection" -and @($detectionRules).'@odata.type'.Count -gt 1) {
 
@@ -1332,11 +1422,11 @@ NAME: Upload-Win32LOB
         Write-Host
         Write-Host "Uploading file to Azure Storage..." -f Yellow
 
-        $sasUri = $file.azureStorageUri;
+        #$sasUri = $file.azureStorageUri;
         UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
 
         # Need to Add removal of IntuneWin file
-        $IntuneWinFolder = [System.IO.Path]::GetDirectoryName("$IntuneWinFile")
+        #$IntuneWinFolder = [System.IO.Path]::GetDirectoryName("$IntuneWinFile")
         Remove-Item "$IntuneWinFile" -Force
 
         # Commit the file.
@@ -1411,7 +1501,9 @@ NAME: Get-XMLConfig
         [xml]$script:XML_Content = Get-Content $XMLFile
 
         ForEach ($XMLEntity in $XML_Content.GetElementsByTagName("Azure_Settings")) {
-            $script:Username = [string]$XMLEntity.Username
+            If (IsNull($Username)) {
+                $script:Username = [string]$XMLEntity.Username
+            }
             $script:baseUrl = [string]$XMLEntity.baseUrl
             $script:logRequestUris = [string]$XMLEntity.logRequestUris
             $script:logHeaders = [string]$XMLEntity.logHeaders
@@ -1421,11 +1513,25 @@ NAME: Get-XMLConfig
         }
 
         ForEach ($XMLEntity in $XML_Content.GetElementsByTagName("IntuneWin_Settings")) {
+            If ($script:AADGroupName.Length -gt 50) {
+                Write-Log -Message "Error - AAD group name longer than 50 chars. Shorten then retry."
+                Exit
+            }
+
             $script:AppType = [string]$XMLEntity.AppType
             If ( ( $AppType -eq "EXE" ) -or ( $AppType -eq "MSI" ) ) {
                 Write-Log -Message "Reading commands for AppType: $AppType"
                 $script:installCmdLine = [string]$XMLEntity.installCmdLine
                 $script:uninstallCmdLine = [string]$XMLEntity.uninstallCmdLine
+            }
+            If ( $AppType -eq "Edge" ) {
+                Write-Log -Message "Reading commands for AppType: $AppType"
+                $script:displayName = [string]$XMLEntity.displayName
+                $script:Description = [string]$XMLEntity.Description + "`nObject creation: $dayDateTime"
+                $script:Publisher = [string]$XMLEntity.Publisher
+                $script:Channel = [string]$XMLEntity.Channel
+                $script:AADGroupName = [string]$XMLEntity.AADGroupName
+                Return
             }
             $script:RuleType = [string]$XMLEntity.RuleType
             If ($RuleType -eq "FILE") {
@@ -1441,12 +1547,7 @@ NAME: Get-XMLConfig
             $script:Category = [string]$XMLEntity.Category
             $script:LogoFile = [string]$XMLEntity.LogoFile
             $script:AADGroupName = [string]$XMLEntity.AADGroupName
-
-            If ($script:AADGroupName.Length -gt 59) {
-                Write-Log -Message "Error - group name longer than 59 chars. Shorten then retry."
-                Exit
-            }
-                                
+                               
             #Strip .ps1 extension, if entered into XML file...
             $lastFourChars = $PackageName.Substring($PackageName.Length - 4)
             If ($lastFourChars -eq ".ps1") { $script:PackageName = $PackageName.Substring(0, $PackageName.Length - 4) }
@@ -1611,116 +1712,121 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         Write-Log -Message "LogoFile: [$LogoFile]"
         Write-Log -Message "AADGroupName: [$AADGroupName]"
             
+        If ( $AppType -ne "Edge" ) {
+            If ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "TAGFILE" ) ) {
+                Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
-        If ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "TAGFILE" ) ) {
-            Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
-
-            If ($installExperience -eq "User") {
-                $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall"
-                $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall"
-            }
-            Else {
-                $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-                $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
-            }
+                If ($installExperience -eq "User") {
+                    $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall"
+                    $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall"
+                }
+                Else {
+                    $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
+                    $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
+                }
                                 
-            Write-Log -Message "installCmdLine: [$installCmdLine]"
-            Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
-        }
-        ElseIf ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "REGTAG" ) ) {
-            Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
+                Write-Log -Message "installCmdLine: [$installCmdLine]"
+                Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
+            }
+            ElseIf ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "REGTAG" ) ) {
+                Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
-            If ($installExperience -eq "User") {
-                $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -regTag"
-                $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -regTag"
-            }
-            Else {
-                $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -regTag"
-                $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -regTag"
-            }
+                If ($installExperience -eq "User") {
+                    $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -regTag"
+                    $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -regTag"
+                }
+                Else {
+                    $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -regTag"
+                    $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -regTag"
+                }
                                 
-            Write-Log -Message "installCmdLine: [$installCmdLine]"
-            Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
-        }
-        ElseIf ($AppType -eq "EXE") {
-            Write-Log -Message "Building variables for AppType: $AppType"
-            #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-            #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
-            Write-Log -Message "installCmdLine: [$installCmdLine]"
-            Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
-        }
-        ElseIf ($AppType -eq "MSI") {
-            Write-Log -Message "Building variables for AppType: $AppType"
-            #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-            #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
-            Write-Log -Message "installCmdLine: [$installCmdLine]"
-            Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
-        }
-
-        If ( ( $RuleType -eq "TAGFILE" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
-            Write-Log -Message "Building variables for RuleType: $RuleType"
-            If ($installExperience -eq "System") {
-                Write-Log -Message "Creating TagFile detection rule for System install"
-                $FileRule = New-DetectionRule -File -Path "%PROGRAMDATA%\Microsoft\IntuneApps\$PackageName" `
-                    -FileOrFolderName "$PackageName.tag" -FileDetectionType exists -check32BitOn64System False
+                Write-Log -Message "installCmdLine: [$installCmdLine]"
+                Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
             }
-            ElseIf ($installExperience -eq "User") {
-                Write-Log -Message "Creating TagFile detection rule for User install"
-                $FileRule = New-DetectionRule -File -Path "%LOCALAPPDATA%\Microsoft\IntuneApps\$PackageName" `
-                    -FileOrFolderName "$PackageName.tag" -FileDetectionType exists -check32BitOn64System False
+            ElseIf ($AppType -eq "EXE") {
+                Write-Log -Message "Building variables for AppType: $AppType"
+                #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
+                #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
+                Write-Log -Message "installCmdLine: [$installCmdLine]"
+                Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
             }
-            Write-Log -Message "FileRule: [$FileRule]"
-
-            # Creating Array for detection Rule
-            $DetectionRule = @($FileRule)
-        }
-        ElseIf ( ( $RuleType -eq "FILE" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
-            Write-Log -Message "Building variables for RuleType: $RuleType"
-            $fileDetectPath = split-path -parent $FilePath
-            $fileDetectFile = split-path -leaf $FilePath
-            Write-Log -Message "fileDetectPath: $fileDetectPath"
-            Write-Log -Message "fileDetectFile: $fileDetectFile"
-
-            $FileRule = New-DetectionRule -File -Path $fileDetectPath `
-                -FileOrFolderName $fileDetectFile -FileDetectionType exists -check32BitOn64System False
-            Write-Log -Message "FileRule: [$FileRule]"
-
-            # Creating Array for detection Rule
-            $DetectionRule = @($FileRule)
-        }
-        ElseIf ( ( $RuleType -eq "REGTAG" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
-            Write-Log -Message "Building variables for RuleType: $RuleType"
-            If ($installExperience -eq "System") {
-                Write-Log -Message "Creating RegTag detection rule for System install"
-
-                $RegistryRule = New-DetectionRule -Registry -RegistryKeyPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$PackageName" `
-                    -RegistryDetectionType exists -check32BitRegOn64System True -RegistryValue "Installed"
+            ElseIf ($AppType -eq "MSI") {
+                Write-Log -Message "Building variables for AppType: $AppType"
+                #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
+                #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
+                Write-Log -Message "installCmdLine: [$installCmdLine]"
+                Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
             }
-            ElseIf ($installExperience -eq "User") {
-                Write-Log -Message "Creating RegTag detection rule for User install"
 
-                $RegistryRule = New-DetectionRule -Registry -RegistryKeyPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$PackageName" `
-                    -RegistryDetectionType exists -check32BitRegOn64System True -RegistryValue "Installed"
+            If ( ( $RuleType -eq "TAGFILE" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
+                Write-Log -Message "Building variables for RuleType: $RuleType"
+                If ($installExperience -eq "System") {
+                    Write-Log -Message "Creating TagFile detection rule for System install"
+                    $FileRule = New-DetectionRule -File -Path "%PROGRAMDATA%\Microsoft\IntuneApps\$PackageName" `
+                        -FileOrFolderName "$PackageName.tag" -FileDetectionType exists -check32BitOn64System False
+                }
+                ElseIf ($installExperience -eq "User") {
+                    Write-Log -Message "Creating TagFile detection rule for User install"
+                    $FileRule = New-DetectionRule -File -Path "%LOCALAPPDATA%\Microsoft\IntuneApps\$PackageName" `
+                        -FileOrFolderName "$PackageName.tag" -FileDetectionType exists -check32BitOn64System False
+                }
+                Write-Log -Message "FileRule: [$FileRule]"
+
+                # Creating Array for detection Rule
+                $DetectionRule = @($FileRule)
             }
-            Write-Log -Message "RegistryRule: [$RegistryRule]"
+            ElseIf ( ( $RuleType -eq "FILE" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
+                Write-Log -Message "Building variables for RuleType: $RuleType"
+                $fileDetectPath = split-path -parent $FilePath
+                $fileDetectFile = split-path -leaf $FilePath
+                Write-Log -Message "fileDetectPath: $fileDetectPath"
+                Write-Log -Message "fileDetectFile: $fileDetectFile"
 
-            # Creating Array for detection Rule
-            $DetectionRule = @($RegistryRule)
+                $FileRule = New-DetectionRule -File -Path $fileDetectPath `
+                    -FileOrFolderName $fileDetectFile -FileDetectionType exists -check32BitOn64System False
+                Write-Log -Message "FileRule: [$FileRule]"
+
+                # Creating Array for detection Rule
+                $DetectionRule = @($FileRule)
+            }
+            ElseIf ( ( $RuleType -eq "REGTAG" ) -and ( ! ( $AppType -eq "MSI" ) ) ) {
+                Write-Log -Message "Building variables for RuleType: $RuleType"
+                If ($installExperience -eq "System") {
+                    Write-Log -Message "Creating RegTag detection rule for System install"
+
+                    $RegistryRule = New-DetectionRule -Registry -RegistryKeyPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$PackageName" `
+                        -RegistryDetectionType exists -check32BitRegOn64System True -RegistryValue "Installed"
+                }
+                ElseIf ($installExperience -eq "User") {
+                    Write-Log -Message "Creating RegTag detection rule for User install"
+
+                    $RegistryRule = New-DetectionRule -Registry -RegistryKeyPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$PackageName" `
+                        -RegistryDetectionType exists -check32BitRegOn64System True -RegistryValue "Installed"
+                }
+                Write-Log -Message "RegistryRule: [$RegistryRule]"
+
+                # Creating Array for detection Rule
+                $DetectionRule = @($RegistryRule)
+            }
+            Else {                           
+                Write-Log -Message "Using MSI detection rule"
+                $DetectionRule = "MSI"
+            }
+
+            If ($ReturnCodeType -eq "DEFAULT") {
+                Write-Log -Message "Building variables for ReturnCodeType: $ReturnCodeType"
+                $ReturnCodes = Get-DefaultReturnCodes
+            }
+
+            #$installExperience = "System"
+
+            $Icon = New-IntuneWin32AppIcon -FilePath "$packagePath\$LogoFile"
+
         }
-        Else {                           
-            Write-Log -Message "Using MSI detection rule"
-            $DetectionRule = "MSI"
-        }
 
-        If ($ReturnCodeType -eq "DEFAULT") {
-            Write-Log -Message "Building variables for ReturnCodeType: $ReturnCodeType"
-            $ReturnCodes = Get-DefaultReturnCodes
-        }
-
-        #$installExperience = "System"
-
-        $Icon = New-IntuneWin32AppIcon -FilePath "$packagePath\$LogoFile"
-
+        #If ($AppType -eq "Edge") {
+        #    $displayName = 'Microsoft Edge Stable1'
+        #}
         Write-Log -Message "Find application ID"
         $appID = Get-ApplicationID -AppName $displayName
 
@@ -1769,6 +1875,32 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             Write-Log -Message "Preparing PS1 package"
             Upload-Win32Lob -PS1 -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                 -returnCodes $ReturnCodes -displayName $displayName -ps1InstallCommandLine $InstallCmdLine -ps1UninstallCommandLine $UninstallCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+        }
+        ElseIf ($AppType -eq "Edge") {
+            Write-Log -Message "Preparing Edge package"
+            #$Publisher = 'Microsoft'
+            #$Description = 'Microsoft Edge is the browser for business with modern and legacy web compatibility, new privacy features such as Tracking prevention, and built-in productivity tools such as enterprise-grade PDF support and access to Office and corporate search right from a new tab.'
+            #$displayName = 'Microsoft Edge Stable1'
+            #$channel = 'stable'
+
+            Upload-Win32Lob -Edge -publisher "$Publisher" -description "$Description" `
+                -displayName $displayName -channel $channel
+
+            <#
+            $body.displayName = "";
+            $body.description = "";
+            $body.publisher = "";
+            $body.largeIcon = $null;
+            $body.isFeatured = $false;
+            $body.privacyInformationUrl = "https://privacy.microsoft.com/en-US/privacystatement";
+            $body.informationUrl = "https://www.microsoft.com/en-us/windows/microsoft-edge";
+            $body.owner = "Microsoft";
+            $body.developer = "Microsoft";
+            $body.notes = "";
+            $body.uploadState = 1;
+            $body.publishingState = "published";
+            $body.channel = "stable";
+            #>
         }
         #Exit
         Write-Log -Message "Create AAD groups for install/uninstall"
@@ -1874,14 +2006,14 @@ Function Get-GroupID {
     <#
 .SYNOPSIS
 This function is used to get an AAD group and return it's object ID if found
-.DESCRIPTION
-The function is used to get an AAD group and return it's object ID if found
+        .DESCRIPTION
+        The function is used to get an AAD group and return it's object ID if found
 .EXAMPLE
 Get-GroupID -GroupName GroupNameHere
 The function is used to get an AAD group and return it's object ID if found
-.NOTES
-NAME: Get-GroupID
-#>
+        .NOTES
+        NAME: Get-GroupID
+        #>
 
     [cmdletbinding()]
 
@@ -2371,8 +2503,8 @@ NAME: Get-ApplicationAssignment
 
         else {
         
-        $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-        (Invoke-RestMethod -Uri $uri –Headers $authToken –Method Get)
+            $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+            (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get)
         
         }
     
@@ -2467,7 +2599,7 @@ Function Test-AuthToken() {
     )
 
     # Checking if authToken exists before running authentication
-    if ($script:authToken) {
+    if ($global:authToken) {
 
         # Setting DateTime to Universal time to work in all timezones
         $DateTime = (Get-Date).ToUniversalTime()
@@ -2489,7 +2621,7 @@ Function Test-AuthToken() {
 
             }
 
-            $script:authToken = Get-AuthToken -User $User
+            $global:authToken = Get-AuthToken -User $User
 
         }
     }
@@ -2506,7 +2638,7 @@ Function Test-AuthToken() {
         }
 
         # Getting the authorization token
-        $script:authToken = Get-AuthToken -User $User
+        $global:authToken = Get-AuthToken -User $User
 
     }
 }
@@ -2583,24 +2715,40 @@ Write-Log -Message "logContent: [$logContent]"
 Write-Log -Message "sleep: [$sleep]"
 
 Write-Log -Message "AppType: [$AppType]"
-If ( ( $AppType -eq "EXE" ) -or ( $AppType -eq "MSI" ) ) {
-    Write-Log -Message "Using install/unistall commands for AppType: $AppType"
-    Write-Log -Message "installCmdLine: [$installCmdLine]"
-    Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
+If ( $AppType -eq "Edge" ) {
+    Write-Log -Message "displayName: [$displayName]"
+    Write-Log -Message "Description: [$Description]"
+    Write-Log -Message "Publisher: [$Publisher]"
+    Write-Log -Message "Channel: [$Channel]"
+    $RuleType = 'skip'
+    $ReturnCodeType = 'skip'
+    $InstallExperience = 'skip'
+    $LogoFile = 'skip'
+    Write-Log -Message "RuleType: [$RuleType]"
+    Write-Log -Message "ReturnCodeType: [$ReturnCodeType]"
+    Write-Log -Message "InstallExperience: [$InstallExperience]"
+    Write-Log -Message "LogoFile: [$LogoFile]"
 }
-Write-Log -Message "RuleType: [$RuleType]"
-If ($RuleType -eq "FILE") {
-    Write-Log -Message "Using detection for RuleType: $RuleType"
-    Write-Log -Message "FilePath: [$FilePath]"
+If ( $AppType -ne "Edge" ) {
+    If ( ( $AppType -eq "EXE" ) -or ( $AppType -eq "MSI" ) ) {
+        Write-Log -Message "Using install/unistall commands for AppType: $AppType"
+        Write-Log -Message "installCmdLine: [$installCmdLine]"
+        Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
+    }
+    Write-Log -Message "RuleType: [$RuleType]"
+    If ($RuleType -eq "FILE") {
+        Write-Log -Message "Using detection for RuleType: $RuleType"
+        Write-Log -Message "FilePath: [$FilePath]"
+    }
+    Write-Log -Message "ReturnCodeType: [$ReturnCodeType]"
+    Write-Log -Message "InstallExperience: [$InstallExperience]"
+    Write-Log -Message "PackageName: [$PackageName]"
+    Write-Log -Message "displayName: [$displayName]"
+    Write-Log -Message "Description: [$Description]"
+    Write-Log -Message "Publisher: [$Publisher]"
+    Write-Log -Message "Category: [$Category]"
+    Write-Log -Message "LogoFile: [$LogoFile]"
 }
-Write-Log -Message "ReturnCodeType: [$ReturnCodeType]"
-Write-Log -Message "InstallExperience: [$InstallExperience]"
-Write-Log -Message "PackageName: [$PackageName]"
-Write-Log -Message "displayName: [$displayName]"
-Write-Log -Message "Description: [$Description]"
-Write-Log -Message "Publisher: [$Publisher]"
-Write-Log -Message "Category: [$Category]"
-Write-Log -Message "LogoFile: [$LogoFile]"
 Write-Log -Message "AADGroupName: [$AADGroupName]"
 
 Write-Log -Message "Path to IntuneWinAppUtil: [$IntuneWinAppUtil]"
@@ -2622,13 +2770,15 @@ Write-Log -Message "Username without UPN address: $userFromUPN"
 $Description = $Description + "`nBy: $userFromUPN"
 Write-Log -Message "Updated description stamp to: $Description"
 
-Write-Log -Message "Call Invoke-IntuneWinAppUtil function..."
-Invoke-IntuneWinAppUtil -AppType $AppType -IntuneWinAppPath $IntuneWinAppUtil -PackageSourcePath $SourcePath -IntuneAppPackage "$PackageName"
-Write-Log -Message "Return code from IntuneWin: $script:exitCode"
+If ( $AppType -ne "Edge" ) {
+    Write-Log -Message "Call Invoke-IntuneWinAppUtil function..."
+    Invoke-IntuneWinAppUtil -AppType $AppType -IntuneWinAppPath $IntuneWinAppUtil -PackageSourcePath $SourcePath -IntuneAppPackage "$PackageName"
+    Write-Log -Message "Return code from IntuneWin: $script:exitCode"
 
-If ( $script:exitCode -eq "-1" ) {
-    Write-Log -Message "Error - from IntuneWin, exiting."
-    Exit
+    If ( $script:exitCode -eq "-1" ) {
+        Write-Log -Message "Error - from IntuneWin, exiting."
+        Exit
+    }
 }
 
 Write-Log -Message "Call Build-IntuneAppPackage function..."
@@ -2639,6 +2789,10 @@ If ( $script:exitCode -eq "-1" ) {
     Write-Log -Message "Error - from Build-IntuneAppPackage, exiting."
     Exit
 }
+
+
+Write-Log -Message "Removing folder: $packagePath\IntuneWin"
+Remove-Item -Path "$packagePath\IntuneWin" -Recurse -Force
 
 Write-Log "$ScriptName completed." -WriteEventLog
 Return $script:exitCode

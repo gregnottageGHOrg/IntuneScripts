@@ -892,7 +892,7 @@ If ($Install) {
         Exit
     }
     Finally {
-        Write-Host "Finished changing registry"
+        Write-Log -Message "Finished changing registry"
     }
 #endregion RegistryChanges
 
