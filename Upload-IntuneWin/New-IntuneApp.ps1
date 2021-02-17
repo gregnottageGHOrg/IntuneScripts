@@ -1,3 +1,10 @@
+<#
+
+.COPYRIGHT
+Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+See LICENSE in the project root for license information.
+
+#>
 #Script to create a new IntuneWin package
 Param(
   [parameter(Mandatory = $true, HelpMessage = "Enter a name for the new package")]
@@ -11,14 +18,6 @@ Write-Host "Cloning ..."
 
 Try {
   Copy-Item -Path $sourcePath -Destination $NewPackageName -Recurse -Force -ErrorAction Stop
-}
-Catch {
-  Write-Warning "$($env:computername.ToUpper()) : $($_.Exception.message)"
-  Exit
-}
-
-Try {
-  Rename-Item -Path "$NewPackageName\Source\Install-Template - only required if AppType is PS1.ps1" -NewName "$Name.ps1" -Force -ErrorAction Stop
 }
 Catch {
   Write-Warning "$($env:computername.ToUpper()) : $($_.Exception.message)"

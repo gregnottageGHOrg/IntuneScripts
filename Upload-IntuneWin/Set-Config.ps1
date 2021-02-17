@@ -1,3 +1,11 @@
+<#
+
+.COPYRIGHT
+Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+See LICENSE in the project root for license information.
+
+#>
+#Script helper to build out the Config.xml for the Upload-IntuneWin script
 Param(
     [parameter(Mandatory = $true, HelpMessage = "Enter subfolder name of the package")]
     $Name
@@ -10,14 +18,14 @@ if ( $args.count -ne 0) {
         write-host
         Write-host "Syntax : "
         write-host
-        write-host "    init-config.ps1"
-        write-host "    init-config.ps1 --list       list out the file metadata."
+        write-host "    Set-Config.ps1"
+        write-host "    Set-Config.ps1 --list       list out the file metadata."
         write-host
         exit
     }
 }
 
-$pwd = "$PSScriptRoot\$Name"
+$package = "$PSScriptRoot\$Name"
 $filename = "$PSScriptRoot\$Name\config.xml"
 $version = ""
 $publisher = ""
@@ -34,16 +42,16 @@ $aadGroupPrefix = "MIP-WIN10-OBJECT-APP-"
 # Search for file in source folder either, exe,msi or ps1
 
 $exename = ""
-$exename = Get-ChildItem -Path $pwd'\Source\*' -Include "*.exe" -name
+$exename = Get-ChildItem -Path $package'\Source\*' -Include "*.exe" -name
 if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $pwd'\Source\*' -Include '*.msi' -Name
+    $exename = Get-ChildItem -Path $package'\Source\*' -Include '*.msi' -Name
 } 
 
 if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $pwd'\Source\*' -Include '*.ps1' -Name
+    $exename = Get-ChildItem -Path $package'\Source\*' -Include '*.ps1' -Name
 }
 
-$logofile = (Get-ChildItem -Path $pwd'\' -Include '*.png' -Name)
+$logofile = (Get-ChildItem -Path $package'\' -Include '*.png' -Name)
 if ( $null -eq $logofile) { $logofile = "" } else { $logofile = $logofile.ToString() }
 
 # Confirm filename found or get new name
@@ -55,9 +63,9 @@ write-Host "[$exename]" -ForegroundColor green -NoNewline
 if (($result = Read-Host -prompt " ") -ne '') { $exename = $result.tostring() }
 
 # does source file exist
-if (-not (Test-Path -Path $pwd'\Source\'$exename -PathType Leaf)) {
+if (-not (Test-Path -Path $package'\Source\'$exename -PathType Leaf)) {
     write-host
-    write-host $pwd'\Source\'$exename "not found, exiting." -ForegroundColor red
+    write-host $package'\Source\'$exename "not found, exiting." -ForegroundColor red
     write-host "" -ForegroundColor white
     exit
 }
@@ -76,7 +84,7 @@ else {
     $DetectFile = "C:\Program Files\" + $appname + "\" + $exename
 
     # get file metatdata
-    $exefilepath = join-path $pwd '\Source\'
+    $exefilepath = join-path $package '\Source\'
 
 
     $info = New-Object -ComObject Shell.Application 
@@ -252,7 +260,7 @@ write-host "  Finished, Config.xml file succesfully updated" -foregroundcolor ye
 write-host "  Recommended to review the file." -foregroundcolor yellow
 write-host
 write-host "  To continue and upload to Intune run " -foregroundcolor yellow -nonewline
-write-host "  .\startupload.ps1 -Name $Name" -foregroundcolor green
+write-host "  .\Invoke-Upload.ps1 -Name $Name" -foregroundcolor green
 write-host
 write-host "----------------------------------------------------" -foregroundcolor cyan
 write-host 

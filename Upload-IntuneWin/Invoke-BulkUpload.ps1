@@ -1,3 +1,11 @@
+<#
+
+.COPYRIGHT
+Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+See LICENSE in the project root for license information.
+
+#>
+#Bulk upload script, reads specified subfolder names from IntunePackages.JSON file
 [CmdLetBinding(SupportsShouldProcess = $true)]
 Param(
     [Parameter(Mandatory = $true, Position = 1,

@@ -6,6 +6,7 @@ Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT
 See LICENSE in the project root for license information.
 
 #>
+#Script to create and upload IntuneWin packages
 ####################################################
 ####################################################
 #Instantiate Vars
