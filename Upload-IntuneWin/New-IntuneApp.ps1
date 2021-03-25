@@ -18,6 +18,7 @@ Write-Host "Cloning ..."
 
 Try {
   Copy-Item -Path $sourcePath -Destination $NewPackageName -Recurse -Force -ErrorAction Stop
+  Rename-Item -Path "$NewPackageName\Source\Install-Template - only required if AppType is PS1.ps1" -NewName "$Name.ps1"
 }
 Catch {
   Write-Warning "$($env:computername.ToUpper()) : $($_.Exception.message)"
