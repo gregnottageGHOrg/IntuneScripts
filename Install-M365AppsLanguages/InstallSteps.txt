@@ -1,0 +1,56 @@
+1. *Optional* Read my blog post which explains my upload script process: https://azurecloudai.blog/2020/05/12/a-script-to-simplify-intune-win32-package-creation/
+
+2. Download my upload scripts from GitHub https://github.com/gregnottage/IntuneScripts/tree/master/Upload-IntuneWin (I use GitHub Desktop, but you could you DownGit).
+
+3. Extract/copy the content from the above GitHub download to:
+
+	C:\Code\GitHub\IntuneScripts
+
+4. Install AzureAD Preview module (from an elevated PowerShell window)
+
+	Install-Module -Name AzureADPreview -Force
+	Get-Module -Name "*AzureAD*" -ListAvailable
+	
+	Set-ExecutionPolicy Bypass -Force
+
+5. Download the IntuneWinAppUtil.exe: https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool - save that to:
+
+	C:\Code\GitHub\IntuneScripts\Upload-IntuneWin
+	
+6. Copy the contents of the OneDrive share (https://microsoft-my.sharepoint.com/:f:/p/grnottag/EjRAGuI1hsFFjGtEqmNyecgBWG9PZDpKte-eCuhwP63JOA?e=7832qH) to:
+   
+	C:\Code\GitHub\IntuneScripts\Install-M365AppsLanguages
+
+7. Review the data for the package in the 'C:\Code\GitHub\IntuneScripts\Upload-IntuneWin\Install-M365AppsLanguages\Config.xml' file (open with a Notepad type editor) – 
+   taking note of the 'displayName', 'Description' and 'AADGroupName entries – these will form the Intune package details and the associated AzureAD application targeting groups.  
+   They can be edited if required, but it is recommended to leave them as they are.
+	
+8. Open a non-elevated PowerShell and run:
+
+	Set-Location -Path 'C:\Code\GitHub\IntuneScripts\Upload-IntuneWin'
+	
+9. Next, in the same PowerShell window - run:
+
+	Get-ChildItem -Path 'C:\Code\GitHub\IntuneScripts' -Recurse | Unblock-File
+
+10. Next, in the same PowerShell window - run: 
+
+	.\Invoke-Upload.ps1 -Name 'Install-M365AppsLanguages'
+
+11. When prompted, authenticate to AAD with creds that have rights to create Intune Win32 packages
+
+12. Then, once the upload script has finished processing, view the app in the Intune portal:
+	
+	Navigate to Apps | Windows apps and locate the 'MCS Install M365 Apps for Enterprise (Office365) Language Packs' app 
+
+13. Confirm targeting assignments etc.
+
+14. Test the app by using an 'available' assignment to an AAD group of users, then locate the app in Company Portal and run it from there.  Hopefully it should be self-explanatory 
+    when it runs - but feel free to reach out for guidance if needed.
+
+
+
+Notes:
+* Script will detect if the app exists - and not overwrite it, but will create a new .IntuneWin file locally for manual upload
+* If you delete the app package in the portal, but keep the AAD groups - the script will automatically recreate the package and use the existing AAD groups
+* To recreate everything in the portal requires manually deleting everything - the Intune package and the associated AAD targeting groups

@@ -1,0 +1,15 @@
+﻿<Window x:Name="Install_OS_Language" x:Class="Set_LanguageGUI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="clr-namespace:Set_LanguageGUI" mc:Ignorable="d" Title="Install OS Language" Height="300.00" Width="500.00" WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+    <Grid>
+        <Label x:Name="labelSelectLanguage" Content="Select the OS Language to install from the list:" HorizontalAlignment="Left" Height="31" Margin="10,36,0,0" VerticalAlignment="Top" Width="255"/>
+        <ComboBox x:Name="LanguageList" HorizontalAlignment="Left" Margin="15,67,0,0" VerticalAlignment="Top" Width="455"/>
+        <Label x:Name="labelSetDefault" Content="Apply as the default OS language?" HorizontalAlignment="Left" Height="31" Margin="120,125,0,0" VerticalAlignment="Top" Width="200"/>
+        <CheckBox x:Name="checkboxYes" Content="Yes" HorizontalAlignment="Left" Margin="320,132,0,0" VerticalAlignment="Top"/>
+        <Button x:Name="buttonOK" Content="OK" HorizontalAlignment="Left" Height="43" Margin="123,200,0,0" VerticalAlignment="Top" Width="100"/>
+        <Button x:Name="buttonCancel" Content="Cancel" HorizontalAlignment="Left" Height="43" Margin="274,200,0,0" VerticalAlignment="Top" Width="100"/>
+    </Grid>
+</Window>
