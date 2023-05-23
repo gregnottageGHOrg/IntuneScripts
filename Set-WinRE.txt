@@ -1,0 +1,787 @@
+#region Initialisation...
+<#
+
+.COPYRIGHT
+Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+See LICENSE in the project root for license information.
+
+#>
+####################################################
+####################################################
+#Instantiate Vars
+####################################################
+[CmdLetBinding()]
+param(
+    [Parameter()]
+    [switch] $install,
+    [switch] $unInstall,
+    [switch] $userInstall,
+    [string] $tagFile,
+    [switch] $regTag
+)
+#$VerbosePreference = "Continue" #Enables Verbose Logging, can be enabled with -verbose on the cmdline too
+$script:exitCode = 0
+
+#Restart as 64-bit
+if (![System.Environment]::Is64BitProcess) {
+    $additionalArgs = ''
+    foreach ($Param in $PSBoundParameters.GetEnumerator()) {
+        if (-not $MyInvocation.MyCommand.Parameters[$Param.key].SwitchParameter) {
+            $additionalArgs += "-$($Param.Key) $($Param.Value) "
+        }
+        else {
+            $additionalArgs += "-$($Param.Key) "
+        }
+    }
+
+    # start new PowerShell as x64 bit process, wait for it and gather exit code and standard error output
+    $sysNativePowerShell = "$($PSHOME.ToLower().Replace("syswow64", "sysnative"))\powershell.exe"
+
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName = $sysNativePowerShell
+    $pinfo.Arguments = "-ex bypass -file `"$PSCommandPath`" $additionalArgs"
+    $pinfo.RedirectStandardError = $true
+    #$pinfo.RedirectStandardOutput = $true
+    $pinfo.CreateNoWindow = $true
+
+    #$pinfo.RedirectStandardError = $false
+    #$pinfo.RedirectStandardOutput = $false
+    #$pinfo.CreateNoWindow = $false
+
+    $pinfo.UseShellExecute = $false
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $pinfo
+    $p.Start() | Out-Null
+
+    $exitCode = $p.ExitCode
+
+    $stderr = $p.StandardError.ReadToEnd()
+    $p.WaitForExit()
+
+    if ($stderr) { Write-Error -Message $stderr }
+}
+Else {
+
+    $script:BuildVer = "1.0"
+    $script:ProgramFiles = $env:ProgramFiles
+    $script:ParentFolder = $PSScriptRoot | Split-Path -Parent
+    $script:ScriptName = $myInvocation.MyCommand.Name
+    $script:ScriptName = $scriptName.Substring(0, $scriptName.Length - 4)
+    $script:LogName = $scriptName + "_" + (Get-Date -UFormat "%d-%m-%Y")
+    If ( $userInstall ) {
+        $script:logPath = "$($env:LOCALAPPDATA)\Microsoft\IntuneApps\$scriptName"
+    }
+    Else {
+        #$script:logPath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName"
+        $script:logPath = "$($env:ProgramData)\Microsoft\IntuneManagementExtension\Logs"
+    }
+    $script:logFile = "$logPath\$LogName.log"
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $script:EventLogName = "Application"
+    $script:EventLogSource = "EventSystem"
+    If ($VerbosePreference -eq 'Continue') { Start-Transcript -Path "$logPath\Transcript.log" -Append }
+    ####################################################
+    ####################################################
+    #Build Functions
+    ####################################################
+
+    Function Start-Log {
+        param (
+            [string]$FilePath,
+
+            [Parameter(HelpMessage = 'Deletes existing file if used with the -DeleteExistingFile switch')]
+            [switch]$DeleteExistingFile
+        )
+
+        #Create Event Log source if it's not already found...
+        if ([System.Diagnostics.EventLog]::Exists($script:EventLogName) -eq $false) {
+            New-EventLog -LogName $EventLogName -Source $EventLogSource
+        }
+        if ([System.Diagnostics.EventLog]::SourceExists($script:EventLogSource ) -eq $false) {
+            [System.Diagnostics.EventLog]::CreateEventSource($script:EventLogSource , $EventLogName)
+        }
+        #If (!([system.diagnostics.eventlog]::SourceExists($EventLogSource))) { New-EventLog -LogName $EventLogName -Source $EventLogSource }
+
+        Try {
+            If (!(Test-Path $FilePath)) {
+                ## Create the log file
+                New-Item $FilePath -Type File -Force | Out-Null
+            }
+
+            If ($DeleteExistingFile) {
+                Remove-Item $FilePath -Force
+            }
+
+            ## Set the global variable to be used as the FilePath for all subsequent Write-Log
+            ## calls in this session
+            $script:ScriptLogFilePath = $FilePath
+        }
+        Catch {
+            Write-Error $_.Exception.Message
+        }
+    }
+
+    ####################################################
+
+    Function Write-Log {
+        #Write-Log -Message 'warning' -LogLevel 2
+        #Write-Log -Message 'Error' -LogLevel 3
+        param (
+            [Parameter(Mandatory = $true)]
+            [string]$Message,
+
+            [Parameter()]
+            [ValidateSet(1, 2, 3)]
+            [int]$LogLevel = 1,
+
+            [Parameter(HelpMessage = 'Outputs message to Event Log,when used with -WriteEventLog')]
+            [switch]$WriteEventLog
+        )
+        Write-Host
+        Write-Host $Message
+        Write-Host
+        $TimeGenerated = "$(Get-Date -Format HH:mm:ss).$((Get-Date).Millisecond)+000"
+        $Line = '<![LOG[{0}]LOG]!><time="{1}" date="{2}" component="{3}" context="" type="{4}" thread="" file="">'
+        $LineFormat = $Message, $TimeGenerated, (Get-Date -Format MM-dd-yyyy), "$($MyInvocation.ScriptName | Split-Path -Leaf):$($MyInvocation.ScriptLineNumber)", $LogLevel
+        $Line = $Line -f $LineFormat
+        Add-Content -Value $Line -Path $ScriptLogFilePath
+        If ($WriteEventLog) { Write-EventLog -LogName $EventLogName -Source $EventLogSource -Message $Message  -Id 100 -Category 0 -EntryType Information }
+    }
+
+    ####################################################
+
+    Function New-IntuneTag {
+        <#
+    .SYNOPSIS
+    .DESCRIPTION
+    .EXAMPLE
+    .PARAMETER
+    .INPUTS
+    .OUTPUTS
+    .NOTES
+    .LINK
+#>
+        Param (
+            [string]$TagFilePath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName\",
+            [string]$tagName
+        )
+
+        Begin {
+            Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            # Create a tag file just so Intune knows this was installed
+            Write-Log "Creating Intune Tag file path: [$TagFilePath]"
+
+            If (-not (Test-Path $TagFilePath) ) {
+
+                New-Item -Path $TagFilePath -ItemType "directory" -Force | out-null
+            }
+
+            # Check if tagName already has .tag at the end
+            If ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
+                Write-Log -Message "Using passed in tagName: $tagName"
+                $tagFileName = "$TagFilePath\$tagName"
+            }
+            Else {
+                Write-Log -Message "Using default of scriptname: $tagName and appending .tag"
+                $tagFileName = "$TagFilePath\$tagName.tag"
+            }
+
+            Write-Log "Creating Intune Tag file: [$tagFileName]"
+
+            Set-Content -Path $tagFileName -Value "Installed"
+
+            Write-Log -Message "Created Intune Tag file: [$tagFileName]"
+
+        }
+    }
+
+    ####################################################
+
+    Function Remove-IntuneTag {
+        <#
+    .SYNOPSIS
+    .DESCRIPTION
+    .EXAMPLE
+    .PARAMETER
+    .INPUTS
+    .OUTPUTS
+    .NOTES
+    .LINK
+#>
+        Param (
+            [string]$TagFilePath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName\",
+            [string]$tagName
+        )
+
+        Begin {
+            Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            # Remove the tag file so Intune knows this was uninstalled
+            # Check if tagName already has .tag at the end
+            If ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
+                Write-Log -Message "Using passed in tagName: $tagName"
+                $tagFileName = "$TagFilePath\$tagName"
+            }
+            Else {
+                Write-Log -Message "Using default of scriptname: $tagName and appending .tag"
+                $tagFileName = "$TagFilePath\$tagName.tag"
+            }
+
+            Write-Log "Removing Intune Tag file: [$tagFileName]"
+
+            If (Test-Path $tagFileName) {
+                Remove-Item -Path $tagFileName -Force
+            }
+
+        }
+    }
+
+    ####################################################
+
+    Function New-IntuneRegTag {
+        <#
+    .SYNOPSIS
+    .DESCRIPTION
+    .EXAMPLE
+    .PARAMETER
+    .INPUTS
+    .OUTPUTS
+    .NOTES
+    .LINK
+#>
+        Param (
+            [string]$TagRegPath = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\",
+            [string]$tagName
+        )
+
+        Begin {
+            Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            # Create a registry tag just so Intune knows this was installed
+            Write-Log "Creating Intune Tag file path: [$TagRegPath\$tagName]"
+
+            #Get-ItemProperty -Path "HKLM:\SOFTWARE\$TagRegPath" -Name $tagName
+
+            New-Item -Path "Registry::$TagRegPath" -Force
+
+            $returnCode = New-ItemProperty -Path "Registry::$TagRegPath" -Name $tagName -PropertyType String -Value "Installed" -Force
+            Write-Log -Message "Return code: $returnCode"
+        }
+    }
+
+    ####################################################
+
+    Function Remove-IntuneRegTag {
+        <#
+    .SYNOPSIS
+    .DESCRIPTION
+    .EXAMPLE
+    .PARAMETER
+    .INPUTS
+    .OUTPUTS
+    .NOTES
+    .LINK
+#>
+        Param (
+            [string]$TagRegPath = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\",
+            [string]$tagName
+        )
+
+        Begin {
+            Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            # Remove registry tag just so Intune knows this was uninstalled
+            Write-Log "Removing Intune Tag file path: [$TagRegPath\$tagName]"
+
+            $returnCode = Remove-ItemProperty -Path "Registry::$TagRegPath" -Name $tagName -Force
+            Write-Log -Message "Return code: $returnCode"
+        }
+    }
+
+    ####################################################
+
+    function IsNull($objectToCheck) {
+        if ($objectToCheck -eq $null) {
+            return $true
+        }
+
+        if ($objectToCheck -is [String] -and $objectToCheck -eq [String]::Empty) {
+            return $true
+        }
+
+        if ($objectToCheck -is [DBNull] -or $objectToCheck -is [System.Management.Automation.Language.NullString]) {
+            return $true
+        }
+
+        return $false
+    }
+
+    ####################################################
+
+    Function Test-VM {
+        <#
+.SYNOPSIS
+This function checks WMI to determine if the device is a VM
+.DESCRIPTION
+This function checks WMI to determine if the device is a VM
+.EXAMPLE
+Test-VM
+This function checks WMI to determine if the device is a VM
+.NOTES
+NAME: Test-VM
+#>
+
+        [CmdletBinding()]
+        Param ()
+
+        Begin {
+            Write-Log -Message "$($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            Write-Log -Message "Checking WMI class: Win32_ComputerSystem for string: *virtual*"
+            Try {
+                $ComputerSystemInfo = Get-CIMInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+                #$ComputerSystemInfo
+                if ($ComputerSystemInfo.Model -like "*virtual*") {
+                    Write-Log -Message "Virtual string detected"
+                    $True
+                }
+                else {
+                    Write-Log -Message "Virtual string not found"
+                    $False
+                }
+            }
+            Catch [Exception] {
+                Write-Log -Message "Error occurred: $($_.Exception.message)"
+                Write-Warning "$($env:computername.ToUpper()) : $($_.Exception.message)"
+            }
+        }
+
+        End {
+            Write-Log -Message "Ending: $($MyInvocation.Mycommand)"
+        }
+    }
+
+    ####################################################
+
+    Function Invoke-WIMUpdate {
+        <#
+.SYNOPSIS
+This function injects drivers into a WIM
+.DESCRIPTION
+This function injects drivers into a WIM
+.EXAMPLE
+This example injects Surface Pro 7 drivers from the script folder into a WIM
+Invoke-WIMUpdate -PEDriverPath "$PSScriptRoot\DRV\Surface Pro 7"
+
+.NOTES
+NAME: Invoke-WIMUpdate
+#>
+
+        [CmdletBinding()]
+        Param (
+
+            [Parameter(Mandatory = $true)]
+            [string]$PEDriverPath
+
+        )
+
+        Begin {
+            Write-Log -Message "$($MyInvocation.InvocationName) function..."
+        }
+
+        Process {
+            Write-Log -Message "Processing WIM updates..."
+            $dismLog = "$logPath\dism_" + ($(Get-Date).ToFileTimeUtc()) + ".log"
+            Write-Log -Message "Using DISM logfile: $dismLog"
+            Write-Log -Message "Using PE Driver path: $PEDriverPath"
+
+            #Create Mount folder on Recovery Partition
+            Write-Log -Message "Create path on Recovery Partition - T:\Mount"
+            Try {
+                New-Item -ItemType Directory -Path 'T:\Mount' -Force -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: unable to create path - T:\Mount"
+                Throw "Error: unable to create path - T:\Mount"
+            }
+            Write-Log -Message "Path created"
+
+            #Cleanup WIM mounts, just in case...
+            Write-Log -Message "Clean up any existing DISM mounted files"
+            Try {
+                Clear-WindowsCorruptMountPoint -LogPath $dismLog -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: cleaning up existing DISM mounted files"
+                Throw "Error: cleaning up existing DISM mounted files"
+            }
+            Write-Log -Message "Existing DISM mounted files cleaned up"
+
+            #Mount WinRE.wim
+            Write-Log -Message "Mount WIM file: T:\Recovery\WindowsRE\Winre.wim to path: T:\Mount"
+            Try {
+                Mount-WindowsImage -Checkintegrity -ImagePath "T:\Recovery\WindowsRE\Winre.wim" -Index 1 -Path 'T:\Mount' -Logpath $dismLog -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: mounting WIM file: T:\Recovery\WindowsRE\Winre.wim"
+                Throw "Error: mounting WIM file: T:\Recovery\WindowsRE\Winre.wim"
+            }
+            Write-Log -Message "Mounted WIM file: T:\Recovery\WindowsRE\Winre.wim to path: T:\Mount"
+
+            Write-Log -Message "Inject drivers from path: $PEDriverPath"
+            Try {
+                #Msiexec.exe /a SurfacePro7_Win10_19042_23.013.33004.0.msi targetdir="C:\DRV\Surface Pro 7" /qn
+                Add-WindowsDriver -Path "T:\Mount" -Driver "$PEDriverPath" -Recurse -ForceUnsigned -Logpath $dismLog -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: injecting drivers from path: $PEDriverPath"
+                Throw "Error: injecting drivers from path: $PEDriverPath"
+            }
+            Write-Log -Message "Injected drivers from path: $PEDriverPath"
+
+            #Un-mount WinRE.wim
+            Write-Log -Message "Unmount WIM file: T:\Recovery\WindowsRE\Winre.wim"
+            Try {
+                Dismount-WindowsImage -Checkintegrity -Path 'T:\Mount' -Save -Logpath $dismLog -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: mounting WIM file: T:\Recovery\WindowsRE\Winre.wim"
+                Throw "Error: mounting WIM file: T:\Recovery\WindowsRE\Winre.wim"
+            }
+            Write-Log -Message "Mounted WIM file: T:\Recovery\WindowsRE\Winre.wim"
+
+            #Cleanup WIM mounts, just in case...
+            Write-Log -Message "Clean up any existing DISM mounted files"
+            Try {
+                Clear-WindowsCorruptMountPoint -LogPath $dismLog -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: cleaning up existing DISM mounted files"
+                Throw "Error: cleaning up existing DISM mounted files"
+            }
+            Write-Log -Message "Existing DISM mounted files cleaned up"
+
+            #Remove Mount folder
+            Write-Log -Message "Remove path on Recovery Partition - T:\Mount"
+            Try {
+                Remove-Item -Path 'T:\Mount' -Force -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: unable to remove path on Recovery Partition - T:\Mount"
+                Throw "Error: unable to remove path on Recovery Partition - T:\Mount"
+            }
+            Write-Log -Message "Path removed"
+        }
+
+        End {
+            Write-Log -Message "Ending: $($MyInvocation.Mycommand)"
+        }
+    }
+
+    ####################################################
+
+    Start-Log -FilePath $logFile -DeleteExistingFile
+    Write-Host
+    Write-Host "Script log file path is [$logFile]" -ForegroundColor Cyan
+    Write-Host
+    Write-Log -Message "Starting $ScriptName version $BuildVer" -WriteEventLog
+    Write-Log -Message "Running from location: $PSScriptRoot" -WriteEventLog
+    Write-Log -Message "Script log file path is [$logFile]" -WriteEventLog
+    Write-Log -Message "Running in 64-bit mode: $([System.Environment]::Is64BitProcess)"
+    #region IntuneCodeSample
+    # === variant 1: use try/catch with ErrorAction stop -> use write-error to signal Intune failed execution
+    # example:
+    # try
+    # {
+    #     Set-ItemProperty ... -ErrorAction Stop
+    # }
+    # catch
+    # {
+    #     Write-Error -Message "Could not write regsitry value" -Category OperationStopped
+    #     $exitCode = -1
+    # }
+
+    # === variant 2: ErrorVariable and check error variable -> use write-error to signal Intune failed execution
+    # example:
+    # Start-Process ... -ErrorVariable err -ErrorAction SilentlyContinue
+    # if ($err)
+    # {
+    #     Write-Error -Message "Could not write regsitry value" -Category OperationStopped
+    #     $exitCode = -1
+    # }
+    #endregion IntuneCodeSample
+
+    #endregion Initialisation...
+    ##########################################################################################################
+    ##########################################################################################################
+
+    #region Main Script work section
+    ##########################################################################################################
+    ##########################################################################################################
+    #Main Script work section
+    ##########################################################################################################
+    ##########################################################################################################
+
+    If ($Install) {
+        Write-Log -Message "Performing Install steps..."
+
+        #Get computer info
+        $computerInfo = Get-ComputerInfo
+        Write-Log -Message "Device Manufacturer: $($computerInfo.CsManufacturer)"
+        Write-Log -Message "Device Model: $($computerInfo.CsModel)"
+
+        #Determine OS partition number for Diskpart
+        $osPart = get-partition -DriveLetter ("$env:SystemDrive").Replace(":", "")
+
+        Write-Log -Message "OS Disk: $($osPart.DiskNumber)"
+        Write-Log -Message "OS Drive Letter: $($osPart.DriveLetter)"
+        Write-Log -Message "OS Partition Number: $($osPart.PartitionNumber)"
+
+        If (Get-SecureBootUefi -Name 'PK') {
+            Write-Log -Message "Device is UEFI enabled"
+
+            #Shrink OS partion
+            Write-Log -Message "Run diskpart to shrink OS partition and create a new recovery partition - refer to logfile: $LogPath\Create-RecoveryPartition.log"
+            "select disk $($osPart.DiskNumber)", 'list partition', "select partition $($osPart.PartitionNumber)", 'shrink desired=984 minimum=984', 'create partition primary', 'format quick fs=ntfs label=Recovery', 'set id="de94bba4-06d1-4d40-a16a-bfd50179d6ac"', 'gpt attributes=0x8000000000000001', 'assign letter=t', 'list partition' | diskpart | Tee-Object -FilePath "$LogPath\Create-RecoveryPartition.log"
+
+            #Determine OS partition number for Diskpart
+            Write-Log -Message "Confirm drive letter T:\ exists - which is the new recovery partition"
+            Try {
+                $recPart = get-partition -Volume (get-volume -FilePath 'T:\') -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: recovery partition drive letter T not found!"
+                Throw "Error: recovery partition drive letter T not found!"
+            }
+            Write-Log -Message "Recovery Partition Number: $($recPart.PartitionNumber)"
+
+            #Prep Recovery partition
+            Write-Log -Message "Create path on Recovery Partition - T:\Recovery\WindowsRE"
+            Try {
+                New-Item -ItemType Directory -Path 'T:\Recovery\WindowsRE' -Force -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: unable to create path - T:\Recovery\WindowsRE"
+                Throw "Error: unable to create path - T:\Recovery\WindowsRE"
+            }
+            Write-Log -Message "Path created"
+
+            #Copy WinRE.wim
+            Write-Log -Message "Copy file: $PSScriptRoot\W10_22H2_WinRE_May2023\Winre.wim to Recovery Partition path - T:\Recovery\WindowsRE"
+            Try {
+                Copy-Item -Path "$PSScriptRoot\W10_22H2_WinRE_May2023\Winre.wim" -Destination "T:\Recovery\WindowsRE" -Force -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: unable to copy file: $PSScriptRoot\W10_22H2_WinRE_May2023\Winre.wim to Recovery Partition path - T:\Recovery\WindowsRE"
+                Throw "Error: unable to copy file: $PSScriptRoot\W10_22H2_WinRE_May2023\Winre.wim to Recovery Partition path - T:\Recovery\WindowsRE"
+            }
+            Write-Log -Message "File copied"
+
+            #Inject correct drivers
+            If ($($computerInfo.CsManufacturer) -like "*Microsoft*") {
+                Write-Host "It's a Microsoft device" -ForegroundColor Green
+                #https://learn.microsoft.com/en-us/surface/surface-system-sku-reference
+
+                If ($($computerInfo.CsModel) -eq "Surface Pro 7") {
+                    Write-Host "It's a Surface Pro 7" -ForegroundColor Magenta
+
+                    <#
+                    Write-Log -Message "Calling Invoke-WIMUpdate function"
+                    Invoke-WIMUpdate -PEDriverPath "$PSScriptRoot\DRV\Surface Pro 7"
+                    #>
+                }
+                elseif ($($computerInfo.CsModel) -eq "Surface Laptop 4") {
+                    Write-Host "It's a Surface Laptop 4" -ForegroundColor Magenta
+
+                    Write-Log -Message "Calling Invoke-WIMUpdate function"
+                    Invoke-WIMUpdate -PEDriverPath "$PSScriptRoot\DRV\Surface Laptop 4"
+                }
+                elseif ($($computerInfo.CsModel) -eq "Virtual Machine") {
+                    Write-Host "It's a Virtual Machine (Hyper-V)" -ForegroundColor Magenta
+
+                    Write-Log -Message "Calling Invoke-WIMUpdate function"
+                    Invoke-WIMUpdate -PEDriverPath "$PSScriptRoot\DRV\Virtual Machine"
+                }
+            }
+            ElseIf ($($computerInfo.CsManufacturer) -like "*Dell*") {
+                Write-Host "It's a Dell" -ForegroundColor Green
+
+                If ($($computerInfo.CsModel) -eq "Precision 3571") {
+                    Write-Host "It's a Precision 3571" -ForegroundColor Magenta
+
+                    <#
+                    Write-Log -Message "Calling Invoke-WIMUpdate function"
+                    Invoke-WIMUpdate -PEDriverPath "$PSScriptRoot\DRV\Precision 3571"
+                    #>
+                }
+            }
+            ElseIf ($($computerInfo.CsManufacturer) -like "*HP*") {
+                Write-Host "It's an HP" -ForegroundColor Green
+            }
+            ElseIf ($($computerInfo.CsManufacturer) -like "*Lenovo*") {
+                Write-Host "It's a Lenovo" -ForegroundColor Green
+            }
+
+            #Make WinRE.wim a hidden file
+            Write-Log -Message "Set hidden attribute on file - T:\Recovery\WindowsRE\Winre.wim"
+            Try {
+                Start-Process -FilePath 'attrib.exe' -WorkingDirectory 'C:\Windows\System32' -ArgumentList '+ h T:\Recovery\WindowsRE\Winre.wim' -Wait -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: Unable to set hidden attribute on file - T:\Recovery\WindowsRE\Winre.wim"
+                Throw "Error: Unable to set hidden attribute on file - T:\Recovery\WindowsRE\Winre.wim"
+            }
+            Write-Log -Message "Hidden attribute applied"
+
+            #Initialise Recovery Environment
+            Write-Log -Message "Disable existing recovery environment"
+            Try {
+                Start-Process -FilePath 'REAgentC.exe' -WorkingDirectory 'C:\Windows\System32' -ArgumentList '/disable' -Wait -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: disabling existing recovery environment"
+                #Throw "Error: disabling existing recovery environment"
+            }
+            Write-Log -Message "Disabled existing recovery environment"
+
+            Write-Log -Message "Configure new recovery environment"
+            Try {
+                Start-Process -FilePath 'REAgentC.exe' -WorkingDirectory 'C:\Windows\System32' -ArgumentList '/setreimage /path T:\Recovery\WindowsRE /target C:\Windows' -Wait -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: configuring new recovery environment"
+                Throw "Error: configuring new recovery environment"
+            }
+            Write-Log -Message "Configured new recovery environment"
+
+            Write-Log -Message "Initialise new recovery environment"
+            Try {
+                Start-Process -FilePath 'REAgentC.exe' -WorkingDirectory 'C:\Windows\System32' -ArgumentList '/enable' -Wait -ErrorAction Stop
+            }
+            Catch {
+                Write-Log -Message "Error: initialising new recovery environment"
+                Throw "Error: initialising new recovery environment"
+            }
+            Write-Log -Message "Initialised new recovery environment"
+
+            #Remove Recovery partition drive letter
+            Write-Log -Message "Run diskpart to remove drive letter T from new recovery partition - refer to logfile: $LogPath\Hide-RecoveryPartition.log"
+            "select disk $($osPart.DiskNumber)", 'list partition', "select partition $($recPart.PartitionNumber)", "remove" | diskpart | Tee-Object -FilePath "$LogPath\Hide-RecoveryPartition.log"
+        }
+        Else {
+            Throw "Error: device does not support UEFI!"
+        }
+
+        #Handle Intune detection method
+        If (! ($userInstall) ) {
+            Write-Log -Message "Creating detection rule for System install"
+
+            If ( $regTag ) {
+                Write-Log -Message "Using RegTag: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
+                New-IntuneRegTag -TagRegPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
+            }
+            Else {
+                Write-Log -Message "Using FileTag"
+
+                If ( ! ( IsNull ( $tagFile ) ) ) {
+                    Write-Log -Message "Using tagFile name: $tagFile"
+                    New-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
+                }
+                Else {
+                    Write-Log -Message "Using default tagFile name: $scriptName"
+                    New-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
+                }
+            }
+        }
+        ElseIf ( $userInstall ) {
+            Write-Log -Message "Creating detection rule for User install"
+
+            If ( $regTag ) {
+                Write-Log -Message "Using RegTag: HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
+                New-IntuneRegTag -TagRegPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
+            }
+            Else {
+                Write-Log -Message "Using FileTag: "
+
+                If ( ! ( IsNull ( $tagFile ) ) ) {
+                    Write-Log -Message "Using tagFile name: $tagFile"
+                    New-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
+                }
+                Else {
+                    Write-Log -Message "Using default tagFile name: $scriptName"
+                    New-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
+                }
+            }
+        }
+    }
+    ElseIf ( $UnInstall ) {
+        Write-Log -Message "Performing Uninstall steps..."
+
+        #Your code goes here
+
+
+
+
+        #Handle Intune detection method
+        If (! ($userInstall) ) {
+            Write-Log -Message "Removing detection for System install"
+
+            If ( $regTag ) {
+                Write-Log -Message "Removing RegTag: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
+                Remove-IntuneRegTag -TagRegPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
+            }
+            Else {
+                Write-Log -Message "Removing FileTag"
+
+                If ( ! ( IsNull ( $tagFile ) ) ) {
+                    Write-Log -Message "Removing tagFile name: $tagFile"
+                    Remove-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
+                }
+                Else {
+                    Write-Log -Message "Removing default tagFile name: $scriptName"
+                    Remove-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
+                }
+            }
+        }
+        ElseIf ( $userInstall ) {
+            Write-Log -Message "Removing detection for User install"
+
+            If ( $regTag ) {
+                Write-Log -Message "Removing RegTag: HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
+                Remove-IntuneRegTag -TagRegPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
+            }
+            Else {
+                Write-Log -Message "Removing FileTag: "
+
+                If ( ! ( IsNull ( $tagFile ) ) ) {
+                    Write-Log -Message "Removing tagFile name: $tagFile"
+                    Remove-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
+                }
+                Else {
+                    Write-Log -Message "Removing default tagFile name: $scriptName"
+                    Remove-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
+                }
+            }
+        }
+    }
+
+
+    Write-Log "$ScriptName completed." -WriteEventLog
+    If ($VerbosePreference -eq 'Continue') { Stop-Transcript }
+    exit $exitCode
+
+    ##########################################################################################################
+    ##########################################################################################################
+    #endregion Main Script work section
+}
