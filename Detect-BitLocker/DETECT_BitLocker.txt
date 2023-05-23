@@ -1,3 +1,59 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ca3ae287ac0b6428086f51eebc68d1f0a4a7ed211a37612f11fb94586da15b81
-size 2239
+#region initial
+#=============================================================================================================================
+#
+# Script Name:     DETECT_BitLocker.ps1
+# Description:     Checks if BitLocker is enabled
+#                  Runs the remediate script if the setting is enabled
+# Notes:
+#
+#=============================================================================================================================
+#endregion initial
+
+## Must run in SYSTEM context
+#region functions
+
+##########################################################################################################
+#endregion functions
+
+#region variables
+$script:logFile = "Detect_BitLocker" + "_" + $(Get-Date).ToFileTimeUtc()
+#$script:ScriptPath = "PR-BitLocker"
+#$script:logPath = "$($env:LOCALAPPDATA)\Microsoft\IntuneApps\$scriptPath"
+$script:logPath = "$($env:ProgramData)\Microsoft\IntuneManagementExtension\Logs"
+$script:logFileRaw = Join-Path -Path $logPath -ChildPath $logFile
+$script:logFile = $logFileRaw + ".log"
+$script:logTranscript = "$logFileRaw" + "_Transcript.log"
+Get-ChildItem -Path "$logpath\Detect_BitLocker*.log" -File | Where-Object { $PSItem.CreationTime -lt (Get-Date).AddDays(-35) } | Remove-Item -Force | Out-Null
+Start-Transcript -Path "$logTranscript"
+
+###########################################################################################################
+#endregion variables
+
+#region main script
+#region Checking BitLocker status...
+Write-Host "Checking BitLocker status..."
+
+Write-Host "BitLocker Volume Info:"
+Write-Host
+Get-BitLockerVolume
+Write-Host
+Write-Host "Diskpart Info:"
+'select disk 0', 'list partition', 'list volume' | diskpart | Out-Host
+Write-Host
+Write-Host "TPM Info:"
+Get-TPM
+Write-Host
+Write-Host "PSDrives:"
+Get-PsDrive -PsProvider FileSystem
+Write-Host
+Write-Host "Computer Info:"
+Get-ComputerInfo
+Write-Host
+
+
+#endregion Checking BitLocker status...
+
+Stop-Transcript
+
+################################################################################################################################################################################################################################
+#endregion main script

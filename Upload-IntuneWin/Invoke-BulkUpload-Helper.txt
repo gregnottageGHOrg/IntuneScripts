@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:88c4a5d351e1ced888fcabb4b6f5080c0cdd34030bf7f0d536cf8e4e858afcb6
-size 100
+.\Invoke-BulkUpload.ps1 -userName username@upnaddressgoeshere.com -PackageJSON "IntunePackages.JSON"

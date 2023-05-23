@@ -1,0 +1,8 @@
+#Using a basic text file
+& ".\Add-DevicesToAADGroup.ps1" -IntuneAdmin "admin@tenant.com" -DeviceNames (get-content ".\Devices.txt") -AADGroupName "ADeviceGroup"
+
+#Using a CSV
+& ".\Add-DevicesToAADGroup.ps1" -IntuneAdmin "admin@tenant.com" -DeviceNames (Import-Csv -Path ".\Intune_Encryption_Report_2023-05-12T11_04_06.200Z.csv")."Device name" -AADGroupName "ADeviceGroup"
+
+#Using a CSV - use -Add parameter to actually add the devices to the group
+& ".\Add-DevicesToAADGroup.ps1" -IntuneAdmin "admin@tenant.com" -DeviceNames (Import-Csv -Path ".\Intune_Encryption_Report_2023-05-12T11_04_06.200Z.csv")."Device name" -AADGroupName "ADeviceGroup" -Add

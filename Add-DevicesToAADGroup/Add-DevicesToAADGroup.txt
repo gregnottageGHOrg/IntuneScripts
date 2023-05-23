@@ -1,0 +1,416 @@
+#region Initialisation...
+<#
+
+.COPYRIGHT
+Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+See LICENSE in the project root for license information.
+
+#>
+##########################################################################################################
+##########################################################################################################
+
+[CmdLetBinding(SupportsShouldProcess = $true)]
+param(
+    [Parameter(Mandatory = $true, Position = 1, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide Intune Administrator user name'
+    )]
+    [ValidateNotNullOrEmpty()]
+    [string] $IntuneAdmin,
+
+    [Parameter(Mandatory = $true, Position = 2, ValueFromPipelineByPropertyName = $true,
+        ValueFromPipeline = $True,
+        HelpMessage = 'Please supply Windows device name(s) to be added to AAD Group'
+    )]
+    [ValidateNotNullOrEmpty()]
+    [string[]] $DeviceNames = @(),
+
+    [Parameter(Mandatory = $true, Position = 3, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide AAD group name for devices to be added to'
+    )]
+    [ValidateNotNullOrEmpty()]
+    [string] $AADGroupName,
+
+    [Parameter(Position = 4, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide Azure Tenant ID'
+    )]
+    [string] $TenantId,
+
+    [Parameter(Position = 5, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide Azure App Registration (Service Principle) Client ID'
+    )]
+    [string] $ClientId,
+
+    [Parameter(Position = 6, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide Azure App Registration (Service Principle) Client Secret'
+    )]
+    [string] $ClientSecret,
+
+    [Parameter(Position = 7, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Provide Azure App Registration (Service Principle) Certificate name'
+    )]
+    [string] $CertName,
+
+    [Parameter(Position = 8, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Add this switch to actually perform the additions'
+    )]
+    [switch] $Add
+)
+
+#region Logging
+####################################################
+$script:buildVer = "1.0"
+#$script:parentFolder = $PSScriptRoot | Split-Path -Parent
+$script:scriptName = $myInvocation.MyCommand.Name
+$script:scriptName = $scriptName.Substring(0, $scriptName.Length - 4)
+#$script:LogName = $ScriptName + "_" + (Get-Date -UFormat "%d-%m-%Y")
+$script:logFile = "$($scriptName)_$($(Get-Date).ToFileTimeUtc())"
+$script:logPath = "$PSScriptRoot"
+$script:logFileRaw = Join-Path -Path $logPath -ChildPath $logFile
+$script:logFile = $logFileRaw + ".log"
+$script:logTranscript = "$logFileRaw" + "_Transcript.log"
+Get-ChildItem -Path "$logpath\*.log" -File | Where-Object { $PSItem.CreationTime -lt (Get-Date).AddDays(-35) } | Remove-Item -Force | Out-Null
+Start-Transcript -Path "$logTranscript"
+$EventLogName = "Application"
+$EventLogSource = $ScriptName
+#endRegion Logging
+####################################################
+
+####################################################
+####################################################
+#Build Functions
+####################################################
+
+Function Start-Log {
+    param (
+        [string]$FilePath,
+
+        [Parameter(HelpMessage = 'Deletes existing file if used with the -DeleteExistingFile switch')]
+        [switch]$DeleteExistingFile
+    )
+
+    #Create Event Log source if it's not already found...
+    $ErrorActionPreference = 'SilentlyContinue'
+    If (!([system.diagnostics.eventlog]::SourceExists($EventLogSource))) { New-EventLog -LogName $EventLogName -Source $EventLogSource }
+    $ErrorActionPreference = 'Continue'
+
+    Try {
+        If (!(Test-Path $FilePath)) {
+            ## Create the log file
+            New-Item $FilePath -Type File -Force | Out-Null
+        }
+
+        If ($DeleteExistingFile) {
+            Remove-Item $FilePath -Force
+        }
+
+        ## Set the global variable to be used as the FilePath for all subsequent Write-Log
+        ## calls in this session
+        $global:ScriptLogFilePath = $FilePath
+    }
+    Catch {
+        Write-Error $_.Exception.Message
+    }
+}
+
+####################################################
+
+Function Write-Log {
+    #Write-Log -Message 'warning' -LogLevel 2
+    #Write-Log -Message 'Error' -LogLevel 3
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter()]
+        [ValidateSet(1, 2, 3)]
+        [int]$LogLevel = 1,
+
+        [Parameter(HelpMessage = 'Outputs message to Event Log,when used with -WriteEventLog')]
+        [switch]$WriteEventLog
+    )
+    Write-Host
+    Write-Host $Message
+    Write-Host
+    $TimeGenerated = "$(Get-Date -Format HH:mm:ss).$((Get-Date).Millisecond)+000"
+    $Line = '<![LOG[{0}]LOG]!><time="{1}" date="{2}" component="{3}" context="" type="{4}" thread="" file="">'
+    $LineFormat = $Message, $TimeGenerated, (Get-Date -Format MM-dd-yyyy), "$($MyInvocation.ScriptName | Split-Path -Leaf):$($MyInvocation.ScriptLineNumber)", $LogLevel
+    $Line = $Line -f $LineFormat
+    Add-Content -Value $Line -Path $ScriptLogFilePath
+    #If ($WriteEventLog) { Write-EventLog -LogName $EventLogName -Source $EventLogSource -Message $Message  -Id 100 -Category 0 -EntryType Information }
+}
+
+####################################################
+
+Function GetMsGraphToken {
+    param(
+        [String] $tenantId,
+        [String] $clientId,
+        [String] $clientSecret,
+        [String] $scope = "https://graph.microsoft.com/.default"
+    )
+    $oauth2tokenendpointv2 = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+    $client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    $scope = [System.Net.WebUtility]::UrlEncode($scope)
+    $encSecret = [System.Net.WebUtility]::UrlEncode($clientSecret)
+    $body = "grant_type=client_credentials&scope=$($scope)&client_id=$($clientId)&client_secret=$($encSecret)"
+    Try {
+        $res = Invoke-WebRequest -Uri $oauth2tokenendpointv2 -Body $body -Method Post -UseBasicParsing
+        $authResult = $res.Content | ConvertFrom-Json
+        return $authResult.access_token
+    }
+    Catch {
+        $ex = $_.Exception
+        Write-Warning "$($env:computername.ToUpper()) : $($_.Exception.message)"
+        $errorResponse = $ex.Response.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($errorResponse)
+        $reader.BaseStream.Position = 0
+        $reader.DiscardBufferedData()
+        $responseBody = $reader.ReadToEnd();
+        Write-Host "Response content:`n$responseBody" -f Red
+        Write-Error "Request to failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
+        write-host
+        Invoke-Cleanup
+        Throw
+    }
+}
+
+####################################################
+
+Function Test-Module {
+    param(
+        [String[]] $ModuleNames
+    )
+
+    Begin {
+        Write-Host "$($MyInvocation.InvocationName) function..."
+    }
+    Process {
+        Foreach ($moduleName in $ModuleNames) {
+            Write-Host "Checking for module: $moduleName"
+
+            $module = Get-Module -ListAvailable -Name $moduleName
+
+            If ($module) {
+                #getting version of installed module
+                $version = (Get-Module -ListAvailable $module) | Sort-Object Version -Descending  | Select-Object Version -First 1
+                #converting version to string
+                $stringver = $version | Select-Object @{n = 'ModuleVersion'; e = { $_.Version -as [string] } }
+                $a = $stringver | Select-Object Moduleversion -ExpandProperty Moduleversion
+                #getting latest module version from ps gallery
+                $psgalleryversion = Find-Module -Name $module | Sort-Object Version -Descending | Select-Object Version -First 1
+                #converting version to string
+                $onlinever = $psgalleryversion | Select-Object @{n = 'OnlineVersion'; e = { $_.Version -as [string] } }
+                $b = $onlinever | Select-Object OnlineVersion -ExpandProperty OnlineVersion
+
+                If ([version]"$a" -ge [version]"$b") {
+                    Write-Host "Module: $module"
+                    Write-Host "Installed $a is equal or greater than $b"
+                }
+                Else {
+                    Write-Host "Module: $module"
+                    Write-Host "Installed Module:$a is lower version than $b"
+
+                    Try {
+                        Install-Module -Name $moduleName -Verbose -Force -ErrorAction Stop
+                        Write-Host "Module installed."
+                    }
+                    Catch {
+                        Invoke-Cleanup
+                        Throw
+                    }
+                }
+            }
+            Else {
+                Write-Host "Module not installed: $moduleName"
+                Write-Host "Attempting to install..."
+
+                Try {
+                    Install-Module -Name $moduleName -Verbose -Force -ErrorAction Stop
+                    Write-Host "Module installed."
+                }
+                Catch {
+                    Invoke-Cleanup
+                    Throw
+                }
+            }
+        }
+    }
+
+}
+
+####################################################
+
+Function Add-ToAADGroup {
+    <#
+    .SYNOPSIS
+    This function is used to add a device to an AAD group
+    .DESCRIPTION
+    This function is used to add a device to an AAD group
+    .EXAMPLE
+    Add-ToAADGroup -deviceName DeviceNameHere -GroupName GroupNameHere
+    This function is used to add a device to an AAD group
+    .NOTES
+    NAME: Add-ToAADGroup
+    #>
+
+    [cmdletbinding()]
+
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        $Device,
+
+        [Parameter(Mandatory = $true)]
+        $AADGroup
+    )
+
+    Begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..." -WriteEventLog
+    }
+
+    Process {
+        Write-Log -Message "Adding device: $($Device.DisplayName) with ID: $($Device.Id) to AAD group: $($AADGroup.DisplayName) with ID: $($AADGroup.Id)" -WriteEventLog
+
+        Try {
+            New-MgGroupMember -GroupId $($AADGroup.Id) -DirectoryObjectId $($Device.Id) -ErrorAction Stop
+            Start-Sleep -Seconds 3
+        }
+        Catch {
+            Write-Host "`nThere was a problem adding device: $($Device.DisplayName) to group" -ForegroundColor Yellow
+            Write-Warning "Error message: $_ `n"
+        }
+    }
+
+    End {
+        Write-Log -Message "Function - $($MyInvocation.InvocationName) completed." -WriteEventLog
+    }
+
+}
+
+####################################################
+
+Function Invoke-Cleanup {
+    $null = Disconnect-MgGraph | Out-Null
+}
+
+##########################################################################################################
+#endregion Initialisation...
+##########################################################################################################
+##########################################################################################################
+#region Main Script work section
+##########################################################################################################
+##########################################################################################################
+Start-Log -FilePath $logFile -DeleteExistingFile
+Write-Host
+Write-Host "Script log file path is [$logFile]" -f Cyan
+Write-Host
+Write-Log -Message "Starting $ScriptName version $BuildVer" -WriteEventLog
+
+#region auth
+####################################################
+$modules = @("Az.Accounts", "Microsoft.Graph.Authentication", "Microsoft.Graph.Identity.DirectoryManagement", "Microsoft.Graph.DeviceManagement", "Microsoft.Graph.Groups")
+#Check if module is installed and up to date
+Test-Module -ModuleNames $modules
+
+$null = Disconnect-MgGraph -ErrorAction 'Ignore' | Out-Null
+
+If ($IntuneAdmin) {
+    Write-Host "`nUsing IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
+
+    $null = Connect-MgGraph -Scopes "Device.Read.All", "DeviceManagementManagedDevices.ReadWrite.All", "Group.ReadWrite.All", "GroupMember.ReadWrite.All" | Out-Null
+}
+ElseIf ($CertName) {
+    Write-Host "Using certname: $CertName"
+    If ($CertName -match "CN=") {
+        Write-Host "Matches" -ForegroundColor Green
+    }
+    Else {
+        $CertName = $CertName -replace $CertName, "CN=$CertName"
+        Write-Host "Modified Cert Name: $CertName" -ForegroundColor Yellow
+    }
+
+    $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -eq $CertName
+    If ($myCert) {
+        Write-Host "Found cert, using it to authenticate to Graph..." -ForegroundColor Yellow
+        Connect-MgGraph -ClientID $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint ## Or -CertificateThumbprint instead of -CertificateName
+    }
+    Else {
+        Invoke-Cleanup
+        Throw "Error - cert not found: $CertName"
+    }
+
+}
+ElseIf ($ClientSecret) {
+    Write-Host "Using client secret"
+    $token = GetMsGraphToken -tenantId $tenantId -clientId $clientId -clientSecret $clientSecret
+    Connect-MgGraph -AccessToken $token
+}
+Else {
+    Invoke-Cleanup
+    Throw "Please specify either a valid certificate name or client secret for authentication"
+}
+$null = Select-MgProfile -Name "beta" | Out-Null
+Write-Host
+####################################################
+####################################################
+#endregion auth
+
+Try {
+    $aadGroup = Get-MgGroup -Filter "DisplayName eq `'$AADGroupName`'" -ErrorAction Stop
+}
+Catch {
+    Write-Warning "Error message: $_ `n"
+    Invoke-Cleanup
+    Throw "Error searching for AAD group: $AADGroupName"
+}
+
+If ($aadGroup) {
+    foreach ($deviceName in $DeviceNames) {
+
+        Write-Host "Using device name: $deviceName" -ForegroundColor Magenta
+
+        Try {
+            #Intune object
+            #$device = Get-MgDeviceManagementManagedDevice -Filter "contains(deviceName,'$deviceName')" -ErrorAction Stop
+            #AAD object
+            #$device = Get-MgDevice -Filter "contains(DisplayName,'$deviceName')" -ErrorAction Stop #This is not working right now
+            $device = Get-MgDevice | where DisplayName -like $deviceName
+        }
+        Catch {
+            Write-Warning "Error message: $_ `n"
+            Invoke-Cleanup
+            Throw "Error searching for devices - check permissions/PIM."
+        }
+
+        If ($device) {
+            If ($device.count -gt 1) {
+                Write-Warning "`nMultiple Intune device objects found!"
+            }
+            Else {
+                #Write-Host "Intune device: $($device.deviceName)`n" -ForegroundColor Cyan
+                Write-Host "Device: $($device.DisplayName)`n" -ForegroundColor Cyan
+
+                If ($Add) {
+                    Add-ToAADGroup -Device $device -AADGroup $aadGroup
+                }
+            }
+        }
+        Else {
+            Write-Warning "`nDevice not found in Intune: $deviceName"
+        }
+    }
+}
+Else {
+    Else {
+        Invoke-Cleanup
+        Throw "`nAAD group not found: $AADGroupName"
+    }
+}
+
+Write-Host
+Invoke-Cleanup
+Stop-Transcript
+
+#endregion Main Script work section
+##########################################################################################################
+##########################################################################################################
