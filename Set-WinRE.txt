@@ -79,7 +79,8 @@ Else {
     Add-Type -AssemblyName Microsoft.VisualBasic
     $script:EventLogName = "Application"
     $script:EventLogSource = "EventSystem"
-    If ($VerbosePreference -eq 'Continue') { Start-Transcript -Path "$logPath\Transcript.log" -Append }
+    $script:transcriptLog = "$logPath\$LogName" + "_Transcript.log"
+    If ($VerbosePreference -eq 'Continue') { Start-Transcript -Path "$transcriptLog" -Append }
     ####################################################
     ####################################################
     #Build Functions
@@ -553,7 +554,7 @@ NAME: Invoke-WIMUpdate
 
             #Shrink OS partion
             Write-Log -Message "Run diskpart to shrink OS partition and create a new recovery partition - refer to logfile: $LogPath\Create-RecoveryPartition.log"
-            "select disk $($osPart.DiskNumber)", 'list partition', "select partition $($osPart.PartitionNumber)", 'shrink desired=984 minimum=984', 'create partition primary', 'format quick fs=ntfs label=Recovery', 'set id="de94bba4-06d1-4d40-a16a-bfd50179d6ac"', 'gpt attributes=0x8000000000000001', 'assign letter=t', 'list partition' | diskpart | Tee-Object -FilePath "$LogPath\Create-RecoveryPartition.log"
+            "select disk $($osPart.DiskNumber)", 'list partition', "select partition $($osPart.PartitionNumber)", 'shrink desired=984 minimum=984', 'create partition primary', 'format quick fs=ntfs label=Recovery override', 'set id="de94bba4-06d1-4d40-a16a-bfd50179d6ac" override', 'gpt attributes=0x8000000000000001', 'assign letter=t', 'list partition' | diskpart | Tee-Object -FilePath "$LogPath\Create-RecoveryPartition.log"
 
             #Determine OS partition number for Diskpart
             Write-Log -Message "Confirm drive letter T:\ exists - which is the new recovery partition"
