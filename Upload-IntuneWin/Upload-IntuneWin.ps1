@@ -532,7 +532,7 @@ function UploadAzureStorageChunk($sasUri, $id, $body) {
     catch {
         Write-Host -ForegroundColor Red $request;
         Write-Host -ForegroundColor Red $_.Exception.Message;
-        throw "Error uploading Azure Storage Chunk";
+        Throw
     }
 
 }
