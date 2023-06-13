@@ -260,9 +260,9 @@ NAME: Get-AuthToken
 
     if ($null -eq $AadModule) {
         write-host
-        write-host "AzureAD Powershell module not installed..." -f Red
+        write-host "AzureADPreview Powershell module not installed..." -f Red
         write-host "Attempting module install now (requires Admin rights!)" -f Red
-        Install-Module -Name AzureAD -AllowClobber -Force -Scope CurrentUser
+        Install-Module -Name AzureADPreview -AllowClobber -Force -Scope CurrentUser
         write-host
     }
 
