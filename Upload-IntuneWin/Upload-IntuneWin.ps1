@@ -105,7 +105,7 @@ $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
 $LogName = $ScriptName + "_" + (Get-Date -UFormat "%d-%m-%Y")
-$logPath = "$($env:LocalAppData)\Microsoft\Temp\IntuneApps\$ScriptName"
+$logPath = "$($env:LocalAppData)\Microsoft\IntuneApps\$ScriptName"
 $logFile = "$logPath\$LogName.log"
 Add-Type -AssemblyName Microsoft.VisualBasic
 $script:EventLogName = "Application"
