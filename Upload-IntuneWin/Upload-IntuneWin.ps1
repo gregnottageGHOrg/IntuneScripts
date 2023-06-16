@@ -1788,12 +1788,12 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
                     If ($installExperience -eq "User") {
-                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall"
-                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall"
+                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -Verbose"
+                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -Verbose"
                     }
                     Else {
-                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
+                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -Verbose"
+                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -Verbose"
                     }
 
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
@@ -1803,12 +1803,12 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
                     If ($installExperience -eq "User") {
-                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -regTag"
-                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -regTag"
+                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -regTag -Verbose"
+                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -regTag -Verbose"
                     }
                     Else {
-                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -regTag"
-                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -regTag"
+                        $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -regTag -Verbose"
+                        $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -regTag -Verbose"
                     }
 
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
@@ -1816,15 +1816,11 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
                 ElseIf ($AppType -eq "EXE") {
                     Write-Log -Message "Building variables for AppType: $AppType"
-                    #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-                    #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
                     Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
                 }
                 ElseIf ($AppType -eq "MSI") {
                     Write-Log -Message "Building variables for AppType: $AppType"
-                    #$installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install"
-                    #$uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall"
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
                     Write-Log -Message "uninstallCmdLine: [$uninstallCmdLine]"
                 }
