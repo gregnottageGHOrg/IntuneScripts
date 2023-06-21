@@ -1831,7 +1831,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Log -Message "Creating TagFile detection rule for System install"
 
                         If ($NewTagPath) {
-                            $tagPath = "%PROGRAMDATA%\IntuneManagementExtension\Logs"
+                            $tagPath = "%PROGRAMDATA%\Microsoft\IntuneManagementExtension\Logs"
                             Write-Log -Message "Using new Tagfile path: $tagPath"
                         }
                         Else {
