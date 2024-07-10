@@ -192,7 +192,14 @@ Function Write-Log {
     $Line = '<![LOG[{0}]LOG]!><time="{1}" date="{2}" component="{3}" context="" type="{4}" thread="" file="">'
     $LineFormat = $Message, $TimeGenerated, (Get-Date -Format MM-dd-yyyy), "$($MyInvocation.ScriptName | Split-Path -Leaf):$($MyInvocation.ScriptLineNumber)", $LogLevel
     $Line = $Line -f $LineFormat
-    Add-Content -Value $Line -Path $ScriptLogFilePath
+    #Add-Content -Value $Line -Path $ScriptLogFilePath
+    # Remove above 3 lines with $stream and uncomment line below if you want to use Out-File instead of StreamWriter as log write metod
+    # Out-File -InputObject $Line -FilePath $ScriptLogFilePath -Encoding UTF8 -Append
+
+    $stream = [System.IO.StreamWriter]::new($ScriptLogFilePath, $true, ([System.Text.Utf8Encoding]::new()))
+    $stream.WriteLine("$Line")
+    $stream.close()
+
     If ($WriteEventLog) { Write-EventLog -LogName $EventLogName -Source $EventLogSource -Message $Message  -Id 100 -Category 0 -EntryType Information }
 }
 
@@ -1788,12 +1795,20 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
                     If ($installExperience -eq "User") {
+                        <#
                         $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -Verbose"
                         $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -Verbose"
+                        #>
+                        $installCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -Install -UserInstall -Verbose`""
+                        $uninstallCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -UnInstall -UserInstall -Verbose`""
                     }
                     Else {
+                        <#
                         $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -Verbose"
                         $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -Verbose"
+                        #>
+                        $installCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -Install -Verbose`""
+                        $uninstallCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -UnInstall -Verbose`""
                     }
 
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
@@ -1803,12 +1818,20 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Log -Message "Building variables for AppType: $AppType with RuleType: $RuleType"
 
                     If ($installExperience -eq "User") {
+                        <#
                         $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -userInstall -regTag -Verbose"
                         $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -userInstall -regTag -Verbose"
+                        #>
+                        $installCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -Install -UserInstall -regTag -Verbose`""
+                        $uninstallCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -UnInstall -UserInstall -regTag -Verbose`""
                     }
                     Else {
+                        <#
                         $installCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -Install -regTag -Verbose"
                         $uninstallCmdLine = "powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -file .\$PackageName.ps1 -UnInstall -regTag -Verbose"
+                        #>
+                        $installCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -Install -regTag -Verbose`""
+                        $uninstallCmdLine = "%windir%\sysnative\WindowsPowerShell\v1.0\powershell.exe -windowstyle hidden -noprofile -executionpolicy bypass -command `"& '.\$PackageName.ps1' -UnInstall -regTag -Verbose`""
                     }
 
                     Write-Log -Message "installCmdLine: [$installCmdLine]"
@@ -2180,7 +2203,7 @@ NAME: New-AADGroupMG -groupName
         }
 
         foreach ($group in $AADGroups) {
-            If (Get-MgGroup -Filter "DisplayName eq '$group'") {
+            If (Get-MgBetaGroup -Filter "DisplayName eq '$group'") {
                 Write-Log -Message "AAD group $group already exists!"
             }
             Else {
@@ -2304,7 +2327,7 @@ The function is used to get an AAD group and return it's object ID if found
 
     Process {
         Write-Log -Message "Search for group name: $GroupName"
-        $group = Get-MgGroup -Filter "DisplayName eq '$GroupName'"
+        $group = Get-MgBetaGroup -Filter "DisplayName eq '$GroupName'"
 
         If (Test-Null($group)) {
             Write-Log -Message "Error - could not find group: $GroupName" -LogLevel 3
@@ -3174,77 +3197,92 @@ If (Test-Null($Username)) {
 #>
 
 #region auth
-If ($IntuneAdmin) {
-    Write-Host "`nUsing IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
-
-    #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All" | Out-Null
-    #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
-    Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
-    $null = Select-MgProfile -Name "beta" | Out-Null
+If ($IntuneWinPackageOnly) {
+    Write-Log -Message "IntuneWinPackageOnly param used, skipping authentication..."
 }
-ElseIf ($userName) {
-    Write-Log -Message "Authenticate to AzureAD..."
-    Test-AuthToken -User $Username
+Else {
+    If ($IntuneAdmin) {
+        Write-Host "`nUsing IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
 
-    $aryUserFromUPN = $userName.Split("@")
-    $userFromUPN = $aryUserFromUPN[0]
-    Write-Log -Message "Username without UPN address: $userFromUPN"
-
-    $Description = $Description + "`nBy: $userFromUPN"
-    Write-Log -Message "Updated description stamp to: $Description"
-}
-ElseIf ($CertName) {
-    Write-Host "Using certname: $CertName"
-    If ($CertName -match "CN=") {
-        Write-Host "Matches" -ForegroundColor Green
+        #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All" | Out-Null
+        #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
+        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
+        #$null = Select-MgProfile -Name "beta" | Out-Null
     }
-    Else {
-        $CertName = $CertName -replace $CertName, "CN=$CertName"
-        Write-Host "Modified Cert Name: $CertName" -ForegroundColor Yellow
-    }
+    ElseIf ($userName) {
+        Write-Log -Message "Authenticate to AzureAD..."
+        Test-AuthToken -User $Username
 
-    $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -eq $CertName
-    If ($myCert) {
-        Write-Host "Found cert, using it to authenticate to Graph..." -ForegroundColor Yellow
-        Connect-MgGraph -ClientID $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint ## Or -CertificateThumbprint instead of -CertificateName
+        $aryUserFromUPN = $userName.Split("@")
+        $userFromUPN = $aryUserFromUPN[0]
+        Write-Log -Message "Username without UPN address: $userFromUPN"
+
+        $Description = $Description + "`nBy: $userFromUPN"
+        Write-Log -Message "Updated description stamp to: $Description"
+    }
+    ElseIf ($CertName) {
+        Write-Host "Using certname: $CertName"
+        If ($CertName -match "CN=") {
+            Write-Host "Matches" -ForegroundColor Green
+        }
+        Else {
+            $CertName = $CertName -replace $CertName, "CN=$CertName"
+            Write-Host "Modified Cert Name: $CertName" -ForegroundColor Yellow
+        }
+
+        $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -eq $CertName
+        If ($myCert) {
+            Write-Host "Found cert, using it to authenticate to Graph..." -ForegroundColor Yellow
+            Connect-MgGraph -ClientID $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint ## Or -CertificateThumbprint instead of -CertificateName
+        }
+        Else {
+            Invoke-Cleanup
+            Throw "Error - cert not found: $CertName"
+        }
+        #$null = Select-MgProfile -Name "beta" | Out-Null
+    }
+    ElseIf ($ClientSecret) {
+        #Region Auth
+        $body = @{
+            Grant_Type    = "client_credentials"
+            Scope         = "https://graph.microsoft.com/.default"
+            Client_Id     = $ClientID
+            Client_Secret = $ClientSecret
+        }
+
+        $connection = Invoke-RestMethod `
+            -Uri https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token `
+            -Method POST `
+            -Body $body
+
+        $token = $connection.access_token
+
+        # Creating header for Authorization token
+        $global:authToken = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer " + $connection.access_token
+            'ExpiresOn'     = $connection.expires_in
+        }
+
+        #$global:authToken = Connect-MgGraph -AccessToken $authToken
+        #Connect-MgGraph -AccessToken $token
+
+        $targetParameter = (Get-Command Connect-MgGraph).Parameters['AccessToken']
+
+        if ($targetParameter.ParameterType -eq [securestring]) {
+            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome
+        }
+        else {
+            Connect-MgGraph -AccessToken $token -NoWelcome
+        }
+
+        #$null = Select-MgProfile -Name "beta" | Out-Null
+        #endRegion Auth
     }
     Else {
         Invoke-Cleanup
-        Throw "Error - cert not found: $CertName"
+        Throw "Please specify either a valid certificate name or client secret for authentication"
     }
-    $null = Select-MgProfile -Name "beta" | Out-Null
-}
-ElseIf ($ClientSecret) {
-    #Region Auth
-    $body = @{
-        Grant_Type    = "client_credentials"
-        Scope         = "https://graph.microsoft.com/.default"
-        Client_Id     = $ClientID
-        Client_Secret = $ClientSecret
-    }
-
-    $connection = Invoke-RestMethod `
-        -Uri https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token `
-        -Method POST `
-        -Body $body
-
-    $token = $connection.access_token
-
-    # Creating header for Authorization token
-    $global:authToken = @{
-        'Content-Type'  = 'application/json'
-        'Authorization' = "Bearer " + $connection.access_token
-        'ExpiresOn'     = $connection.expires_in
-    }
-
-    #$global:authToken = Connect-MgGraph -AccessToken $authToken
-    Connect-MgGraph -AccessToken $token
-    $null = Select-MgProfile -Name "beta" | Out-Null
-    #endRegion Auth
-}
-Else {
-    Invoke-Cleanup
-    Throw "Please specify either a valid certificate name or client secret for authentication"
 }
 #endregion auth
 
