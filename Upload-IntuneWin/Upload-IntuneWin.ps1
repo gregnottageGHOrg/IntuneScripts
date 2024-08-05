@@ -2217,7 +2217,8 @@ NAME: New-AADGroupMG -groupName
                         'SecurityEnabled'    = $true
                         'IsAssignableToRole' = $false
                     }
-                    New-MgGroup -BodyParameter $groupBodyParameter
+                    #New-MgGroup -BodyParameter $groupBodyParameter
+                    New-MgBetaGroup -BodyParameter $groupBodyParameter
                 }
                 catch {
                     Write-Log -Message "Error creating AAD group $group"
