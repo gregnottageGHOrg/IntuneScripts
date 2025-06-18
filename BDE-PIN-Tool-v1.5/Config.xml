@@ -1,0 +1,45 @@
+<!-- <></> -->
+<CONFIG>
+	<!-- Apart from username, leave Azure_Settings unchanged -->
+	<!-- Completely remove the <Username> element and script will prompt -->
+	<Azure_Settings>
+		<baseUrl>https://graph.microsoft.com/beta/deviceAppManagement/</baseUrl>
+		<logRequestUris>$true</logRequestUris>
+		<logHeaders>$false</logHeaders>
+		<logContent>$true</logContent>
+		<azureStorageUploadChunkSizeInMb>6l</azureStorageUploadChunkSizeInMb>
+		<sleep>5</sleep>
+	</Azure_Settings>
+	<IntuneWin_Settings>
+		<!-- Edit the AppType element - supported options are MSI, EXE or PS1 -->
+		<AppType>PS1</AppType>
+		<!-- Edit the installCmdLine element when using the EXE or MSI AppType -->
+		<installCmdLine></installCmdLine>
+		<!-- Edit the uninstallCmdLine element when using the EXE or MSI AppType -->
+		<uninstallCmdLine></uninstallCmdLine>
+		<!-- Edit the RuleType element - supported options are TAGFILE , FILE or REGTAG -->
+		<!-- Ignored if AppType is MSI-->
+		<RuleType>TAGFILE</RuleType>
+		<!-- Edit the FilePath element when using the FILE RuleType -->
+		<FilePath></FilePath>
+		<!-- !!! Do NOT Edit the ReturnCodeType element !!! -->
+		<ReturnCodeType>DEFAULT</ReturnCodeType>
+		<!-- Edit the InstallExperience element - supported options are System or User -->
+		<InstallExperience>System</InstallExperience>
+		<!-- Edit the PackageName element to match the name of the .PS1 script that the IntuneWinAppUtil should reference -->
+		<!-- For MSI or EXE AppType - this must be the name of the MSI or executable file in the ..\Source folder - without the .exe in the name -->
+		<PackageName>Install-SetBDEPinTool_v1-5</PackageName>
+		<!-- Edit the displayName element that will be shown for the imported package in the Intune console -->
+		<displayName>MCS Bitlocker Pin Tool v1.5</displayName>
+		<!-- Edit the Description element that will be shown for the imported package in the Intune console -->
+		<Description>Script to allow a standard user to set a BitLocker PIN</Description>
+		<!-- Edit the Publisher name if required -->
+		<Publisher>Microsoft Consulting Services</Publisher>
+		<!-- Edit the Category element that will be shown for the imported package in the Intune console -->
+		<Category>Business</Category>
+		<!-- Edit the LogoFile element to provide a logo shown in Company Portal -->
+		<LogoFile>BDE_Logo.jpg</LogoFile>
+		<!-- Edit the AADGroupName element used for the required/available/uninstall group creation -->
+		<AADGroupName>MIP-WIN10-OBJECT-CONFIG-Setup-BLPinTool-v1.5</AADGroupName>
+	</IntuneWin_Settings>
+</CONFIG>
