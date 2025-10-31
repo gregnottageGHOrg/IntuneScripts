@@ -1,1 +1,1 @@
-C:\Program Files\PackageManagement
+Expand-Archive -Path '.\PackageManagement.zip' -Destination 'C:\Program Files' -Force
