@@ -38,10 +38,12 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - ✅ Support for MSI, EXE, PS1, and Edge application types
 - ✅ Configurable detection rules (File, Registry, MSI, PowerShell script)
 - ✅ Create and assign Entra ID groups for Required, Available, and Uninstall targeting
+- ✅ **"Allow available uninstall" automatically enabled** on all apps for user self-service removal
 - ✅ Apply custom Intune scope tags for RBAC management
 - ✅ Multiple authentication methods (Interactive, Certificate, Client Secret)
 - ✅ Automatic return code configuration
 - ✅ **ESP/Core app designation support** (via Config.json)
+- ✅ **Automatic logo detection and addition** when updating existing apps
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -117,14 +119,15 @@ Download `IntuneWinAppUtil.exe` from the link below:
 
 ### Mode Switches
 
-| Switch                    | Description                                                |
-| ------------------------- | ---------------------------------------------------------- |
-| `-IntuneWinPackageOnly`   | Create .intunewin file only, don't upload                  |
-| `-AssignGroupsOnly`       | Only assign groups to existing app                         |
-| `-SkipGroupAssignment`    | Upload without assigning groups                            |
-| `-SkipPackageRemoval`     | Keep .intunewin file after upload                          |
-| `-NewTagPath`             | Use alternate tagfile path for diagnostics                 |
-| `-ReplaceExistingContent` | Replace IntuneWin content of existing app, keep all config |
+| Switch                        | Description                                                                       |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `-IntuneWinPackageOnly`       | Create .intunewin file only, don't upload                                         |
+| `-AssignGroupsOnly`           | Only assign groups to existing app                                                |
+| `-SkipGroupAssignment`        | Upload without assigning groups                                                   |
+| `-SkipPackageRemoval`         | Keep .intunewin file after upload                                                 |
+| `-NewTagPath`                 | Use alternate tagfile path for diagnostics                                        |
+| `-ReplaceExistingContent`     | Replace IntuneWin content of existing app; applies assignments only if none exist |
+| `-ReplaceExistingAssignments` | Clear and replace all assignments on existing app                                 |
 
 ### Assignment Parameters
 
@@ -481,6 +484,101 @@ When an application already exists in Intune and you need to update just the ins
 
 > **Note:** The application must already exist in Intune with a matching `displayName` from the Config.xml or Config.json. All existing configuration is preserved - only the IntuneWin package content is updated.
 
+#### Automatic Logo Addition
+
+When using `-ReplaceExistingContent`, the script automatically detects if:
+
+1. The existing app in Intune has no logo configured
+2. A logo file is specified in the Config.json or Config.xml (via `logoFile` or `LogoFile`)
+3. The logo file exists in the package folder
+
+If all conditions are met, the logo will be automatically added to the existing application. The script:
+
+1. Loads the logo file from the package folder and encodes it to Base64
+2. Makes a separate Graph API call to fetch the `largeIcon` property (which is not returned by default)
+3. Uses a PATCH request to update the app with the logo
+
+**Supported image formats:**
+
+- PNG files (`.png`) - recommended
+- JPEG files (`.jpg`, `.jpeg`)
+
+The script logs detailed information about logo detection:
+
+```text
+Checking logo status...
+Logo not loaded yet, checking for logo file at: C:\Packages\MyApp\Logo.png
+Logo file found, loading...
+Logo icon loaded successfully (Base64 length: 12345)
+Fetching existing application largeIcon property...
+Fetching largeIcon from: https://graph.microsoft.com/Beta/deviceAppManagement/mobileApps/{id}/?$select=largeIcon
+Existing app has icon: False
+Config defines icon: True
+Adding logo to existing application...
+Using image type: image/png
+Logo PATCH URI: https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/{id}
+Logo added successfully
+```
+
+If the existing app already has a logo, it will be preserved:
+
+```text
+Existing app already has a logo - preserving existing logo
+Existing icon type: image/png
+Existing icon value length: 12345
+```
+
+#### Replace Content and Add Assignments (If None Exist)
+
+When replacing content, if the existing application has **no assignments**, you can provide assignment groups and they will be applied:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -ClientID "12345678-1234-1234-1234-123456789012" `
+    -TenantID "87654321-4321-4321-4321-210987654321" `
+    -ClientSecret "YourClientSecret" `
+    -AvailableEntraGroupName "App-MyApp-Available" `
+    -ScopeTagName "Production" `
+    -ReplaceExistingContent
+```
+
+> **Note:** If the existing application already has assignments, they are preserved and the provided group parameters are ignored. This ensures existing deployment configurations are not accidentally overwritten.
+
+### Replace Existing Assignments
+
+#### Replace Assignments Only (No Content Change)
+
+When you need to completely replace the assignments on an existing application without changing the package content:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -IntuneAdmin "admin@contoso.com" `
+    -ReplaceExistingAssignments `
+    -AvailableEntraGroupName "App-MyApp-Available"
+```
+
+This will:
+
+1. Clear all existing assignments from the application
+2. Apply the new assignment(s) specified
+
+#### Replace Both Content and Assignments
+
+Combine `-ReplaceExistingContent` with `-ReplaceExistingAssignments` to update both:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -ClientID "12345678-1234-1234-1234-123456789012" `
+    -TenantID "87654321-4321-4321-4321-210987654321" `
+    -ClientSecret "YourClientSecret" `
+    -ReplaceExistingContent `
+    -ReplaceExistingAssignments `
+    -RequiredEntraGroupName "App-MyApp-Required" `
+    -AvailableEntraGroupName "App-MyApp-Available"
+```
+
+> **Note:** `-ReplaceExistingAssignments` requires at least one assignment group parameter (`-RequiredAADGroupName`, `-AvailableAADGroupName`, or `-UninstallAADGroupName`).
+
 ### Complete Production Example
 
 ```powershell
@@ -561,11 +659,22 @@ When an application already exists in Intune and you need to update just the ins
 
 ### Assignment Intent Types
 
-| Intent        | Description                                         |
-| ------------- | --------------------------------------------------- |
-| **Required**  | App is automatically installed on assigned devices  |
-| **Available** | App appears in Company Portal for user installation |
-| **Uninstall** | App is automatically removed from assigned devices  |
+| Intent        | Description                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------ |
+| **Required**  | App is automatically installed on assigned devices                                               |
+| **Available** | App appears in Company Portal for user installation. Users can also uninstall the app themselves |
+| **Uninstall** | App is automatically removed from assigned devices                                               |
+
+### Available Uninstall Feature
+
+The script automatically enables the "Allow available uninstall" option (`allowAvailableUninstall: true`) on all Win32 applications at the app level. This allows users to:
+
+- Install the app from the Company Portal (when assigned as Available)
+- Uninstall the app from the Company Portal when they no longer need it
+
+This provides users with self-service control over optional applications without requiring administrator intervention.
+
+> **Note:** This is a property on the Win32 app itself, not on individual assignments. The setting enables uninstall capability for any "Available" assignments the app receives.
 
 ### Group Creation
 
@@ -627,6 +736,63 @@ Ensure you have permissions to create and manage groups:
 
 - `Group.ReadWrite.All` permission required
 
+#### Logo Not Being Added When Using -ReplaceExistingContent
+
+If the logo isn't being added when updating an existing application, check the log file for these diagnostic messages:
+
+1. **Logo file not specified in config:**
+
+   ```text
+   No logo file specified in config
+   ```
+
+   Solution: Add `logoFile` (Config.json) or `LogoFile` (Config.xml) to your configuration.
+
+2. **Logo file not found:**
+
+   ```text
+   Warning: Logo file specified in config but not found at: C:\Packages\MyApp\Logo.png
+   ```
+
+   Solution: Ensure the logo file exists at the specified path in your package folder.
+
+3. **Logo file failed to encode:**
+
+   ```text
+   Warning: Logo file found but failed to encode to Base64
+   ```
+
+   Solution: Verify the logo file is a valid PNG, JPG, or JPEG image.
+
+4. **Failed to fetch existing logo status:**
+
+   ```text
+   Error fetching largeIcon: <error message>
+   ```
+
+   Solution: This may indicate a permission or network issue. Ensure you have `DeviceManagementApps.ReadWrite.All` permissions.
+
+5. **Logo PATCH request failed:**
+
+   ```text
+   Warning: Failed to add logo - <error message>
+   ```
+
+   Solution: Check the full error message in the log. Common causes include:
+   - Invalid image format (must be PNG or JPEG)
+   - Image file too large
+   - Network/API timeout
+
+6. **Existing app already has a logo:**
+
+   ```text
+   Existing app already has a logo - preserving existing logo
+   Existing icon type: image/png
+   Existing icon value length: 12345
+   ```
+
+   This is expected behavior - existing logos are preserved to prevent accidental overwrites.
+
 ### Log File Location
 
 Logs are written to:
@@ -659,6 +825,6 @@ Get-Help .\Upload-IntuneWin.ps1 -Examples
 
 ---
 
-**Script Version**: 1.2
+**Script Version**: 1.4
 **Last Updated**: December 5, 2025
 **Author**: Greg Nottage

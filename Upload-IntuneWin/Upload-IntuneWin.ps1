@@ -105,6 +105,12 @@
     requirements, scope tags, etc.) will be preserved. Only the package content is updated.
     Useful for updating an application's installer without recreating the entire app configuration.
 
+.PARAMETER ReplaceExistingAssignments
+    Switch parameter that removes all existing assignments before applying new ones.
+    Can be used standalone to replace assignments on an existing app without changing package content.
+    Can also be combined with -ReplaceExistingContent to replace both content and assignments.
+    Requires at least one assignment group parameter (-RequiredAADGroupName, -AvailableAADGroupName, or -UninstallAADGroupName).
+
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com"
 
@@ -146,6 +152,17 @@
     Updates only the IntuneWin package content of an existing application. All configuration
     (assignments, detection rules, requirements, etc.) is preserved. The application must already
     exist in Intune with a matching displayName from the Config.xml or Config.json.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ReplaceExistingAssignments -AvailableAADGroupName "App-MyApp-Available"
+
+    Removes all existing assignments from the application and applies the new Available assignment.
+    The application content and other configuration are not modified.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ReplaceExistingContent -ReplaceExistingAssignments -RequiredAADGroupName "App-MyApp-Required"
+
+    Updates the IntuneWin package content AND replaces all existing assignments with the new Required assignment.
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
@@ -283,12 +300,18 @@ param(
 
     [Parameter(HelpMessage = 'Replaces only the IntuneWin content of an existing application while keeping all other configuration intact. The app must already exist in Intune.'
     )]
-    [switch] $ReplaceExistingContent
+    [switch] $ReplaceExistingContent,
+
+    [Parameter(HelpMessage = 'Removes all existing assignments before applying new ones. Can be used standalone or with -ReplaceExistingContent. Requires at least one assignment group parameter.'
+    )]
+    [switch] $ReplaceExistingAssignments
 )
 $script:exitCode = 0
 $script:contentReplaced = $false
+$script:noExistingAssignments = $false
+$script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.3"
+$BuildVer = "1.4"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -1054,6 +1077,7 @@ function GetWin32AppBody() {
         else {
             $body.uninstallCommandLine = "msiexec /x `"$MsiProductCode`" $msiUninstallCommandLine"
         }
+        $body.allowAvailableUninstall = $true
         $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
 
     }
@@ -1083,6 +1107,7 @@ function GetWin32AppBody() {
         $body.runAs32bit = $false;
         $body.setupFilePath = $SetupFileName;
         $body.uninstallCommandLine = "$uninstallCommandLine";
+        $body.allowAvailableUninstall = $true
         $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
 
     }
@@ -2583,7 +2608,28 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 #$installExperience = "System"
 
-                $Icon = New-IntuneWin32AppIcon -FilePath "$packagePath\$LogoFile"
+                # Load logo icon from config file if specified
+                $Icon = $null
+                if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                    $logoFullPath = "$packagePath\$LogoFile"
+                    Write-Log -Message "Checking for logo file at: $logoFullPath"
+                    if (Test-Path -Path $logoFullPath) {
+                        Write-Log -Message "Logo file found, loading..."
+                        $Icon = New-IntuneWin32AppIcon -FilePath $logoFullPath
+                        if (-not [string]::IsNullOrWhiteSpace($Icon)) {
+                            Write-Log -Message "Logo icon loaded successfully (Base64 length: $($Icon.Length))"
+                        }
+                        else {
+                            Write-Log -Message "Warning: Logo file found but failed to encode to Base64" -LogLevel 2
+                        }
+                    }
+                    else {
+                        Write-Log -Message "Warning: Logo file specified in config but not found at: $logoFullPath" -LogLevel 2
+                    }
+                }
+                else {
+                    Write-Log -Message "No logo file specified in config"
+                }
 
             }
 
@@ -2603,13 +2649,175 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Host "Application ID: $appID" -ForegroundColor Cyan
                     Write-Host
 
+                    # Get the existing app details to check for logo and assignments
+                    Write-Log -Message "Getting existing application details..."
+                    $existingApp = Get-ApplicationAssignment -ApplicationId $appID
+
+                    # Check if the existing application has any assignments
+                    Write-Log -Message "Checking for existing assignments on application..."
+                    $existingAssignments = $existingApp.assignments
+                    if ($null -eq $existingAssignments -or $existingAssignments.Count -eq 0) {
+                        Write-Log -Message "No existing assignments found - will apply provided assignment groups"
+                        Write-Host "No existing assignments found - will apply provided assignment groups" -ForegroundColor Cyan
+                        $script:noExistingAssignments = $true
+                    }
+                    else {
+                        Write-Log -Message "Found $($existingAssignments.Count) existing assignment(s) - preserving existing assignments"
+                        Write-Host "Found $($existingAssignments.Count) existing assignment(s) - preserving existing assignments" -ForegroundColor Green
+                        $script:noExistingAssignments = $false
+                    }
+
+                    # Check if logo needs to be added (existing app has no logo but config defines one)
+                    Write-Log -Message "Checking logo status..."
+
+                    # First, load the logo from the config if specified (in case it wasn't loaded earlier)
+                    # This can happen when ReplaceExistingContent is used and the logo loading block was skipped
+                    if ($null -eq $Icon -and -not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                        $logoFullPath = "$packagePath\$LogoFile"
+                        Write-Log -Message "Logo not loaded yet, checking for logo file at: $logoFullPath"
+                        if (Test-Path -Path $logoFullPath) {
+                            Write-Log -Message "Logo file found, loading..."
+                            $Icon = New-IntuneWin32AppIcon -FilePath $logoFullPath
+                            if (-not [string]::IsNullOrWhiteSpace($Icon)) {
+                                Write-Log -Message "Logo icon loaded successfully (Base64 length: $($Icon.Length))"
+                            }
+                            else {
+                                Write-Log -Message "Warning: Logo file found but failed to encode to Base64" -LogLevel 2
+                            }
+                        }
+                        else {
+                            Write-Log -Message "Warning: Logo file specified in config but not found at: $logoFullPath" -LogLevel 2
+                        }
+                    }
+
+                    # Fetch the largeIcon property separately - Graph API doesn't return it by default
+                    Write-Log -Message "Fetching existing application largeIcon property..."
+                    $iconResponse = Get-ApplicationLargeIcon -ApplicationId $appID
+                    $existingIcon = $null
+                    if ($null -ne $iconResponse) {
+                        $existingIcon = $iconResponse.largeIcon
+                    }
+
+                    # Debug: Log the state of the icon variables
+                    $hasExistingIcon = ($null -ne $existingIcon -and $null -ne $existingIcon.value -and -not([string]::IsNullOrEmpty($existingIcon.value)))
+                    $hasConfigIcon = ($null -ne $Icon -and -not([string]::IsNullOrEmpty($Icon)))
+                    Write-Log -Message "Existing app has icon: $hasExistingIcon"
+                    if ($hasExistingIcon) {
+                        Write-Log -Message "Existing icon type: $($existingIcon.type)"
+                        Write-Log -Message "Existing icon value length: $($existingIcon.value.Length)"
+                    }
+                    Write-Log -Message "Config defines icon: $hasConfigIcon"
+                    if ($hasConfigIcon) {
+                        Write-Log -Message "Config icon Base64 length: $($Icon.Length)"
+                    }
+
+                    if ($hasConfigIcon -and (-not $hasExistingIcon)) {
+                        Write-Log -Message "Existing app has no logo but config defines one - will add logo"
+                        Write-Host "Adding logo to existing application..." -ForegroundColor Cyan
+
+                        # Determine image type based on file extension
+                        $imageType = "image/png"
+                        if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                            $extension = [System.IO.Path]::GetExtension($LogoFile).ToLower()
+                            switch ($extension) {
+                                ".jpg" { $imageType = "image/jpeg" }
+                                ".jpeg" { $imageType = "image/jpeg" }
+                                ".png" { $imageType = "image/png" }
+                            }
+                        }
+                        Write-Log -Message "Using image type: $imageType"
+
+                        # Update the app with the logo using direct Graph API call
+                        # Note: Using Invoke-MgGraphRequest directly with a hashtable body
+                        # because it handles the JSON serialization and content-type correctly
+                        $logoBody = @{
+                            "@odata.type" = "#microsoft.graph.win32LobApp"
+                            "largeIcon"   = @{
+                                "type"  = $imageType
+                                "value" = $Icon
+                            }
+                        }
+                        $logoUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
+                        Write-Log -Message "Logo PATCH URI: $logoUri"
+                        Write-Log -Message "Logo icon Base64 length: $($Icon.Length)"
+                        try {
+                            if ($userName) {
+                                # Using legacy auth token method
+                                $logoJson = $logoBody | ConvertTo-Json -Depth 10
+                                $clonedHeaders = CloneObject $authToken
+                                $clonedHeaders["content-length"] = $logoJson.Length
+                                $clonedHeaders["content-type"] = "application/json"
+                                $response = Invoke-RestMethod -Uri $logoUri -Method Patch -Headers $clonedHeaders -Body $logoJson -UseBasicParsing
+                            }
+                            else {
+                                # Using Invoke-MgGraphRequest with hashtable - this handles JSON correctly
+                                $response = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoBody
+                            }
+                            Write-Log -Message "Logo added successfully"
+                            Write-Host "Logo added successfully" -ForegroundColor Green
+                        }
+                        catch {
+                            Write-Log -Message "Warning: Failed to add logo - $_" -LogLevel 2
+                            Write-Host "Warning: Failed to add logo - $_" -ForegroundColor Yellow
+                            Write-Host "Continuing with content update..." -ForegroundColor Yellow
+                        }
+                    }
+                    elseif ($hasExistingIcon) {
+                        Write-Log -Message "Existing app already has a logo - preserving existing logo"
+                        Write-Host "Existing app already has a logo - preserving existing logo" -ForegroundColor Green
+                    }
+                    elseif (-not $hasConfigIcon) {
+                        Write-Log -Message "No logo defined in config file - skipping logo update"
+                        Write-Host "No logo defined in config file" -ForegroundColor Gray
+                    }
+
                     # Call the content replacement function
                     Update-Win32LobContent -AppId $appID -SourceFile $script:SourceFile
 
                     Write-Log -Message "Content replacement completed for: $displayName"
 
+                    # Ensure allowAvailableUninstall is set to true
+                    Write-Log -Message "Ensuring allowAvailableUninstall is set to true..."
+                    $uninstallBody = @{
+                        "@odata.type"             = "#microsoft.graph.win32LobApp"
+                        "allowAvailableUninstall" = $true
+                    }
+                    $appUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
+                    try {
+                        if ($userName) {
+                            # Using legacy auth token method
+                            $uninstallJson = $uninstallBody | ConvertTo-Json -Depth 10
+                            $clonedHeaders = CloneObject $authToken
+                            $clonedHeaders["content-length"] = $uninstallJson.Length
+                            $clonedHeaders["content-type"] = "application/json"
+                            $response = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $uninstallJson -UseBasicParsing
+                        }
+                        else {
+                            # Using Invoke-MgGraphRequest with hashtable
+                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $uninstallBody
+                        }
+                        Write-Log -Message "allowAvailableUninstall set to true successfully"
+                        Write-Host "Allow available uninstall: Enabled" -ForegroundColor Green
+                    }
+                    catch {
+                        Write-Log -Message "Warning: Failed to set allowAvailableUninstall - $_" -LogLevel 2
+                        Write-Host "Warning: Failed to set allowAvailableUninstall - $_" -ForegroundColor Yellow
+                    }
+
                     # Skip the normal upload process and group assignment when just replacing content
                     # Jump to scope tag handling if specified
+                    $script:contentReplaced = $true
+                }
+                elseif ($ReplaceExistingAssignments) {
+                    # ReplaceExistingAssignments mode - skip content upload, just update assignments
+                    Write-Log -Message "Detected existing package in Intune: $displayName"
+                    Write-Log -Message "ReplaceExistingAssignments mode: Updating assignments only..."
+                    Write-Host
+                    Write-Host "Replacing assignments for existing application: $displayName" -ForegroundColor Yellow
+                    Write-Host "Application ID: $appID" -ForegroundColor Cyan
+                    Write-Host
+
+                    # Mark content as replaced to skip upload but allow assignment processing
                     $script:contentReplaced = $true
                 }
                 else {
@@ -2620,6 +2828,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Host "$script:SourceFile" -ForegroundColor Cyan
                     Write-Host
                     Write-Host "Tip: Use -ReplaceExistingContent parameter to replace the package content while keeping all configuration." -ForegroundColor Yellow
+                    Write-Host "Tip: Use -ReplaceExistingAssignments parameter to replace the assignments only." -ForegroundColor Yellow
                     Write-Host
                     exit
                 }
@@ -2630,6 +2839,14 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Host
                     Write-Host "Error: Cannot replace content - application '$displayName' not found in Intune." -ForegroundColor Red
                     Write-Host "The application must already exist to use -ReplaceExistingContent." -ForegroundColor Yellow
+                    Write-Host
+                    exit
+                }
+                if ($ReplaceExistingAssignments) {
+                    Write-Log -Message "Error: -ReplaceExistingAssignments specified but application not found: $displayName" -LogLevel 3
+                    Write-Host
+                    Write-Host "Error: Cannot replace assignments - application '$displayName' not found in Intune." -ForegroundColor Red
+                    Write-Host "The application must already exist to use -ReplaceExistingAssignments." -ForegroundColor Yellow
                     Write-Host
                     exit
                 }
@@ -2699,9 +2916,56 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
         }
 
+        # Handle ReplaceExistingAssignments mode - validate and set flag
+        if ($ReplaceExistingAssignments) {
+            # Validate that at least one assignment group is specified
+            if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
+                Write-Log -Message "Error: -ReplaceExistingAssignments requires at least one assignment group parameter" -LogLevel 3
+                Write-Host
+                Write-Host "Error: -ReplaceExistingAssignments requires at least one of the following parameters:" -ForegroundColor Red
+                Write-Host "  -RequiredAADGroupName / -RequiredEntraGroupName" -ForegroundColor Yellow
+                Write-Host "  -AvailableAADGroupName / -AvailableEntraGroupName" -ForegroundColor Yellow
+                Write-Host "  -UninstallAADGroupName / -UninstallEntraGroupName" -ForegroundColor Yellow
+                Write-Host
+                exit
+            }
+            $script:replaceAssignmentsMode = $true
+            Write-Log -Message "ReplaceExistingAssignments mode enabled - will clear existing assignments before applying new ones"
+        }
+
         # Skip group assignment if content was replaced (existing assignments are preserved)
         # or if SkipGroupAssignment was explicitly specified
-        if ((-not($SkipGroupAssignment)) -and (-not($script:contentReplaced))) {
+        # Exception: If content was replaced but there are NO existing assignments, apply provided groups
+        # Exception: If ReplaceExistingAssignments is set, always allow group assignment (after clearing)
+        $shouldAssignGroups = (-not($SkipGroupAssignment)) -and ((-not($script:contentReplaced)) -or ($script:noExistingAssignments -eq $true) -or ($script:replaceAssignmentsMode -eq $true))
+        if ($shouldAssignGroups) {
+
+            # If ReplaceExistingAssignments mode, clear existing assignments first
+            if ($script:replaceAssignmentsMode) {
+                Write-Log -Message "Getting application ID for assignment replacement..."
+                if ($null -eq $appID) {
+                    $appID = Get-ApplicationID -AppName $displayName
+                }
+                if ($null -eq $appID) {
+                    Write-Log -Message "Error: Application not found: $displayName" -LogLevel 3
+                    Write-Host "Error: Application '$displayName' not found in Intune." -ForegroundColor Red
+                    exit
+                }
+
+                Write-Host
+                Write-Host "Clearing existing assignments for: $displayName" -ForegroundColor Yellow
+                Write-Host "Application ID: $appID" -ForegroundColor Cyan
+
+                $clearResult = Clear-ApplicationAssignments -ApplicationId $appID
+                if ($clearResult) {
+                    Write-Host "Existing assignments cleared successfully" -ForegroundColor Green
+                    Write-Host
+                }
+                else {
+                    Write-Log -Message "Warning: Failed to clear existing assignments - continuing with assignment" -LogLevel 2
+                    Write-Host "Warning: Failed to clear existing assignments - continuing with assignment" -ForegroundColor Yellow
+                }
+            }
 
             if ($RequiredAADGroupName) {
                 Write-Log -Message "Prepare Entra ID group for required assignment targeting: $RequiredAADGroupName"
@@ -2880,7 +3144,9 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
         # Apply scope tag to the application (after group assignments are complete)
         # Skip if content was replaced (preserving existing configuration)
-        if ((-not($AssignGroupsOnly)) -and (-not($script:contentReplaced))) {
+        # Exception: Apply scope tag if content was replaced but there were no existing assignments
+        $shouldApplyScopeTag = (-not($AssignGroupsOnly)) -and ((-not($script:contentReplaced)) -or ($script:noExistingAssignments -eq $true))
+        if ($shouldApplyScopeTag) {
             Write-Log -Message "Checking for scope tag assignment..."
             if ($null -eq $appID) {
                 Write-Log -Message "Getting application ID for scope tag assignment..."
@@ -3785,6 +4051,7 @@ NAME: Add-ApplicationAssignment
             if ( ! ( $exclude ) ) {
                 # Creating header of JSON File
                 Write-Log -Message "Creating header of JSON File for include"
+
                 $JSON = @"
 {
     "mobileAppAssignments": [
@@ -3810,6 +4077,7 @@ NAME: Add-ApplicationAssignment
             elseif ( $exclude ) {
                 # Creating header of JSON File
                 Write-Log -Message "Creating header of JSON File for exclude"
+
                 $JSON = @"
 {
     "mobileAppAssignments": [
@@ -3902,6 +4170,7 @@ NAME: Add-ApplicationAssignment
             if ( ! ( $exclude ) ) {
                 # Creating header of JSON File
                 Write-Log -Message "Creating header of JSON File for include with no additional assignments"
+
                 $JSON = @"
 {
     "mobileAppAssignments": [
@@ -3929,6 +4198,7 @@ NAME: Add-ApplicationAssignment
             elseif ( $exclude ) {
                 # Creating header of JSON File
                 Write-Log -Message "Creating header of JSON File for exclude with no additional assignments"
+
                 $JSON = @"
 {
     "mobileAppAssignments": [
@@ -3991,6 +4261,59 @@ NAME: Add-ApplicationAssignment
 
 ####################################################
 
+function Get-ApplicationLargeIcon() {
+
+    <#
+.SYNOPSIS
+This function is used to get the largeIcon property of an application from the Graph API REST interface
+.DESCRIPTION
+The function connects to the Graph API Interface and retrieves the largeIcon property which must be
+explicitly selected as it is not returned by default.
+.EXAMPLE
+Get-ApplicationLargeIcon -ApplicationId "12345678-1234-1234-1234-123456789012"
+Returns the largeIcon property of the specified application
+.NOTES
+NAME: Get-ApplicationLargeIcon
+#>
+
+    [cmdletbinding()]
+
+    param
+    (
+        $ApplicationId
+    )
+
+    $graphApiVersion = "Beta"
+    $Resource = "deviceAppManagement/mobileApps/$ApplicationId/?`$select=largeIcon"
+
+    try {
+
+        if (!$ApplicationId) {
+            Write-Host "No Application Id specified, specify a valid Application Id" -f Red
+            break
+        }
+        else {
+            $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+            Write-Log -Message "Fetching largeIcon from: $uri"
+            if ($userName) {
+                $response = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
+            }
+            else {
+                $response = Invoke-MgGraphRequest -Uri $uri -Method Get
+            }
+            return $response
+        }
+    }
+    catch {
+        $ex = $_.Exception
+        Write-Log -Message "Error fetching largeIcon: $($ex.Message)" -LogLevel 2
+        Write-Host "Warning: Could not fetch largeIcon - $($ex.Message)" -f Yellow
+        return $null
+    }
+}
+
+####################################################
+
 function Get-ApplicationAssignment() {
 
     <#
@@ -4049,6 +4372,71 @@ NAME: Get-ApplicationAssignment
         Write-Host
         break
 
+    }
+
+}
+
+####################################################
+
+function Clear-ApplicationAssignments() {
+
+    <#
+.SYNOPSIS
+This function removes all existing assignments from an application using the Graph API REST interface
+.DESCRIPTION
+The function connects to the Graph API Interface and clears all assignments from an application
+.EXAMPLE
+Clear-ApplicationAssignments -ApplicationId $ApplicationId
+Removes all assignments from an application in Intune
+.NOTES
+NAME: Clear-ApplicationAssignments
+#>
+
+    [cmdletbinding()]
+
+    param
+    (
+        $ApplicationId
+    )
+
+    $graphApiVersion = "Beta"
+    $Resource = "deviceAppManagement/mobileApps/$ApplicationId/assign"
+
+    try {
+
+        if (!$ApplicationId) {
+            Write-Log -Message "No Application Id specified, specify a valid Application Id" -LogLevel 3
+            break
+        }
+
+        Write-Log -Message "Clearing all assignments for application ID: $ApplicationId"
+
+        # Send empty assignments array to clear all assignments
+        $JSON = @"
+{
+    "mobileAppAssignments": []
+}
+"@
+
+        Write-Log -Message "Sending empty assignments to clear existing assignments..."
+
+        $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
+
+        if ($userName) {
+            Invoke-RestMethod -Uri $uri -Headers $authToken -Method Post -Body $JSON -ContentType "application/json"
+        }
+        else {
+            Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
+        }
+
+        Write-Log -Message "Successfully cleared all assignments"
+        return $true
+    }
+
+    catch {
+        $ex = $_.Exception
+        Write-Log -Message "Error clearing assignments: $($ex.Message)" -LogLevel 3
+        return $false
     }
 
 }

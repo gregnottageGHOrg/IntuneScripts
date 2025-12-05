@@ -34,21 +34,56 @@ $exename = ""
 $category = "Business"
 $InstallOpts = ""
 $UnInstallOpts = ""
-$apptype = "exe"
+$apptype = "ps1"
 $DetectRule = "TAGFILE"
 $DetectFile = ""
 $aadGroupPrefix = "MIP-WIN10-OBJECT-APP-"
 
-# Search for file in OrigSource folder either, exe,msi or ps1 (returns only first match if multiple found)
+# Prompt for app type first (default to PS1)
+Write-Host ""
+Write-Host "Product execution syntax is (exe/msi/ps1), Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$apptype]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $apptype = $result.ToString().ToLower() }
 
+# Search for file in OrigSource folder based on selected app type (returns only first match if multiple found)
 $exename = ""
-$exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.exe" -Name | Select-Object -First 1
-if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include '*.msi' -Name | Select-Object -First 1
+
+switch ($apptype) {
+    "ps1" {
+        # Search for .ps1 files, excluding Invoke-AppDeployToolkit.ps1
+        $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.ps1" -Name |
+        Where-Object { $_ -ne "Invoke-AppDeployToolkit.ps1" } |
+        Select-Object -First 1
+    }
+    "exe" {
+        # Search for .exe files, excluding Invoke-AppDeployToolkit.exe
+        $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.exe" -Name |
+        Where-Object { $_ -ne "Invoke-AppDeployToolkit.exe" } |
+        Select-Object -First 1
+    }
+    "msi" {
+        $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.msi" -Name | Select-Object -First 1
+    }
 }
 
-if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include '*.ps1' -Name | Select-Object -First 1
+# Fallback search if nothing found for selected type
+if ([string]::IsNullOrEmpty($exename)) {
+    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.ps1" -Name |
+    Where-Object { $_ -ne "Invoke-AppDeployToolkit.ps1" } |
+    Select-Object -First 1
+    if (-not [string]::IsNullOrEmpty($exename)) { $apptype = "ps1" }
+}
+
+if ([string]::IsNullOrEmpty($exename)) {
+    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.exe" -Name |
+    Where-Object { $_ -ne "Invoke-AppDeployToolkit.exe" } |
+    Select-Object -First 1
+    if (-not [string]::IsNullOrEmpty($exename)) { $apptype = "exe" }
+}
+
+if ([string]::IsNullOrEmpty($exename)) {
+    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.msi" -Name | Select-Object -First 1
+    if (-not [string]::IsNullOrEmpty($exename)) { $apptype = "msi" }
 }
 
 $logofile = (Get-ChildItem -Path $package'\' -Include '*.png' -Name | Select-Object -First 1)
@@ -163,10 +198,6 @@ else {
 }
 # Confirm values and prompt for changes
 
-Write-Host "Product execution syntax is (exe/msi/ps1), Press ENTER to use " -ForegroundColor white -NoNewline
-Write-Host "[$apptype]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -Prompt " ") -ne '') { $apptype = $result.tostring() }
-
 Write-Host "Type a version or Press ENTER to use " -ForegroundColor white -NoNewline
 Write-Host "[$version]" -ForegroundColor green -NoNewline
 if (($result = Read-Host -Prompt " ") -ne '') { $version = $result.tostring() }
@@ -246,7 +277,18 @@ $XML.CONFIG.IntuneWin_Settings.Description = $description
 $XML.CONFIG.IntuneWin_Settings.Publisher = $publisher
 $XML.CONFIG.IntuneWin_Settings.LogoFile = $logofile
 $XML.CONFIG.IntuneWin_Settings.Category = $category
-$XML.CONFIG.IntuneWin_Settings.AADGroupName = $EntraGroupName
+
+# Set EntraGroupName with fallback to AADGroupName for backward compatibility
+if ($null -ne $XML.CONFIG.IntuneWin_Settings.EntraGroupName) {
+    $XML.CONFIG.IntuneWin_Settings.EntraGroupName = $EntraGroupName
+}
+elseif ($null -ne $XML.CONFIG.IntuneWin_Settings.AADGroupName) {
+    $XML.CONFIG.IntuneWin_Settings.AADGroupName = $EntraGroupName
+}
+else {
+    Write-Warning "Neither EntraGroupName nor AADGroupName element found in Config.xml"
+}
+
 $XML.CONFIG.IntuneWin_Settings.RuleType = $DetectRule
 $XML.CONFIG.IntuneWin_Settings.FilePath = $DetectFile
 $XML.CONFIG.IntuneWin_Settings.installCmdLine = $InstallOpts
