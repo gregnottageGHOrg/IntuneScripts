@@ -97,6 +97,12 @@
     If the scope tag doesn't exist in the tenant, it will be created automatically.
     The scope tag replaces any existing scope tags on the application (including the Default scope tag).
 
+.PARAMETER ReplaceExistingContent
+    Switch parameter that replaces only the IntuneWin content of an existing application.
+    The application must already exist in Intune. All other configuration (assignments, detection rules,
+    requirements, scope tags, etc.) will be preserved. Only the package content is updated.
+    Useful for updating an application's installer without recreating the entire app configuration.
+
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com"
 
@@ -131,6 +137,13 @@
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -SkipGroupAssignment -ScopeTagName "Production"
 
     Uploads a package without group assignments but applies the "Production" scope tag.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ReplaceExistingContent
+
+    Updates only the IntuneWin package content of an existing application. All configuration
+    (assignments, detection rules, requirements, etc.) is preserved. The application must already
+    exist in Intune with a matching displayName from the Config.xml or Config.json.
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
@@ -264,9 +277,14 @@ param(
 
     [Parameter(HelpMessage = 'Specifies the Intune scope tag name to apply to the uploaded application. Takes precedence over ScopeTag in Config.xml. If the scope tag does not exist, it will be created.'
     )]
-    [string] $ScopeTagName
+    [string] $ScopeTagName,
+
+    [Parameter(HelpMessage = 'Replaces only the IntuneWin content of an existing application while keeping all other configuration intact. The app must already exist in Intune.'
+    )]
+    [switch] $ReplaceExistingContent
 )
 $script:exitCode = 0
+$script:contentReplaced = $false
 
 $BuildVer = "1.2"
 $ProgramFiles = $env:ProgramFiles
@@ -1769,6 +1787,139 @@ NAME: Upload-Win32LOB
 
 ####################################################
 
+function Update-Win32LobContent {
+    <#
+.SYNOPSIS
+This function is used to update the content (IntuneWin file) of an existing Win32 Application in Intune
+.DESCRIPTION
+This function replaces only the IntuneWin package content of an existing Win32 application while
+preserving all other configuration (assignments, detection rules, requirements, etc.)
+.EXAMPLE
+Update-Win32LobContent -AppId "12345678-1234-1234-1234-123456789012" -SourceFile "C:\Packages\package.intunewin"
+This example updates the content of an existing Intune app with the new .intunewin file
+.NOTES
+NAME: Update-Win32LobContent
+#>
+
+    [cmdletbinding()]
+
+    param
+    (
+        [parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $AppId,
+
+        [parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $SourceFile
+    )
+
+    try {
+        $LOBType = "microsoft.graph.win32LobApp"
+
+        Write-Host
+        Write-Host "Updating content for existing application..." -ForegroundColor Yellow
+        Write-Host "Application ID: $AppId" -ForegroundColor Cyan
+
+        # Validate source file exists
+        Write-Host "Testing if SourceFile '$SourceFile' Path is valid..." -ForegroundColor Yellow
+        Test-SourceFile "$SourceFile"
+
+        # Read the detection.xml from the IntuneWin package
+        $DetectionXML = Get-IntuneWinXML "$SourceFile" -fileName "detection.xml"
+        $FileName = $DetectionXML.ApplicationInfo.FileName
+
+        # Create a new content version for the existing app
+        Write-Host
+        Write-Host "Creating new Content Version for the existing application..." -ForegroundColor Yellow
+        $contentVersionUri = "mobileApps/$AppId/$LOBType/contentVersions"
+        $contentVersion = MakePostRequest $contentVersionUri "{}"
+
+        # Get encryption information from the new package
+        Write-Host
+        Write-Host "Getting Encryption Information for '$SourceFile'..." -ForegroundColor Yellow
+
+        $encryptionInfo = @{ }
+        $encryptionInfo.encryptionKey = $DetectionXML.ApplicationInfo.EncryptionInfo.EncryptionKey
+        $encryptionInfo.macKey = $DetectionXML.ApplicationInfo.EncryptionInfo.macKey
+        $encryptionInfo.initializationVector = $DetectionXML.ApplicationInfo.EncryptionInfo.initializationVector
+        $encryptionInfo.mac = $DetectionXML.ApplicationInfo.EncryptionInfo.mac
+        $encryptionInfo.profileIdentifier = "ProfileVersion1"
+        $encryptionInfo.fileDigest = $DetectionXML.ApplicationInfo.EncryptionInfo.fileDigest
+        $encryptionInfo.fileDigestAlgorithm = $DetectionXML.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
+
+        $fileEncryptionInfo = @{ }
+        $fileEncryptionInfo.fileEncryptionInfo = $encryptionInfo
+
+        # Extract the encrypted file from the IntuneWin package
+        $IntuneWinFile = Get-IntuneWinFile "$SourceFile" -fileName "$FileName"
+
+        [int64]$Size = $DetectionXML.ApplicationInfo.UnencryptedContentSize
+        $EncrySize = (Get-Item "$IntuneWinFile").Length
+
+        # Create a new file entry for the content version
+        Write-Host
+        Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
+        $contentVersionId = $contentVersion.id
+        $fileBody = GetAppFileBody "$FileName" $Size $EncrySize $null
+        $filesUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files"
+        $file = MakePostRequest $filesUri ($fileBody | ConvertTo-Json)
+
+        # Wait for the file entry to be ready
+        Write-Host
+        Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
+        $fileId = $file.id
+        $fileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId"
+        $file = WaitForFileProcessing $fileUri "azureStorageUriRequest"
+
+        # Upload the content to Azure Storage
+        Write-Host
+        Write-Host "Uploading file to Azure Storage..." -ForegroundColor Yellow
+        UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri
+
+        # Wait for Azure Storage to finalize
+        Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 5
+
+        # Clean up the extracted IntuneWin file
+        Remove-Item "$IntuneWinFile" -Force
+
+        # Commit the file
+        Write-Host
+        Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
+        Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
+        Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
+        $commitFileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit"
+        MakePostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json)
+
+        # Wait for the commit to complete
+        Write-Host
+        Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
+        $file = WaitForFileProcessing $fileUri "CommitFile"
+
+        # Commit the new content version to the app
+        Write-Host
+        Write-Host "Committing the new content version to the application..." -ForegroundColor Yellow
+        $commitAppUri = "mobileApps/$AppId"
+        $commitAppBody = GetAppCommitBody $contentVersionId $LOBType
+        MakePatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json)
+
+        Write-Host "Sleeping for $sleep seconds to allow package update completion..." -ForegroundColor Magenta
+        Start-Sleep $sleep
+        Write-Host
+
+        Write-Host "Successfully updated content for application ID: $AppId" -ForegroundColor Green
+        Write-Host
+
+    }
+    catch {
+        Write-Host "Error updating application content: $_" -ForegroundColor Red
+        throw
+    }
+}
+
+####################################################
+
 function Get-XMLConfig {
     <#
 .SYNOPSIS
@@ -2439,21 +2590,53 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
             #Check if package already exists
             if ( ! ( Test-Null ( $appID ) ) ) {
-                Write-Log -Message "Detected existing package in Intune: $displayName"
-                Write-Log -Message "Manual upload of the new IntuneWin package required."
-                Write-Log -Message "Upload content: "
-                Write-Host
-                Write-Host "$script:SourceFile" -ForegroundColor Cyan
-                Write-Host
-                Write-Host
-                exit
+                if ($ReplaceExistingContent) {
+                    Write-Log -Message "Detected existing package in Intune: $displayName"
+                    Write-Log -Message "ReplaceExistingContent mode: Updating content only..."
+                    Write-Host
+                    Write-Host "Replacing content for existing application: $displayName" -ForegroundColor Yellow
+                    Write-Host "Application ID: $appID" -ForegroundColor Cyan
+                    Write-Host
+
+                    # Call the content replacement function
+                    Update-Win32LobContent -AppId $appID -SourceFile $script:SourceFile
+
+                    Write-Log -Message "Content replacement completed for: $displayName"
+
+                    # Skip the normal upload process and group assignment when just replacing content
+                    # Jump to scope tag handling if specified
+                    $script:contentReplaced = $true
+                }
+                else {
+                    Write-Log -Message "Detected existing package in Intune: $displayName"
+                    Write-Log -Message "Use -ReplaceExistingContent to update the IntuneWin content only."
+                    Write-Log -Message "Upload content: "
+                    Write-Host
+                    Write-Host "$script:SourceFile" -ForegroundColor Cyan
+                    Write-Host
+                    Write-Host "Tip: Use -ReplaceExistingContent parameter to replace the package content while keeping all configuration." -ForegroundColor Yellow
+                    Write-Host
+                    exit
+                }
             }
             else {
+                if ($ReplaceExistingContent) {
+                    Write-Log -Message "Error: -ReplaceExistingContent specified but application not found: $displayName" -LogLevel 3
+                    Write-Host
+                    Write-Host "Error: Cannot replace content - application '$displayName' not found in Intune." -ForegroundColor Red
+                    Write-Host "The application must already exist to use -ReplaceExistingContent." -ForegroundColor Yellow
+                    Write-Host
+                    exit
+                }
                 Write-Log -Message "Existing package not found"
             }
 
+            # Skip upload if content was already replaced
+            if ($script:contentReplaced) {
+                Write-Log -Message "Skipping new app upload - content replacement mode"
+            }
             # Win32 Application Upload
-            if ($AppType -eq "MSI") {
+            elseif ($AppType -eq "MSI") {
                 Write-Log -Message "Preparing MSI package"
 
                 if ( ( ! ( Test-Null( $installCmdLine) ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
@@ -2511,7 +2694,9 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
         }
 
-        if (-not($SkipGroupAssignment)) {
+        # Skip group assignment if content was replaced (existing assignments are preserved)
+        # or if SkipGroupAssignment was explicitly specified
+        if ((-not($SkipGroupAssignment)) -and (-not($script:contentReplaced))) {
 
             if ($RequiredAADGroupName) {
                 Write-Log -Message "Prepare Entra ID group for required assignment targeting: $RequiredAADGroupName"
@@ -2689,7 +2874,8 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         }
 
         # Apply scope tag to the application (after group assignments are complete)
-        if (-not($AssignGroupsOnly)) {
+        # Skip if content was replaced (preserving existing configuration)
+        if ((-not($AssignGroupsOnly)) -and (-not($script:contentReplaced))) {
             Write-Log -Message "Checking for scope tag assignment..."
             if ($null -eq $appID) {
                 Write-Log -Message "Getting application ID for scope tag assignment..."

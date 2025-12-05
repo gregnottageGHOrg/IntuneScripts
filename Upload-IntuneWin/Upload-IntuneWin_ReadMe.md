@@ -117,13 +117,14 @@ Download `IntuneWinAppUtil.exe` from the link below:
 
 ### Mode Switches
 
-| Switch                  | Description                                |
-| ----------------------- | ------------------------------------------ |
-| `-IntuneWinPackageOnly` | Create .intunewin file only, don't upload  |
-| `-AssignGroupsOnly`     | Only assign groups to existing app         |
-| `-SkipGroupAssignment`  | Upload without assigning groups            |
-| `-SkipPackageRemoval`   | Keep .intunewin file after upload          |
-| `-NewTagPath`           | Use alternate tagfile path for diagnostics |
+| Switch                    | Description                                                |
+| ------------------------- | ---------------------------------------------------------- |
+| `-IntuneWinPackageOnly`   | Create .intunewin file only, don't upload                  |
+| `-AssignGroupsOnly`       | Only assign groups to existing app                         |
+| `-SkipGroupAssignment`    | Upload without assigning groups                            |
+| `-SkipPackageRemoval`     | Keep .intunewin file after upload                          |
+| `-NewTagPath`             | Use alternate tagfile path for diagnostics                 |
+| `-ReplaceExistingContent` | Replace IntuneWin content of existing app, keep all config |
 
 ### Assignment Parameters
 
@@ -461,6 +462,20 @@ The traditional XML format is still fully supported for backward compatibility.
     -IntuneAdmin "admin@contoso.com" `
     -NewTagPath
 ```
+
+### Replace Existing Application Content
+
+#### Update Package Content Only
+
+When an application already exists in Intune and you need to update just the installer package while keeping all existing configuration (assignments, detection rules, requirements, scope tags, etc.):
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -IntuneAdmin "admin@contoso.com" `
+    -ReplaceExistingContent
+```
+
+> **Note:** The application must already exist in Intune with a matching `displayName` from the Config.xml or Config.json. All existing configuration is preserved - only the IntuneWin package content is updated.
 
 ### Complete Production Example
 
