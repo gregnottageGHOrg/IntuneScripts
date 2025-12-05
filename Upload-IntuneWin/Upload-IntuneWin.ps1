@@ -8,15 +8,16 @@
 .DESCRIPTION
     This script automates the creation and upload of Win32 application packages (.intunewin) to Microsoft Intune.
     It supports MSI, EXE, PS1, and Edge application types with configurable detection rules, return codes,
-    and AAD group assignments.
+    and Entra ID group assignments.
 
-    The script reads configuration from a Config.xml file in the package folder and can authenticate using
-    interactive login, certificate-based authentication, or client secret.
+    The script reads configuration from either a Config.json or Config.xml file in the package folder
+    (JSON takes precedence if both exist) and can authenticate using interactive login, certificate-based
+    authentication, or client secret.
 
     Key features:
     - Creates .intunewin packages using IntuneWinAppUtil.exe
     - Uploads packages to Intune via Microsoft Graph API
-    - Creates and assigns AAD groups for Required, Available, and Uninstall targeting
+    - Creates and assigns Entra ID groups for Required, Available, and Uninstall targeting
     - Supports custom scope tags for application management
     - Configurable detection rules (File, Registry, MSI, PowerShell script)
 
@@ -72,16 +73,19 @@
     Useful for keeping local copies of packages.
 
 .PARAMETER RequiredAADGroupName
-    Specifies an AAD group name for required assignment targeting.
+    Specifies an Entra ID group name for required assignment targeting.
     If the group doesn't exist, it will be created.
+    Alias: RequiredEntraGroupName
 
 .PARAMETER AvailableAADGroupName
-    Specifies an AAD group name for available assignment targeting.
+    Specifies an Entra ID group name for available assignment targeting.
     If the group doesn't exist, it will be created.
+    Alias: AvailableEntraGroupName
 
 .PARAMETER UninstallAADGroupName
-    Specifies an AAD group name for uninstall assignment targeting.
+    Specifies an Entra ID group name for uninstall assignment targeting.
     If the group doesn't exist, it will be created.
+    Alias: UninstallEntraGroupName
 
 .PARAMETER NewTagPath
     Switch parameter that changes the tagfile path to %PROGRAMDATA%\IntuneManagementExtension\Logs.
@@ -116,7 +120,7 @@
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -RequiredAADGroupName "App-MyApp-Required" -AvailableAADGroupName "App-MyApp-Available"
 
-    Uploads a package and assigns specific AAD groups for required and available targeting.
+    Uploads a package and assigns specific Entra ID groups for required and available targeting.
 
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ScopeTagName "CloudPC-Apps"
@@ -133,7 +137,27 @@
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool)
 
-    The Config.xml file supports the following attributes in the IntuneWin_Settings section:
+    The script supports two configuration file formats (Config.json takes precedence if both exist):
+
+    Config.json properties:
+    - appType: MSI, EXE, PS1, or Edge
+    - ruleType: TAGFILE, FILE, REGISTRY, or MSI (for detection)
+    - returnCodeType: DEFAULT or custom
+    - installExperience: System or User
+    - packageName: Name of the setup file (without extension)
+    - displayName: Display name in Intune
+    - displayVersion: Version string to display
+    - description: App description
+    - publisher: Publisher name
+    - category: App category (e.g., Business)
+    - logoFile: Path to logo file (PNG/JPG)
+    - scopetag: Name of the Intune scope tag (optional, overridden by -ScopeTagName parameter)
+    - entraGroupName: Entra ID group name for assignments (preferred)
+    - aadGroupName: Entra ID group name for assignments (legacy, still supported)
+    - coreApp: Boolean for core app designation
+    - espApp: Boolean for ESP app designation
+
+    Config.xml supports the same attributes in the IntuneWin_Settings section:
     - AppType: MSI, EXE, PS1, or Edge
     - RuleType: TAGFILE, FILE, REGISTRY, or MSI (for detection)
     - InstallExperience: System or User
@@ -166,7 +190,7 @@ param(
 
     [Parameter(Mandatory = $true, Position = 3, ValueFromPipelineByPropertyName = $true,
         ValueFromPipeline = $True,
-        HelpMessage = 'Please enter path to package folder, containing Config.xml file'
+        HelpMessage = 'Please enter path to package folder, containing Config.json or Config.xml file'
     )]
     [Alias("PackageName")]
     [string[]] $PackagePath,
@@ -216,19 +240,22 @@ param(
     [Parameter(HelpMessage = 'Skips the deletion of the .IntuneWin file')]
     [switch] $SkipPackageRemoval,
 
-    [Parameter(HelpMessage = 'Applies an AAD group with required assignment targeting'
+    [Parameter(HelpMessage = 'Applies an Entra ID group with required assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
+    [Alias("RequiredEntraGroupName")]
     [string] $RequiredAADGroupName,
 
-    [Parameter(HelpMessage = 'Applies an AAD group with available assignment targeting'
+    [Parameter(HelpMessage = 'Applies an Entra ID group with available assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
+    [Alias("AvailableEntraGroupName")]
     [string] $AvailableAADGroupName,
 
-    [Parameter(HelpMessage = 'Applies an AAD group with uninstall assignment targeting'
+    [Parameter(HelpMessage = 'Applies an Entra ID group with uninstall assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
+    [Alias("UninstallEntraGroupName")]
     [string] $UninstallAADGroupName,
 
     [Parameter(HelpMessage = 'Changes the tagfile path to %PROGRAMDATA%\IntuneManagementExtension\Logs - this is so that the logs are captured during an Intune diagnostic log capture'
@@ -1794,7 +1821,7 @@ NAME: Get-XMLConfig
 
         foreach ($XMLEntity in $XML_Content.GetElementsByTagName("IntuneWin_Settings")) {
             if ($script:AADGroupName.Length -gt 50) {
-                Write-Log -Message "Error - AAD group name longer than 50 chars. Shorten then retry."
+                Write-Log -Message "Error - Entra ID group name longer than 50 chars. Shorten then retry."
                 exit
             }
 
@@ -1810,7 +1837,8 @@ NAME: Get-XMLConfig
                 $script:Description = [string]$XMLEntity.Description + "`nObject creation: $dayDateTime"
                 $script:Publisher = [string]$XMLEntity.Publisher
                 $script:Channel = [string]$XMLEntity.Channel
-                $script:AADGroupName = [string]$XMLEntity.AADGroupName
+                # Support both EntraGroupName (preferred) and AADGroupName (legacy)
+                $script:AADGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
                 return
             }
             $script:RuleType = [string]$XMLEntity.RuleType
@@ -1853,7 +1881,8 @@ NAME: Get-XMLConfig
             $script:Publisher = [string]$XMLEntity.Publisher
             $script:Category = [string]$XMLEntity.Category
             $script:LogoFile = [string]$XMLEntity.LogoFile
-            $script:AADGroupName = [string]$XMLEntity.AADGroupName
+            # Support both EntraGroupName (preferred) and AADGroupName (legacy)
+            $script:AADGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
 
             # Read optional ScopeTag from Config.xml
             $script:ConfigScopeTag = [string]$XMLEntity.ScopeTag
@@ -1866,6 +1895,173 @@ NAME: Get-XMLConfig
             if ($lastFourChars -eq ".ps1") { $script:PackageName = $PackageName.Substring(0, $PackageName.Length - 4) }
         }
 
+    }
+
+    end {
+        if ($Skip) { return }# Just return without doing anything else
+        Write-Log -Message "Returning..."
+        return
+    }
+
+}
+
+####################################################
+
+function Get-JSONConfig {
+    <#
+.SYNOPSIS
+This function reads the supplied JSON Config file
+.DESCRIPTION
+This function reads the supplied JSON Config file (Config.json format)
+.EXAMPLE
+Get-JSONConfig -JSONFile PathToJSONFile
+This function reads the supplied JSON Config file
+.NOTES
+NAME: Get-JSONConfig
+#>
+
+    [cmdletbinding()]
+
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$JSONFile,
+
+        [bool]$Skip = $false
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        $dayDateTime = (Get-Date -UFormat "%A %d-%m-%Y %R")
+        if (-not(Test-Path $JSONFile)) {
+            Write-Log -Message "Error - JSON file not found: $JSONFile" -LogLevel 3
+            return $Skip = $true
+        }
+        Write-Log -Message "Reading JSON file: $JSONFile"
+
+        try {
+            $script:JSON_Content = Get-Content $JSONFile -Raw | ConvertFrom-Json
+        }
+        catch {
+            Write-Log -Message "Error - Failed to parse JSON file: $JSONFile - $_" -LogLevel 3
+            return $Skip = $true
+        }
+
+        # Set default Azure settings (same as XML defaults)
+        $script:baseUrl = "https://graph.microsoft.com/beta/deviceAppManagement/"
+        $script:logRequestUris = '$true'
+        $script:logHeaders = '$false'
+        $script:logContent = '$true'
+        $script:azureStorageUploadChunkSizeInMb = "6l"
+        $script:sleep = 5
+
+        # Override Azure settings if present in JSON
+        if ($JSON_Content.baseUrl) { $script:baseUrl = [string]$JSON_Content.baseUrl }
+        if ($JSON_Content.logRequestUris) { $script:logRequestUris = [string]$JSON_Content.logRequestUris }
+        if ($JSON_Content.logHeaders) { $script:logHeaders = [string]$JSON_Content.logHeaders }
+        if ($JSON_Content.logContent) { $script:logContent = [string]$JSON_Content.logContent }
+        if ($JSON_Content.azureStorageUploadChunkSizeInMb) { $script:azureStorageUploadChunkSizeInMb = [string]$JSON_Content.azureStorageUploadChunkSizeInMb }
+        if ($JSON_Content.sleep) { $script:sleep = [int32]$JSON_Content.sleep }
+
+        # Read IntuneWin settings from JSON (case-insensitive property access)
+        $script:AppType = if ($JSON_Content.appType) { [string]$JSON_Content.appType } else { [string]$JSON_Content.AppType }
+
+        if ( ( $AppType -eq "EXE" ) -or ( $AppType -eq "MSI" ) ) {
+            Write-Log -Message "Reading commands for AppType: $AppType"
+            $script:installCmdLine = if ($JSON_Content.installCmdLine) { [string]$JSON_Content.installCmdLine } else { [string]$JSON_Content.installCommandLine }
+            $script:uninstallCmdLine = if ($JSON_Content.uninstallCmdLine) { [string]$JSON_Content.uninstallCmdLine } else { [string]$JSON_Content.uninstallCommandLine }
+        }
+
+        if ( $AppType -eq "Edge" ) {
+            Write-Log -Message "Reading settings for AppType: $AppType"
+            $script:displayName = if ($JSON_Content.displayName) { [string]$JSON_Content.displayName } else { [string]$JSON_Content.DisplayName }
+            $script:Description = (if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }) + "`nObject creation: $dayDateTime"
+            $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
+            $script:Channel = if ($JSON_Content.channel) { [string]$JSON_Content.channel } else { [string]$JSON_Content.Channel }
+            # Support both entraGroupName (preferred) and aadGroupName (legacy)
+            $script:AADGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
+                elseif ($JSON_Content.EntraGroupName) { [string]$JSON_Content.EntraGroupName } `
+                elseif ($JSON_Content.aadGroupName) { [string]$JSON_Content.aadGroupName } `
+                else { [string]$JSON_Content.AADGroupName }
+            return
+        }
+
+        $script:RuleType = if ($JSON_Content.ruleType) { [string]$JSON_Content.ruleType } else { [string]$JSON_Content.RuleType }
+
+        if ($RuleType -eq "FILE") {
+            Write-Log -Message "Reading detection for RuleType: $RuleType"
+            $script:FilePath = if ($JSON_Content.filePath) { [string]$JSON_Content.filePath } else { [string]$JSON_Content.FilePath }
+            $script:FileDetectionType = if ($JSON_Content.fileDetectionType) { [string]$JSON_Content.fileDetectionType } else { [string]$JSON_Content.FileDetectionType }
+            if (($FileDetectionType -ne "exists") -or ($FileDetectionType -ne "doesNotExist")) {
+                $script:FileDetectionOperator = if ($JSON_Content.fileDetectionOperator) { [string]$JSON_Content.fileDetectionOperator } else { [string]$JSON_Content.FileDetectionOperator }
+                $script:FileDetectionValue = if ($JSON_Content.fileDetectionValue) { [string]$JSON_Content.fileDetectionValue } else { [string]$JSON_Content.FileDetectionValue }
+            }
+        }
+
+        if ($RuleType -eq "REGISTRY") {
+            Write-Log -Message "Reading detection for RuleType: $RuleType"
+            $script:RegistryKeyPath = if ($JSON_Content.registryKeyPath) { [string]$JSON_Content.registryKeyPath } else { [string]$JSON_Content.RegistryKeyPath }
+            $script:RegistryValue = if ($JSON_Content.registryValue) { [string]$JSON_Content.registryValue } else { [string]$JSON_Content.RegistryValue }
+            $script:RegistryDetectionType = if ($JSON_Content.registryDetectionType) { [string]$JSON_Content.registryDetectionType } else { [string]$JSON_Content.RegistryDetectionType }
+            if (($RegistryDetectionType -ne "exists") -or ($RegistryDetectionType -ne "doesNotExist")) {
+                $script:RegistryDetectionOperator = if ($JSON_Content.registryDetectionOperator) { [string]$JSON_Content.registryDetectionOperator } else { [string]$JSON_Content.RegistryDetectionOperator }
+                $script:RegistryDetectionValue = if ($JSON_Content.registryDetectionValue) { [string]$JSON_Content.registryDetectionValue } else { [string]$JSON_Content.RegistryDetectionValue }
+            }
+        }
+
+        if ($RuleType -eq "MSI") {
+            Write-Log -Message "Reading detection for RuleType: $RuleType"
+            $script:MSIProductCode = if ($JSON_Content.msiProductCode) { [string]$JSON_Content.msiProductCode } else { [string]$JSON_Content.MSIProductCode }
+            $script:MSIProductVersionOperator = if ($JSON_Content.msiProductVersionOperator) { [string]$JSON_Content.msiProductVersionOperator } else { [string]$JSON_Content.MSIProductVersionOperator }
+            if ($MSIProductVersionOperator -ne "notConfigured") {
+                $script:MSIProductVersion = if ($JSON_Content.msiProductVersion) { [string]$JSON_Content.msiProductVersion } else { [string]$JSON_Content.MSIProductVersion }
+            }
+        }
+
+        $script:ReturnCodeType = if ($JSON_Content.returnCodeType) { [string]$JSON_Content.returnCodeType } else { [string]$JSON_Content.ReturnCodeType }
+        $script:InstallExperience = if ($JSON_Content.installExperience) { [string]$JSON_Content.installExperience } else { [string]$JSON_Content.InstallExperience }
+        $script:PackageName = if ($JSON_Content.packageName) { [string]$JSON_Content.packageName } else { [string]$JSON_Content.PackageName }
+        $script:displayName = if ($JSON_Content.displayName) { [string]$JSON_Content.displayName } else { [string]$JSON_Content.DisplayName }
+        $script:displayVersion = if ($JSON_Content.displayVersion) { [string]$JSON_Content.displayVersion } else { [string]$JSON_Content.DisplayVersion }
+        $script:Description = (if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }) + "`nObject creation: $dayDateTime"
+        $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
+        $script:Category = if ($JSON_Content.category) { [string]$JSON_Content.category } else { [string]$JSON_Content.Category }
+        $script:LogoFile = if ($JSON_Content.logoFile) { [string]$JSON_Content.logoFile } else { [string]$JSON_Content.LogoFile }
+        # Support both entraGroupName (preferred) and aadGroupName (legacy)
+        $script:AADGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
+            elseif ($JSON_Content.EntraGroupName) { [string]$JSON_Content.EntraGroupName } `
+            elseif ($JSON_Content.aadGroupName) { [string]$JSON_Content.aadGroupName } `
+            else { [string]$JSON_Content.AADGroupName }
+
+        # Read optional ScopeTag from Config.json (supports both scopetag and scopeTag)
+        $script:ConfigScopeTag = if ($JSON_Content.scopetag) { [string]$JSON_Content.scopetag } `
+            elseif ($JSON_Content.scopeTag) { [string]$JSON_Content.scopeTag } `
+            elseif ($JSON_Content.ScopeTag) { [string]$JSON_Content.ScopeTag } `
+            else { "" }
+        if (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag)) {
+            Write-Log -Message "Found ScopeTag in Config.json: $($script:ConfigScopeTag)"
+        }
+
+        # Read optional coreApp and espApp from Config.json
+        $script:CoreApp = if ($null -ne $JSON_Content.coreApp) { [bool]$JSON_Content.coreApp } else { $false }
+        $script:EspApp = if ($null -ne $JSON_Content.espApp) { [bool]$JSON_Content.espApp } else { $false }
+        if ($script:CoreApp) { Write-Log -Message "CoreApp: True" }
+        if ($script:EspApp) { Write-Log -Message "EspApp: True" }
+
+        # Validate group name length
+        if ($script:AADGroupName.Length -gt 50) {
+            Write-Log -Message "Error - Entra ID group name longer than 50 chars. Shorten then retry."
+            exit
+        }
+
+        # Strip .ps1 extension, if entered into JSON file...
+        if ($PackageName -and $PackageName.Length -ge 4) {
+            $lastFourChars = $PackageName.Substring($PackageName.Length - 4)
+            if ($lastFourChars -eq ".ps1") { $script:PackageName = $PackageName.Substring(0, $PackageName.Length - 4) }
+        }
     }
 
     end {
@@ -2024,7 +2220,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             Write-Log -Message "ReturnCodeType: [$ReturnCodeType]"
             Write-Log -Message "InstallExperience: [$InstallExperience]"
             Write-Log -Message "LogoFile: [$LogoFile]"
-            Write-Log -Message "AADGroupName: [$AADGroupName]"
+            Write-Log -Message "EntraGroupName: [$AADGroupName]"
 
             if ( $AppType -ne "Edge" ) {
                 if ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "TAGFILE" ) -or ( $RuleType -eq "POWERSHELL" ) ) {
@@ -2318,7 +2514,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         if (-not($SkipGroupAssignment)) {
 
             if ($RequiredAADGroupName) {
-                Write-Log -Message "Prepare AAD group for required assignment targeting: $RequiredAADGroupName"
+                Write-Log -Message "Prepare Entra ID group for required assignment targeting: $RequiredAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
                     $script:exitCode = New-AADGroup -groupName $RequiredAADGroupName
@@ -2328,7 +2524,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow AAD group creation..." -f Magenta
+                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
                     Start-Sleep $sleep
                     Write-Host
                 }
@@ -2337,7 +2533,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply AAD group for required assignment targeting: $RequiredAADGroupName"
+                Write-Log -Message "Apply Entra ID group for required assignment targeting: $RequiredAADGroupName"
 
                 Write-Log -Message "Find application ID"
                 $appID = Get-ApplicationID -AppName $displayName
@@ -2356,7 +2552,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
 
             if ($AvailableAADGroupName) {
-                Write-Log -Message "Prepare AAD group for available assignment targeting: $AvailableAADGroupName"
+                Write-Log -Message "Prepare Entra ID group for available assignment targeting: $AvailableAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
                     $script:exitCode = New-AADGroup -groupName $AvailableAADGroupName
@@ -2366,7 +2562,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow AAD group creation..." -f Magenta
+                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
                     Start-Sleep $sleep
                     Write-Host
                 }
@@ -2375,7 +2571,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply AAD group for required assignment targeting: $AvailableAADGroupName"
+                Write-Log -Message "Apply Entra ID group for available assignment targeting: $AvailableAADGroupName"
 
                 Write-Log -Message "Find application ID"
                 $appID = Get-ApplicationID -AppName $displayName
@@ -2394,7 +2590,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
 
             if ($UninstallAADGroupName) {
-                Write-Log -Message "Prepare AAD group for uninstall assignment targeting: $UninstallAADGroupName"
+                Write-Log -Message "Prepare Entra ID group for uninstall assignment targeting: $UninstallAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
                     $script:exitCode = New-AADGroup -groupName $UninstallAADGroupName
@@ -2404,7 +2600,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow AAD group creation..." -f Magenta
+                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
                     Start-Sleep $sleep
                     Write-Host
                 }
@@ -2413,7 +2609,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply AAD group for required assignment targeting: $UninstallAADGroupName"
+                Write-Log -Message "Apply Entra ID group for uninstall assignment targeting: $UninstallAADGroupName"
 
                 Write-Log -Message "Find application ID"
                 $appID = Get-ApplicationID -AppName $displayName
@@ -2433,7 +2629,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
 
             if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-                Write-Log -Message "Create AAD groups for install/uninstall"
+                Write-Log -Message "Create Entra ID groups for install/uninstall"
                 $script:groupsWereCreated = $false
                 if ($userName) {
                     $script:exitCode = New-AADGroup -groupName $AADGroupName
@@ -2443,7 +2639,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow AAD group creation..." -f Magenta
+                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
                     Start-Sleep $sleep
                     Write-Host
                 }
@@ -2452,7 +2648,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Assigning AAD groups for install/uninstall"
+                Write-Log -Message "Assigning Entra ID groups for install/uninstall"
 
                 Write-Log -Message "Find application ID"
                 $appID = Get-ApplicationID -AppName $displayName
@@ -2785,13 +2981,13 @@ NAME: Invoke-ScopeTagAssignment
 function New-AADGroupMG {
     <#
 .SYNOPSIS
-This function creates the relevant install/uninstall AAD groups
+This function creates the relevant install/uninstall Entra ID groups
 .DESCRIPTION
-This function creates the relevant install/uninstall AAD groups. Returns a hashtable with
+This function creates the relevant install/uninstall Entra ID groups. Returns a hashtable with
 'ExitCode' and 'GroupsCreated' properties to indicate if any groups were newly created.
 .EXAMPLE
 $result = New-AADGroupMG -groupName "MyGroupName"
-This function creates the relevant install/uninstall AAD groups
+This function creates the relevant install/uninstall Entra ID groups
 .NOTES
 NAME: New-AADGroupMG -groupName
 #>
@@ -2824,10 +3020,10 @@ NAME: New-AADGroupMG -groupName
             try {
                 $existingGroup = Invoke-MgGraphRequest -Method Get -Uri $uri
                 if ($existingGroup.value.Count -gt 0) {
-                    Write-Log -Message "AAD group $group already exists!"
+                    Write-Log -Message "Entra ID group $group already exists!"
                 }
                 else {
-                    Write-Log -Message "Creating AAD group $group"
+                    Write-Log -Message "Creating Entra ID group $group"
                     # Create group using REST API
                     $createUri = "https://graph.microsoft.com/$graphApiVersion/groups"
                     $groupBody = @{
@@ -2839,12 +3035,12 @@ NAME: New-AADGroupMG -groupName
                         'isAssignableToRole' = $false
                     }
                     $null = Invoke-MgGraphRequest -Method Post -Uri $createUri -Body ($groupBody | ConvertTo-Json -Depth 10)
-                    Write-Log -Message "Successfully created AAD group $group"
+                    Write-Log -Message "Successfully created Entra ID group $group"
                     $script:groupsWereCreated = $true
                 }
             }
             catch {
-                Write-Log -Message "Error with AAD group $group : $($_.Exception.Message)"
+                Write-Log -Message "Error with Entra ID group $group : $($_.Exception.Message)"
                 throw
             }
         }
@@ -2863,13 +3059,13 @@ NAME: New-AADGroupMG -groupName
 function New-AADGroup {
     <#
 .SYNOPSIS
-This function creates the relevant install/uninstall AAD groups
+This function creates the relevant install/uninstall Entra ID groups
 .DESCRIPTION
-This function creates the relevant install/uninstall AAD groups. Sets $script:groupsWereCreated
+This function creates the relevant install/uninstall Entra ID groups. Sets $script:groupsWereCreated
 to indicate if any groups were newly created.
 .EXAMPLE
 New-AADGroup -groupName "MyGroupName"
-This function creates the relevant install/uninstall AAD groups
+This function creates the relevant install/uninstall Entra ID groups
 .NOTES
 NAME: New-AADGroup -groupName
 #>
@@ -2897,16 +3093,16 @@ NAME: New-AADGroup -groupName
 
         foreach ($group in $AADGroups) {
             if (Get-AzureADGroup -SearchString $group) {
-                Write-Log -Message "AAD group $group already exists!"
+                Write-Log -Message "Entra ID group $group already exists!"
             }
             else {
-                Write-Log -Message "Creating AAD group $group"
+                Write-Log -Message "Creating Entra ID group $group"
                 try {
                     New-AzureADGroup -DisplayName $group -Description "Group for $group" -MailEnabled $false -SecurityEnabled $true -MailNickName ($($group).Replace(" ", "") + "-Group")
                     $script:groupsWereCreated = $true
                 }
                 catch {
-                    Write-Log -Message "Error creating AAD group $group"
+                    Write-Log -Message "Error creating Entra ID group $group"
                     $script:exitCode = -1
                     exit
                 }
@@ -2928,12 +3124,12 @@ NAME: New-AADGroup -groupName
 function Get-GroupIDMG {
     <#
 .SYNOPSIS
-This function is used to get an AAD group and return it's object ID if found
+This function is used to get an Entra ID group and return its object ID if found
         .DESCRIPTION
-        The function is used to get an AAD group and return it's object ID if found
+        The function is used to get an Entra ID group and return its object ID if found
 .EXAMPLE
 Get-GroupID -GroupName GroupNameHere
-The function is used to get an AAD group and return it's object ID if found
+The function is used to get an Entra ID group and return its object ID if found
         .NOTES
         NAME: Get-GroupIDMG
         #>
@@ -3012,12 +3208,12 @@ The function is used to get an AAD group and return it's object ID if found
 function Get-GroupID {
     <#
 .SYNOPSIS
-This function is used to get an AAD group and return it's object ID if found
+This function is used to get an Entra ID group and return its object ID if found
         .DESCRIPTION
-        The function is used to get an AAD group and return it's object ID if found
+        The function is used to get an Entra ID group and return its object ID if found
 .EXAMPLE
 Get-GroupID -GroupName GroupNameHere
-The function is used to get an AAD group and return it's object ID if found
+The function is used to get an Entra ID group and return its object ID if found
         .NOTES
         NAME: Get-GroupID
         #>
@@ -3842,9 +4038,23 @@ if (-not(Test-Null($UninstallAADGroupName)) -and ($UninstallAADGroupName -eq $Av
     break
 }
 
-#Read XML File
-Write-Log -Message "Reading XML file: [$packagePath\Config.xml]"
-Get-XMLConfig -XMLFile "$packagePath\Config.xml"
+#Read Config File (JSON takes precedence over XML)
+$jsonConfigPath = "$packagePath\Config.json"
+$xmlConfigPath = "$packagePath\Config.xml"
+
+if (Test-Path $jsonConfigPath) {
+    Write-Log -Message "Found Config.json, reading: [$jsonConfigPath]"
+    Get-JSONConfig -JSONFile $jsonConfigPath
+}
+elseif (Test-Path $xmlConfigPath) {
+    Write-Log -Message "Reading XML file: [$xmlConfigPath]"
+    Get-XMLConfig -XMLFile $xmlConfigPath
+}
+else {
+    Write-Log -Message "Error - No Config.json or Config.xml file found in: $packagePath" -LogLevel 3
+    break
+}
+
 if ($Username) {
     Write-Log -Message "Username: [$Username]"
 }

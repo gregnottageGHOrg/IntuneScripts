@@ -14,7 +14,9 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Parameters](#parameters)
 - [Authentication Methods](#authentication-methods)
 - [Package Folder Structure](#package-folder-structure)
-- [Config.xml Configuration](#configxml-configuration)
+- [Configuration Files](#configuration-files)
+  - [Config.json Format](#configjson-format)
+  - [Config.xml Format](#configxml-format)
 - [Usage Examples](#usage-examples)
 - [Supported Application Types](#supported-application-types)
 - [Detection Rules](#detection-rules)
@@ -30,14 +32,16 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 
 ### Key Features
 
+- ✅ **Dual configuration format support** - Config.json (preferred) or Config.xml
 - ✅ Create `.intunewin` packages using IntuneWinAppUtil.exe
 - ✅ Upload packages to Intune via Microsoft Graph API
 - ✅ Support for MSI, EXE, PS1, and Edge application types
 - ✅ Configurable detection rules (File, Registry, MSI, PowerShell script)
-- ✅ Create and assign AAD groups for Required, Available, and Uninstall targeting
+- ✅ Create and assign Entra ID groups for Required, Available, and Uninstall targeting
 - ✅ Apply custom Intune scope tags for RBAC management
 - ✅ Multiple authentication methods (Interactive, Certificate, Client Secret)
 - ✅ Automatic return code configuration
+- ✅ **ESP/Core app designation support** (via Config.json)
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -55,7 +59,7 @@ Before running the script, ensure you have:
    - Intune Administrator role or equivalent permissions
    - Application permissions for Microsoft Graph API
 5. **Package folder** containing:
-   - `Config.xml` configuration file
+   - `Config.json` or `Config.xml` configuration file (JSON takes precedence)
    - `Source` subfolder with application files
 
 ### Install Required Modules
@@ -67,7 +71,8 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 
 ### Download Win32 Content Prep Tool
 
-Download `IntuneWinAppUtil.exe` from:
+Download `IntuneWinAppUtil.exe` from the link below:
+
 - [Microsoft Win32 Content Prep Tool](https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool)
 
 ---
@@ -77,13 +82,13 @@ Download `IntuneWinAppUtil.exe` from:
 ### Complete Upload Workflow
 
 1. **Validate Prerequisites** - Checks for IntuneWinAppUtil.exe and required modules
-2. **Read Config.xml** - Parses package configuration settings
+2. **Read Configuration** - Parses Config.json (preferred) or Config.xml settings
 3. **Create IntuneWin Package** - Runs IntuneWinAppUtil.exe to create the encrypted package
 4. **Authenticate to Graph** - Connects using specified authentication method
 5. **Upload to Intune** - Creates the Win32 app and uploads the package content
 6. **Configure Detection Rules** - Sets up application detection methods
 7. **Apply Return Codes** - Configures installation return code handling
-8. **Create AAD Groups** - Creates targeting groups if they don't exist
+8. **Create Entra ID Groups** - Creates targeting groups if they don't exist
 9. **Assign Groups** - Links groups to the application with appropriate intent
 10. **Apply Scope Tags** - Assigns RBAC scope tags if specified
 11. **Cleanup** - Removes temporary files (unless skipped)
@@ -105,10 +110,10 @@ Download `IntuneWinAppUtil.exe` from:
 
 ### Package Parameters
 
-| Parameter               | Type     | Required | Description                                  |
-| ----------------------- | -------- | -------- | -------------------------------------------- |
-| `-PackagePath`          | String[] | **Yes**  | Path to package folder containing Config.xml |
-| `-IntuneWinAppUtilPath` | String   | No       | Path to IntuneWinAppUtil.exe folder          |
+| Parameter               | Type     | Required | Description                                                 |
+| ----------------------- | -------- | -------- | ----------------------------------------------------------- |
+| `-PackagePath`          | String[] | **Yes**  | Path to package folder containing Config.json or Config.xml |
+| `-IntuneWinAppUtilPath` | String   | No       | Path to IntuneWinAppUtil.exe folder                         |
 
 ### Mode Switches
 
@@ -122,12 +127,12 @@ Download `IntuneWinAppUtil.exe` from:
 
 ### Assignment Parameters
 
-| Parameter                | Type   | Description                         |
-| ------------------------ | ------ | ----------------------------------- |
-| `-RequiredAADGroupName`  | String | Group name for required assignment  |
-| `-AvailableAADGroupName` | String | Group name for available assignment |
-| `-UninstallAADGroupName` | String | Group name for uninstall assignment |
-| `-ScopeTagName`          | String | Intune scope tag to apply           |
+| Parameter                                             | Type   | Description                                  |
+| ----------------------------------------------------- | ------ | -------------------------------------------- |
+| `-RequiredAADGroupName` / `-RequiredEntraGroupName`   | String | Entra ID group name for required assignment  |
+| `-AvailableAADGroupName` / `-AvailableEntraGroupName` | String | Entra ID group name for available assignment |
+| `-UninstallAADGroupName` / `-UninstallEntraGroupName` | String | Entra ID group name for uninstall assignment |
+| `-ScopeTagName`                                       | String | Intune scope tag to apply                    |
 
 ---
 
@@ -165,7 +170,8 @@ Each application package requires the following folder structure:
 
 ```text
 MyApp/
-├── Config.xml              # Required: Package configuration
+├── Config.json             # Preferred: JSON configuration (takes precedence)
+├── Config.xml              # Alternative: XML configuration
 ├── Source/                 # Required: Application source files
 │   ├── Setup.exe           # The installer file
 │   ├── install.ps1         # Optional: Install script
@@ -175,41 +181,156 @@ MyApp/
 └── Logo.png                # Optional: Application icon
 ```
 
+> **Note:** If both `Config.json` and `Config.xml` exist in the package folder, `Config.json` takes precedence.
+
 ---
 
-## Config.xml Configuration
+## Configuration Files
 
-The `Config.xml` file controls all aspects of the package. Here's a sample structure:
+The script supports two configuration file formats. **Config.json is the preferred format** and takes precedence if both files exist in the package folder.
+
+### Config.json Format
+
+The modern JSON format provides a cleaner syntax and supports additional properties for ESP/Core app designation.
+
+#### Sample Config.json
+
+```json
+{
+  "$schema": "./../pawintuneapp.schema.json",
+  "appType": "PS1",
+  "ruleType": "TAGFILE",
+  "returnCodeType": "DEFAULT",
+  "installExperience": "System",
+  "packageName": "Install-MyApp",
+  "displayVersion": "1.0.0",
+  "displayName": "My Application",
+  "description": "Application description here",
+  "publisher": "Contoso",
+  "category": "Business",
+  "logoFile": "Logo.png",
+  "entraGroupName": "App-MyApp-Required",
+  "scopetag": "CloudPC-Apps",
+  "coreApp": false,
+  "espApp": true
+}
+```
+
+#### Config.json Properties
+
+| Property            | Values                               | Description                                     |
+| ------------------- | ------------------------------------ | ----------------------------------------------- |
+| `appType`           | `MSI`, `EXE`, `PS1`, `Edge`          | Type of application                             |
+| `ruleType`          | `TAGFILE`, `FILE`, `REGISTRY`, `MSI` | Detection rule type                             |
+| `returnCodeType`    | `DEFAULT`                            | Return code configuration                       |
+| `installExperience` | `System`, `User`                     | Installation context                            |
+| `packageName`       | String                               | Setup file name (without extension)             |
+| `displayName`       | String                               | Display name shown in Intune                    |
+| `displayVersion`    | String                               | Version string to display                       |
+| `description`       | String                               | Application description                         |
+| `publisher`         | String                               | Publisher name                                  |
+| `category`          | String                               | App category (e.g., `Business`, `Productivity`) |
+| `logoFile`          | String                               | Path to logo file (PNG/JPG)                     |
+| `entraGroupName`    | String                               | Entra ID group name for assignments (preferred) |
+| `aadGroupName`      | String                               | AAD group name (legacy, still supported)        |
+| `scopetag`          | String                               | Intune scope tag name (optional)                |
+| `coreApp`           | Boolean                              | Mark as core app (optional)                     |
+| `espApp`            | Boolean                              | Include in ESP (optional)                       |
+
+#### Additional Config.json Properties for Detection
+
+For **FILE** detection:
+
+```json
+{
+  "ruleType": "FILE",
+  "filePath": "C:\\Program Files\\MyApp",
+  "fileDetectionType": "exists",
+  "fileDetectionOperator": "notConfigured",
+  "fileDetectionValue": ""
+}
+```
+
+For **REGISTRY** detection:
+
+```json
+{
+  "ruleType": "REGISTRY",
+  "registryKeyPath": "HKLM\\SOFTWARE\\MyApp",
+  "registryValue": "Version",
+  "registryDetectionType": "string",
+  "registryDetectionOperator": "equal",
+  "registryDetectionValue": "1.0.0"
+}
+```
+
+For **EXE/MSI** app types with custom commands:
+
+```json
+{
+  "appType": "EXE",
+  "installCmdLine": "Setup.exe /quiet",
+  "uninstallCmdLine": "Setup.exe /uninstall /quiet"
+}
+```
+
+---
+
+### Config.xml Format
+
+The traditional XML format is still fully supported for backward compatibility.
+
+#### Sample Config.xml
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
-<IntuneWin_Settings>
-    <AppType>EXE</AppType>
-    <AppName>My Application</AppName>
-    <AppVersion>1.0.0</AppVersion>
-    <AppPublisher>Contoso</AppPublisher>
-    <AppDescription>Application description here</AppDescription>
-    <SetupFile>Setup.exe</SetupFile>
-    <InstallCMD>Setup.exe /quiet</InstallCMD>
-    <UninstallCMD>Setup.exe /uninstall /quiet</UninstallCMD>
-    <InstallExperience>System</InstallExperience>
-    <RuleType>FILE</RuleType>
-    <FilePath>C:\Program Files\MyApp</FilePath>
-    <FileName>MyApp.exe</FileName>
-    <FileVersion>1.0.0</FileVersion>
-    <ScopeTag>CloudPC-Apps</ScopeTag>
-    <Category>Productivity</Category>
-</IntuneWin_Settings>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com/beta/deviceAppManagement/</baseUrl>
+        <logRequestUris>$true</logRequestUris>
+        <logHeaders>$false</logHeaders>
+        <logContent>$true</logContent>
+        <azureStorageUploadChunkSizeInMb>6l</azureStorageUploadChunkSizeInMb>
+        <sleep>5</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>EXE</AppType>
+        <installCmdLine>Setup.exe /quiet</installCmdLine>
+        <uninstallCmdLine>Setup.exe /uninstall /quiet</uninstallCmdLine>
+        <RuleType>FILE</RuleType>
+        <FilePath>C:\Program Files\MyApp</FilePath>
+        <ReturnCodeType>DEFAULT</ReturnCodeType>
+        <InstallExperience>System</InstallExperience>
+        <PackageName>MyApp</PackageName>
+        <displayName>My Application</displayName>
+        <displayVersion>1.0.0</displayVersion>
+        <Description>Application description here</Description>
+        <Publisher>Contoso</Publisher>
+        <Category>Productivity</Category>
+        <LogoFile>Logo.png</LogoFile>
+        <EntraGroupName>App-MyApp-Required</EntraGroupName>
+        <ScopeTag>CloudPC-Apps</ScopeTag>
+    </IntuneWin_Settings>
+</CONFIG>
 ```
 
-### Config.xml Attributes
+#### Config.xml Attributes
 
-| Attribute           | Values                       | Description                      |
-| ------------------- | ---------------------------- | -------------------------------- |
-| `AppType`           | MSI, EXE, PS1, Edge          | Type of application              |
-| `RuleType`          | TAGFILE, FILE, REGISTRY, MSI | Detection rule type              |
-| `InstallExperience` | System, User                 | Installation context             |
-| `ScopeTag`          | String                       | Intune scope tag name (optional) |
+| Attribute           | Values                               | Description                                     |
+| ------------------- | ------------------------------------ | ----------------------------------------------- |
+| `AppType`           | `MSI`, `EXE`, `PS1`, `Edge`          | Type of application                             |
+| `RuleType`          | `TAGFILE`, `FILE`, `REGISTRY`, `MSI` | Detection rule type                             |
+| `InstallExperience` | `System`, `User`                     | Installation context                            |
+| `ScopeTag`          | String                               | Intune scope tag name (optional)                |
+| `PackageName`       | String                               | Setup file name (without extension)             |
+| `displayName`       | String                               | Display name shown in Intune                    |
+| `displayVersion`    | String                               | Version string to display                       |
+| `Description`       | String                               | Application description                         |
+| `Publisher`         | String                               | Publisher name                                  |
+| `Category`          | String                               | App category                                    |
+| `LogoFile`          | String                               | Path to logo file                               |
+| `EntraGroupName`    | String                               | Entra ID group name for assignments (preferred) |
+| `AADGroupName`      | String                               | AAD group name (legacy, still supported)        |
 
 ---
 
@@ -252,12 +373,14 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 
 ### Group Assignments
 
+> **Note:** Both `-RequiredAADGroupName` and `-RequiredEntraGroupName` work identically. The Entra aliases are preferred for new scripts.
+
 #### Upload with Required Group Assignment
 
 ```powershell
 .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
     -IntuneAdmin "admin@contoso.com" `
-    -RequiredAADGroupName "App-MyApp-Required"
+    -RequiredEntraGroupName "App-MyApp-Required"
 ```
 
 #### Upload with Multiple Group Assignments
@@ -265,9 +388,9 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 ```powershell
 .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
     -IntuneAdmin "admin@contoso.com" `
-    -RequiredAADGroupName "App-MyApp-Required" `
-    -AvailableAADGroupName "App-MyApp-Available" `
-    -UninstallAADGroupName "App-MyApp-Uninstall"
+    -RequiredEntraGroupName "App-MyApp-Required" `
+    -AvailableEntraGroupName "App-MyApp-Available" `
+    -UninstallEntraGroupName "App-MyApp-Uninstall"
 ```
 
 #### Upload Without Group Assignments
@@ -284,7 +407,7 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
     -IntuneAdmin "admin@contoso.com" `
     -AssignGroupsOnly `
-    -RequiredAADGroupName "App-MyApp-Required"
+    -RequiredEntraGroupName "App-MyApp-Required"
 ```
 
 ### Scope Tags
@@ -347,8 +470,8 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
     -ClientID "12345678-1234-1234-1234-123456789012" `
     -TenantID "87654321-4321-4321-4321-210987654321" `
     -ClientSecret $env:INTUNE_SECRET `
-    -RequiredAADGroupName "All-CloudPC-Devices" `
-    -AvailableAADGroupName "Office-SelfService" `
+    -RequiredEntraGroupName "All-CloudPC-Devices" `
+    -AvailableEntraGroupName "Office-SelfService" `
     -ScopeTagName "EUD-CloudPC" `
     -SkipPackageRemoval
 ```
@@ -396,7 +519,8 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 
 ### Detection Rule Examples
 
-**File Detection:**
+#### File Detection
+
 ```xml
 <RuleType>FILE</RuleType>
 <FilePath>C:\Program Files\MyApp</FilePath>
@@ -404,7 +528,8 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 <FileVersion>1.0.0</FileVersion>
 ```
 
-**Registry Detection:**
+#### Registry Detection
+
 ```xml
 <RuleType>REGISTRY</RuleType>
 <RegistryKeyPath>HKLM\SOFTWARE\MyApp</RegistryKeyPath>
@@ -413,7 +538,7 @@ The `Config.xml` file controls all aspects of the package. Here's a sample struc
 
 ---
 
-## Group Assignments
+## Group Assignment Details
 
 ### Assignment Intent Types
 
@@ -429,12 +554,12 @@ If specified groups don't exist, the script will create them automatically as se
 
 ---
 
-## Scope Tags
+## Scope Tag Configuration
 
 ### How Scope Tags Work
 
 - Scope tags control which administrators can see and manage the application
-- The `-ScopeTagName` parameter overrides any `ScopeTag` setting in Config.xml
+- The `-ScopeTagName` parameter overrides any `ScopeTag` or `scopetag` setting in config files
 - If the scope tag doesn't exist, it will be created automatically
 - The scope tag replaces all existing tags (including Default)
 
@@ -472,6 +597,7 @@ Get-MgContext
 #### Package Upload Fails
 
 Check the log file at:
+
 ```text
 %LocalAppData%\Microsoft\IntuneApps\Upload-IntuneWin\Upload-IntuneWin_[date].log
 ```
@@ -479,11 +605,13 @@ Check the log file at:
 #### Group Assignment Errors
 
 Ensure you have permissions to create and manage groups:
+
 - `Group.ReadWrite.All` permission required
 
 ### Log File Location
 
 Logs are written to:
+
 ```text
 %LocalAppData%\Microsoft\IntuneApps\Upload-IntuneWin\Upload-IntuneWin_DD-MM-YYYY.log
 ```

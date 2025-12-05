@@ -42,8 +42,9 @@
         <Category>Business</Category>
         <!-- Edit the LogoFile element to provide a logo shown in Company Portal -->
         <LogoFile>MSLogo.png</LogoFile>
-        <!-- Edit the AADGroupName element used for the required/available/uninstall group creation -->
-        <AADGroupName>MIP-WIN10-OBJECT-CONFIG-GroupName Here v1.0</AADGroupName>
+        <!-- Edit the EntraGroupName element used for the required/available/uninstall group creation -->
+        <!-- Note: AADGroupName is still supported for backward compatibility but EntraGroupName is preferred -->
+        <EntraGroupName>MIP-WIN10-OBJECT-CONFIG-GroupName Here v1.0</EntraGroupName>
         <!-- Optional: Edit the ScopeTag element to assign an Intune scope tag to the application -->
         <!-- If left empty or removed, no scope tag will be applied unless specified via -ScopeTagName parameter -->
         <!-- The -ScopeTagName parameter takes precedence over this setting -->
