@@ -6,7 +6,7 @@ See LICENSE in the project root for license information.
 
 #>
 #Script helper to build out the Config.xml for the Upload-IntuneWin script
-Param(
+param(
     [parameter(Mandatory = $true, HelpMessage = "Enter subfolder name of the package")]
     $Name
 )
@@ -15,12 +15,12 @@ if ( $args.count -ne 0) {
     $list = $args[0]
 
     if (!($list -eq "--list")) {
-        write-host
-        Write-host "Syntax : "
-        write-host
-        write-host "    Set-Config.ps1"
-        write-host "    Set-Config.ps1 --list       list out the file metadata."
-        write-host
+        Write-Host
+        Write-Host "Syntax : "
+        Write-Host
+        Write-Host "    Set-Config.ps1"
+        Write-Host "    Set-Config.ps1 --list       list out the file metadata."
+        Write-Host
         exit
     }
 }
@@ -39,34 +39,34 @@ $DetectRule = "TAGFILE"
 $DetectFile = ""
 $aadGroupPrefix = "MIP-WIN10-OBJECT-APP-"
 
-# Search for file in source folder either, exe,msi or ps1
+# Search for file in OrigSource folder either, exe,msi or ps1 (returns only first match if multiple found)
 
 $exename = ""
-$exename = Get-ChildItem -Path $package'\Source\*' -Include "*.exe" -name
+$exename = Get-ChildItem -Path $package'\OrigSource\*' -Include "*.exe" -Name | Select-Object -First 1
 if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $package'\Source\*' -Include '*.msi' -Name
-} 
-
-if ($exename.Length -eq 0) {
-    $exename = Get-ChildItem -Path $package'\Source\*' -Include '*.ps1' -Name
+    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include '*.msi' -Name | Select-Object -First 1
 }
 
-$logofile = (Get-ChildItem -Path $package'\' -Include '*.png' -Name)
+if ($exename.Length -eq 0) {
+    $exename = Get-ChildItem -Path $package'\OrigSource\*' -Include '*.ps1' -Name | Select-Object -First 1
+}
+
+$logofile = (Get-ChildItem -Path $package'\' -Include '*.png' -Name | Select-Object -First 1)
 if ( $null -eq $logofile) { $logofile = "" } else { $logofile = $logofile.ToString() }
 
 # Confirm filename found or get new name
 
 Write-Host ""
-write-Host "Type a filename or Press ENTER to use " -ForegroundColor white -NoNewline
-write-Host "[$exename]" -ForegroundColor green -NoNewline
+Write-Host "Type a filename or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$exename]" -ForegroundColor green -NoNewline
 
-if (($result = Read-Host -prompt " ") -ne '') { $exename = $result.tostring() }
+if (($result = Read-Host -Prompt " ") -ne '') { $exename = $result.tostring() }
 
-# does source file exist
-if (-not (Test-Path -Path $package'\Source\'$exename -PathType Leaf)) {
-    write-host
-    write-host $package'\Source\'$exename "not found, exiting." -ForegroundColor red
-    write-host "" -ForegroundColor white
+# does OrigSource file exist
+if (-not (Test-Path -Path $package'\OrigSource\'$exename -PathType Leaf)) {
+    Write-Host
+    Write-Host $package'\OrigSource\'$exename "not found, exiting." -ForegroundColor red
+    Write-Host "" -ForegroundColor white
     exit
 }
 
@@ -84,10 +84,10 @@ else {
     $DetectFile = "C:\Program Files\" + $appname + "\" + $exename
 
     # get file metatdata
-    $exefilepath = join-path $package '\Source\'
+    $exefilepath = Join-Path $package '\OrigSource\'
 
 
-    $info = New-Object -ComObject Shell.Application 
+    $info = New-Object -ComObject Shell.Application
     $info_detailspace = $info.namespace($exefilepath)
     $file_details = $info_detailspace.items()
 
@@ -122,23 +122,23 @@ else {
         if ($exename -eq ($info_detailspace.getDetailsof($file, 0))) {
 
             if ($list -eq '--list') {
-                write-host 
-                write-host "0  : Name - '" $info_detailspace.getDetailsof($file, 0) "'"
-                write-host "2  : Type - '" $info_detailspace.getDetailsof($file, 2) "'"
-                write-host "9  :Perceived Type - '" $info_detailspace.getDetailsof($file, 9) "'"
-                write-host "20 : Authors - '" $info_detailspace.getDetailsof($file, 20) "'"
-                write-host "21 : Title - '" $info_detailspace.getDetailsof($file, 21) "'"
-                write-host "22 : Subject - '" $info_detailspace.getDetailsof($file, 22) "'"
-                write-host "25 : Copyright - '" $info_detailspace.getDetailsof($file, 25) "'"
-                write-host "34 : File Description - '" $info_detailspace.getDetailsof($file, 34) "'"
-                write-host "42 : Program Name - '" $info_detailspace.getDetailsof($file, 42) "'"
-                write-host "165: Filename - '" $info_detailspace.getDetailsof($file, 165) "'"
-                write-host "166: File Version - '" $info_detailspace.getDetailsof($file, 166) "'"
-                write-host "201: Description - '" $info_detailspace.getDetailsof($file, 201) "'"
-                write-host "217: Writers - '" $info_detailspace.getDetailsof($file, 217) "'"
-                write-host "297: Product name  - '" $info_detailspace.getDetailsof($file, 297) "'"
-                write-host "298: Product version - '" $info_detailspace.getDetailsof($file, 298) "'"
-                write-host
+                Write-Host
+                Write-Host "0  : Name - '" $info_detailspace.getDetailsof($file, 0) "'"
+                Write-Host "2  : Type - '" $info_detailspace.getDetailsof($file, 2) "'"
+                Write-Host "9  :Perceived Type - '" $info_detailspace.getDetailsof($file, 9) "'"
+                Write-Host "20 : Authors - '" $info_detailspace.getDetailsof($file, 20) "'"
+                Write-Host "21 : Title - '" $info_detailspace.getDetailsof($file, 21) "'"
+                Write-Host "22 : Subject - '" $info_detailspace.getDetailsof($file, 22) "'"
+                Write-Host "25 : Copyright - '" $info_detailspace.getDetailsof($file, 25) "'"
+                Write-Host "34 : File Description - '" $info_detailspace.getDetailsof($file, 34) "'"
+                Write-Host "42 : Program Name - '" $info_detailspace.getDetailsof($file, 42) "'"
+                Write-Host "165: Filename - '" $info_detailspace.getDetailsof($file, 165) "'"
+                Write-Host "166: File Version - '" $info_detailspace.getDetailsof($file, 166) "'"
+                Write-Host "201: Description - '" $info_detailspace.getDetailsof($file, 201) "'"
+                Write-Host "217: Writers - '" $info_detailspace.getDetailsof($file, 217) "'"
+                Write-Host "297: Product name  - '" $info_detailspace.getDetailsof($file, 297) "'"
+                Write-Host "298: Product version - '" $info_detailspace.getDetailsof($file, 298) "'"
+                Write-Host
             }
 
             if ($info_detailspace.getDetailsof($file, 2) -clike "Windows Installer*") {
@@ -155,7 +155,7 @@ else {
                     $description = $info_detailspace.getDetailsof($file, 34)
                     $displayname = $info_detailspace.getDetailsof($file, 297)
                     $apptype = "exe"
-                }                
+                }
             }
         }
     }
@@ -163,55 +163,55 @@ else {
 }
 # Confirm values and prompt for changes
 
-write-host "Product execution syntax is (exe/msi/ps1), Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$apptype]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $apptype = $result.tostring() }
+Write-Host "Product execution syntax is (exe/msi/ps1), Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$apptype]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $apptype = $result.tostring() }
 
-write-host "Type a version or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$version]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $version = $result.tostring() }
+Write-Host "Type a version or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$version]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $version = $result.tostring() }
 
-write-host "Type a displayname or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$displayname]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $displayname = $result.tostring() }
+Write-Host "Type a displayname or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$displayname]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $displayname = $result.tostring() }
 
-write-host "Type a description or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$description]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $description = $result.tostring() }
+Write-Host "Type a description or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$description]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $description = $result.tostring() }
 
-write-host "Type publisher name or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$publisher]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $publisher = $result.tostring() }
+Write-Host "Type publisher name or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$publisher]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $publisher = $result.tostring() }
 
-write-host "Type a logo filename or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$logofile]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $logofile = $result.tostring() }
+Write-Host "Type a logo filename or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$logofile]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $logofile = $result.tostring() }
 
-write-host "Type the Intune category or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$category]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $category = $result.tostring() }
+Write-Host "Type the Intune category or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$category]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $category = $result.tostring() }
 
 # exe or msi style description info or use base package if nothing in metadata
 if ($displayname -ne '') {
-    $AADGroupName = "$aadGroupPrefix$displayname v$version"
+    $EntraGroupName = "$aadGroupPrefix$displayname v$version"
 }
 else {
-    #$AADGroupName = $aadGroupPrefix + $appname + ' v' + $version
-    $AADGroupName = "$aadGroupPrefix$displayname v$version"
+    #$EntraGroupName = $aadGroupPrefix + $appname + ' v' + $version
+    $EntraGroupName = "$aadGroupPrefix$displayname v$version"
 }
 
-write-host "Type the AAD Group Name or Press ENTER to use " -ForegroundColor white -NoNewline
-write-host "[$AADGroupName]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $AADGroupName = $result.tostring() }
+Write-Host "Type the Entra Static Group Name or Press ENTER to use " -ForegroundColor white -NoNewline
+Write-Host "[$EntraGroupName]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $EntraGroupName = $result.tostring() }
 
-write-host "FILE or TAGFILE Detection Rule, Type TAGFILE or Press ENTER for " -ForegroundColor white -NoNewline
-write-host "[$DetectRule]" -ForegroundColor green -NoNewline
-if (($result = Read-Host -prompt " ") -ne '') { $DetectRule = $result.tostring() }
+Write-Host "FILE or TAGFILE Detection Rule, Type TAGFILE or Press ENTER for " -ForegroundColor white -NoNewline
+Write-Host "[$DetectRule]" -ForegroundColor green -NoNewline
+if (($result = Read-Host -Prompt " ") -ne '') { $DetectRule = $result.tostring() }
 
 if ($DetectRule -eq "FILE") {
-    write-host "Type Detection Path for FILE or Press ENTER for " -ForegroundColor white -NoNewline
-    write-host "[$DetectFile]" -ForegroundColor green -NoNewline
-    if (($result = Read-Host -prompt " ") -ne '') { $DetectFile = $result.tostring() }
+    Write-Host "Type Detection Path for FILE or Press ENTER for " -ForegroundColor white -NoNewline
+    Write-Host "[$DetectFile]" -ForegroundColor green -NoNewline
+    if (($result = Read-Host -Prompt " ") -ne '') { $DetectFile = $result.tostring() }
 
 }
 else {
@@ -219,26 +219,26 @@ else {
 }
 
 if ($apptype -eq "ps1") {
-    write-host "Type FULL Install command and options (e.g. -verbose)" -ForegroundColor white -NoNewline
-    write-host "[]" -ForegroundColor green -NoNewline
-    if (($result = Read-Host -prompt " ") -ne '') { $InstallOpts = $result.tostring() }
+    Write-Host "Type FULL Install command and options (e.g. -verbose)" -ForegroundColor white -NoNewline
+    Write-Host "[]" -ForegroundColor green -NoNewline
+    if (($result = Read-Host -Prompt " ") -ne '') { $InstallOpts = $result.tostring() }
 
-    write-host "Type FULL UnInstall and options (e.g. -verbose)" -ForegroundColor white -NoNewline
-    write-host "[]" -ForegroundColor green -NoNewline
-    if (($result = Read-Host -prompt " ") -ne '') { $UnInstallOpts = $result.tostring() }
+    Write-Host "Type FULL Uninstall and options (e.g. -verbose)" -ForegroundColor white -NoNewline
+    Write-Host "[]" -ForegroundColor green -NoNewline
+    if (($result = Read-Host -Prompt " ") -ne '') { $UnInstallOpts = $result.tostring() }
 }
 else {
-    write-host "Type any Install options (e.g. /quiet) or Press ENTER for " -ForegroundColor white -NoNewline
-    write-host "[]" -ForegroundColor green -NoNewline
-    if (($result = Read-Host -prompt " ") -ne '') { $InstallOpts = $result.tostring() }
+    Write-Host "Type any Install options (e.g. /quiet) or Press ENTER for " -ForegroundColor white -NoNewline
+    Write-Host "[]" -ForegroundColor green -NoNewline
+    if (($result = Read-Host -Prompt " ") -ne '') { $InstallOpts = $result.tostring() }
 
-    write-host "Type any UnInstall options (e.g. /verysilent) or Press ENTER for " -ForegroundColor white -NoNewline
-    write-host "[]" -ForegroundColor green -NoNewline
-    if (($result = Read-Host -prompt " ") -ne '') { $UnInstallOpts = $result.tostring() }
+    Write-Host "Type any Uninstall options (e.g. /verysilent) or Press ENTER for " -ForegroundColor white -NoNewline
+    Write-Host "[]" -ForegroundColor green -NoNewline
+    if (($result = Read-Host -Prompt " ") -ne '') { $UnInstallOpts = $result.tostring() }
 }
 # open and edit the config.xml document
 
-[XML]$XML = Get-Content $filename 
+[XML]$XML = Get-Content $filename
 $XML.CONFIG.IntuneWin_Settings.AppType = $apptype
 $XML.CONFIG.IntuneWin_Settings.PackageName = $appname
 $XML.CONFIG.IntuneWin_Settings.displayName = $displayname
@@ -246,21 +246,23 @@ $XML.CONFIG.IntuneWin_Settings.Description = $description
 $XML.CONFIG.IntuneWin_Settings.Publisher = $publisher
 $XML.CONFIG.IntuneWin_Settings.LogoFile = $logofile
 $XML.CONFIG.IntuneWin_Settings.Category = $category
-$XML.CONFIG.IntuneWin_Settings.AADGroupName = $AADGroupName
+$XML.CONFIG.IntuneWin_Settings.AADGroupName = $EntraGroupName
 $XML.CONFIG.IntuneWin_Settings.RuleType = $DetectRule
 $XML.CONFIG.IntuneWin_Settings.FilePath = $DetectFile
 $XML.CONFIG.IntuneWin_Settings.installCmdLine = $InstallOpts
 $XML.CONFIG.IntuneWin_Settings.uninstallCmdLine = $UnInstallOpts
 $XML.Save($filename)
 
-write-host 
-write-host "----------------------------------------------------" -foregroundcolor cyan
-write-host 
-write-host "  Finished, Config.xml file succesfully updated" -foregroundcolor yellow
-write-host "  Recommended to review the file." -foregroundcolor yellow
-write-host
-write-host "  To continue and upload to Intune run " -foregroundcolor yellow -nonewline
-write-host "  .\Invoke-Upload.ps1 -Name $Name" -foregroundcolor green
-write-host
-write-host "----------------------------------------------------" -foregroundcolor cyan
-write-host 
+Write-Host
+Write-Host "----------------------------------------------------" -ForegroundColor cyan
+Write-Host
+Write-Host "  Finished, Config.xml file succesfully updated" -ForegroundColor yellow
+Write-Host "  Recommended to review the file." -ForegroundColor yellow
+Write-Host
+Write-Host "  To continue and upload to Intune run " -ForegroundColor yellow -NoNewline
+Write-Host "  .\Invoke-Upload.ps1 -Name $Name" -ForegroundColor green
+Write-Host "  or" -ForegroundColor green
+Write-Host "  .\Invoke-CodeSignAndUpload.ps1 -PackagePath `"$PSScriptRoot\$Name`" -ClientID `"xxxx`" -TenantID `"xxxx`" -ClientSecret `"xxxx`" -NewTagPath -RequiredAADGroupName `"EUD-Global-Devices`" -SkipPackageRemoval -IntuneWinPackageOnly" -ForegroundColor green
+Write-Host
+Write-Host "----------------------------------------------------" -ForegroundColor cyan
+Write-Host

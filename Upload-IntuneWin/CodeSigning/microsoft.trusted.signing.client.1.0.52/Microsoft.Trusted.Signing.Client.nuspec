@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>Microsoft.Trusted.Signing.Client</id>
+    <version>1.0.52</version>
+    <title>Microsoft Trusted Signing Client</title>
+    <authors>Microsoft</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="file">LICENSE.md</license>
+    <licenseUrl>https://aka.ms/deprecateLicenseUrl</licenseUrl>
+    <icon>pkgicon.png</icon>
+    <projectUrl>https://techcommunity.microsoft.com/t5/security-compliance-and-identity/azure-code-signing-democratizing-trust-for-developers-and/ba-p/3604669</projectUrl>
+    <description>This package provides client tools to submit requests to Microsoft Trusted Signing Service. Please read the Microsoft Terms of Use for Microsoft Trusted Signing Client included in this NuGet package. Usage of Microsoft Trusted Signing Service implies acceptance of these terms.</description>
+    <releaseNotes>Renaming package to Microsoft Trusted Signing.</releaseNotes>
+    <copyright>© Microsoft Corporation. All rights reserved.</copyright>
+    <tags>Microsoft, Azure, Code Signing, Trusted Signing</tags>
+  </metadata>
+</package>
