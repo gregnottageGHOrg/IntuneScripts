@@ -642,4 +642,4 @@ Get-Help .\Upload-IntuneWin.ps1 -Examples
 
 **Script Version**: 1.2
 **Last Updated**: December 5, 2025
-**Author**: Microsoft Cloud PC Deployment Team
+**Author**: Greg Nottage
