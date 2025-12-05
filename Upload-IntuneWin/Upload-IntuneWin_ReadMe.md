@@ -173,16 +173,20 @@ Each application package requires the following folder structure:
 MyApp/
 ├── Config.json             # Preferred: JSON configuration (takes precedence)
 ├── Config.xml              # Alternative: XML configuration
-├── Source/                 # Required: Application source files
+├── Source/                 # Required: Application source files (or OrigSource/)
 │   ├── Setup.exe           # The installer file
 │   ├── install.ps1         # Optional: Install script
 │   └── [other files]       # Any additional required files
+├── OrigSource/             # Alternative: Used if Source/ doesn't exist
+│   └── [source files]      # Same structure as Source/
 ├── IntuneWin/              # Created by script: Output folder
 │   └── MyApp.intunewin     # Generated package file
 └── Logo.png                # Optional: Application icon
 ```
 
 > **Note:** If both `Config.json` and `Config.xml` exist in the package folder, `Config.json` takes precedence.
+
+> **Note:** If the `Source/` folder does not exist but `OrigSource/` exists, the script will automatically use `OrigSource/` as the source for creating the .intunewin package. This is useful when you want to preserve original source files separately.
 
 ---
 

@@ -32,6 +32,8 @@
 .PARAMETER PackagePath
     Mandatory. Specifies the path to the package folder containing the Config.xml file.
     The folder should contain a 'Source' subfolder with the application files.
+    If the 'Source' subfolder does not exist but an 'OrigSource' subfolder exists,
+    the script will use 'OrigSource' as the source folder for creating the .intunewin package.
     Alias: PackageName
 
 .PARAMETER IntuneWinAppUtilPath
@@ -286,7 +288,7 @@ param(
 $script:exitCode = 0
 $script:contentReplaced = $false
 
-$BuildVer = "1.2"
+$BuildVer = "1.3"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -297,7 +299,10 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 $script:EventLogName = "Application"
 $script:EventLogSource = "EventSystem"
 $packagePath = $packagePath.Trim()
+
+# Determine source path - use Source folder if it exists, otherwise fall back to OrigSource
 $SourcePath = "$packagePath\Source"
+$OrigSourcePath = "$packagePath\OrigSource"
 
 if (!($intuneWinAppUtilPath)) {
     $IntuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
@@ -4428,8 +4433,26 @@ if (-not($AssignGroupsOnly)) {
 }
 
 if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
+    # Determine which source folder to use - Source takes precedence, fall back to OrigSource
+    $EffectiveSourcePath = $SourcePath
+    if (!(Test-Path $SourcePath)) {
+        if (Test-Path $OrigSourcePath) {
+            Write-Log -Message "Source folder not found at: [$SourcePath]"
+            Write-Log -Message "Using OrigSource folder instead: [$OrigSourcePath]"
+            Write-Host "Source folder not found, using OrigSource folder instead..." -ForegroundColor Yellow
+            $EffectiveSourcePath = $OrigSourcePath
+        }
+        else {
+            Write-Log -Message "Error - Neither Source nor OrigSource folder found" -LogLevel 3
+            Write-Host "Error: Neither Source nor OrigSource folder found at:" -ForegroundColor Red
+            Write-Host "  Source: $SourcePath" -ForegroundColor Red
+            Write-Host "  OrigSource: $OrigSourcePath" -ForegroundColor Red
+            exit
+        }
+    }
+
     Write-Log -Message "Call Invoke-IntuneWinAppUtil function..."
-    Invoke-IntuneWinAppUtil -AppType $AppType -IntuneWinAppPath $IntuneWinAppUtil -PackageSourcePath $SourcePath -IntuneAppPackage "$PackageName"
+    Invoke-IntuneWinAppUtil -AppType $AppType -IntuneWinAppPath $IntuneWinAppUtil -PackageSourcePath $EffectiveSourcePath -IntuneAppPackage "$PackageName"
     Write-Log -Message "Return code from IntuneWin: $script:exitCode"
 
     if ( $script:exitCode -eq "-1" ) {
