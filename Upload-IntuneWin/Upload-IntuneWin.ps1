@@ -166,8 +166,20 @@
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
+    Version        : 1.6
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool)
+
+    Automatic Version Detection (v1.6):
+    For EXE and MSI packages, the script automatically detects the installer version:
+    - EXE files: Uses FileVersionInfo.GetVersionInfo() to read FileVersion or ProductVersion
+    - MSI files: Uses Windows Installer COM object to query ProductVersion from the database
+
+    If the detected version differs from the displayVersion in Config.xml/Config.json:
+    - User is prompted to use the detected version (Y/N)
+    - Prompt times out after 30 seconds
+    - On timeout: Uses config version if present, otherwise uses detected version
+    - If user accepts or config version is empty, the config file is automatically updated
 
     The script supports two configuration file formats (Config.json takes precedence if both exist):
 
@@ -188,6 +200,30 @@
     - aadGroupName: Entra ID group name for assignments (legacy, still supported)
     - coreApp: Boolean for core app designation
     - espApp: Boolean for ESP app designation
+
+    Extended Settings (v1.5 - all optional):
+    - isFeatured: Show as featured app in Company Portal
+    - informationUrl: URL for more information
+    - privacyInformationUrl: URL for privacy information
+    - developer: Developer name
+    - owner: Owner name
+    - notes: Additional notes
+    - maxRunTimeInMinutes: Maximum install time (default 60)
+    - deviceRestartBehavior: basedOnReturnCode, allow, suppress (default), force
+    - minimumFreeDiskSpaceInMB: Minimum disk space requirement
+    - minimumMemoryInMB: Minimum memory requirement
+    - minimumNumberOfProcessors: Minimum CPU count requirement
+    - minimumCpuSpeedInMHz: Minimum CPU speed requirement
+    - allowedArchitectures: x64, x86, arm, arm64 (comma-separated)
+    - minimumSupportedOS: v10_1903, v10_21H2, v11_23H2, etc.
+    - customReturnCodes: Custom return code handling (array or comma-separated code:type)
+    - dependencies: Apps this app depends on (array or comma-separated names)
+    - dependencyType: autoInstall or detect
+    - supersedence: Apps this app supersedes (array or comma-separated names)
+    - supersedenceType: update or replace
+    - detectionScriptFile: Path to PowerShell detection script
+    - detectionScriptEnforceSignatureCheck: Require signed detection script
+    - detectionScriptRunAs32Bit: Run detection script as 32-bit
 
     Config.xml supports the same attributes in the IntuneWin_Settings section:
     - AppType: MSI, EXE, PS1, or Edge
@@ -311,7 +347,7 @@ $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.4"
+$BuildVer = "1.6"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -577,6 +613,988 @@ NAME: Get-AuthToken
 
     }
 
+}
+
+####################################################
+
+function Get-AuthenticatedUserInfo {
+    <#
+.SYNOPSIS
+Retrieves the authenticated user's display name and UPN from Microsoft Graph
+.DESCRIPTION
+This function gets the currently authenticated user's first name, last name, and UPN
+for adding to the description field. Returns $null if using app registration authentication.
+.EXAMPLE
+$userInfo = Get-AuthenticatedUserInfo
+.NOTES
+NAME: Get-AuthenticatedUserInfo
+#>
+
+    [cmdletbinding()]
+    param()
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        try {
+            # Check if we're authenticated via interactive login (not app registration)
+            $context = Get-MgContext
+            if ($null -eq $context) {
+                Write-Log -Message "No MgContext found - skipping user info retrieval"
+                return $null
+            }
+
+            # Check authentication type - only proceed for delegated (user) authentication
+            if ($context.AuthType -ne 'Delegated') {
+                Write-Log -Message "Using app registration authentication - skipping user info retrieval"
+                return $null
+            }
+
+            # Get the signed-in user's info from Graph
+            $uri = "https://graph.microsoft.com/v1.0/me?`$select=displayName,givenName,surname,userPrincipalName"
+            $userResponse = Invoke-MgGraphRequest -Uri $uri -Method Get
+
+            if ($null -ne $userResponse) {
+                $firstName = $userResponse.givenName
+                $lastName = $userResponse.surname
+                $upn = $userResponse.userPrincipalName
+                $displayName = $userResponse.displayName
+
+                # Build the user string - prefer first/last name, fall back to displayName
+                if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
+                    $userString = "$firstName $lastName ($upn)"
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($displayName)) {
+                    $userString = "$displayName ($upn)"
+                }
+                else {
+                    $userString = $upn
+                }
+
+                Write-Log -Message "Retrieved authenticated user info: $userString"
+                return $userString
+            }
+        }
+        catch {
+            Write-Log -Message "Warning: Could not retrieve authenticated user info - $_" -LogLevel 2
+            return $null
+        }
+
+        return $null
+    }
+}
+
+####################################################
+
+function Get-IntuneAppCategory {
+    <#
+.SYNOPSIS
+Retrieves an Intune app category by name
+.DESCRIPTION
+This function gets an app category from Intune by display name.
+Returns the category object if found, $null otherwise.
+.EXAMPLE
+$category = Get-IntuneAppCategory -CategoryName "Business"
+.NOTES
+NAME: Get-IntuneAppCategory
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CategoryName
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        Write-Log -Message "Looking for app category: [$CategoryName]"
+
+        $graphApiVersion = "beta"
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileAppCategories"
+
+        try {
+            if ($userName) {
+                $result = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
+            }
+            else {
+                $result = Invoke-MgGraphRequest -Method Get -Uri $uri
+            }
+
+            if ($result.value.Count -gt 0) {
+                $category = $result.value | Where-Object { $_.displayName -eq $CategoryName }
+                if ($null -ne $category) {
+                    Write-Log -Message "Found category: $($category.displayName) (ID: $($category.id))"
+                    return $category
+                }
+            }
+
+            Write-Log -Message "Category '$CategoryName' not found" -LogLevel 2
+            return $null
+        }
+        catch {
+            Write-Log -Message "Error retrieving app categories: $_" -LogLevel 3
+            return $null
+        }
+    }
+}
+
+####################################################
+
+function Set-IntuneAppCategory {
+    <#
+.SYNOPSIS
+Assigns a category to an Intune application
+.DESCRIPTION
+This function assigns a category to an existing Intune app using the Graph API.
+.EXAMPLE
+Set-IntuneAppCategory -ApplicationId "12345" -CategoryName "Business"
+.NOTES
+NAME: Set-IntuneAppCategory
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$CategoryName
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        Write-Log -Message "Assigning category '$CategoryName' to application ID: $ApplicationId"
+
+        # Get the category
+        $category = Get-IntuneAppCategory -CategoryName $CategoryName
+        if ($null -eq $category) {
+            Write-Log -Message "Cannot assign category - category '$CategoryName' not found" -LogLevel 2
+            Write-Host "Warning: Category '$CategoryName' not found in Intune" -ForegroundColor Yellow
+            return $false
+        }
+
+        $graphApiVersion = "beta"
+        $categoryUri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId/categories/`$ref"
+
+        try {
+            $categoryBody = @{
+                "@odata.id" = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileAppCategories/$($category.id)"
+            }
+
+            if ($userName) {
+                $categoryJson = $categoryBody | ConvertTo-Json -Depth 10
+                $headers = CloneObject $authToken
+                $headers["content-length"] = $categoryJson.Length
+                $headers["content-type"] = "application/json"
+                $null = Invoke-RestMethod -Uri $categoryUri -Headers $headers -Method Post -Body $categoryJson
+            }
+            else {
+                $null = Invoke-MgGraphRequest -Uri $categoryUri -Method Post -Body $categoryBody
+            }
+
+            Write-Log -Message "Category '$CategoryName' assigned successfully"
+            Write-Host "Category '$CategoryName' assigned successfully" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            # Check if error is because category is already assigned
+            if ($_.Exception.Message -match "already exists") {
+                Write-Log -Message "Category '$CategoryName' is already assigned to this application"
+                Write-Host "Category '$CategoryName' is already assigned" -ForegroundColor Green
+                return $true
+            }
+            Write-Log -Message "Error assigning category: $_" -LogLevel 2
+            Write-Host "Warning: Failed to assign category - $_" -ForegroundColor Yellow
+            return $false
+        }
+    }
+}
+
+####################################################
+
+function Set-IntuneAppDependency {
+    <#
+.SYNOPSIS
+Adds a dependency relationship between two Intune applications
+.DESCRIPTION
+This function creates a dependency relationship where the current app depends on another app.
+The dependency type can be 'detect' (just check if installed) or 'autoInstall' (install automatically).
+.PARAMETER ApplicationId
+The ID of the application that has the dependency (the dependent app)
+.PARAMETER DependencyAppId
+The ID of the application that is depended upon (the dependency)
+.PARAMETER DependencyType
+The type of dependency: 'detect' or 'autoInstall'. Default is 'autoInstall'.
+.EXAMPLE
+Set-IntuneAppDependency -ApplicationId "12345" -DependencyAppId "67890" -DependencyType "autoInstall"
+.NOTES
+NAME: Set-IntuneAppDependency
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DependencyAppId,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('detect', 'autoInstall')]
+        [string]$DependencyType = 'autoInstall'
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        Write-Log -Message "Adding dependency on app '$DependencyAppId' for application ID: $ApplicationId (Type: $DependencyType)"
+
+        $graphApiVersion = "beta"
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId/relationships"
+
+        try {
+            $dependencyBody = @{
+                "@odata.type"  = "#microsoft.graph.mobileAppDependency"
+                "targetId"     = $DependencyAppId
+                "dependencyType" = $DependencyType
+            }
+
+            if ($userName) {
+                $dependencyJson = $dependencyBody | ConvertTo-Json -Depth 10
+                $headers = CloneObject $authToken
+                $headers["content-length"] = $dependencyJson.Length
+                $headers["content-type"] = "application/json"
+                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $dependencyJson
+            }
+            else {
+                $null = Invoke-MgGraphRequest -Uri $uri -Method Post -Body $dependencyBody
+            }
+
+            Write-Log -Message "Dependency added successfully"
+            Write-Host "Dependency on app '$DependencyAppId' added successfully" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            if ($_.Exception.Message -match "already exists") {
+                Write-Log -Message "Dependency on app '$DependencyAppId' already exists"
+                Write-Host "Dependency already exists" -ForegroundColor Green
+                return $true
+            }
+            Write-Log -Message "Error adding dependency: $_" -LogLevel 2
+            Write-Host "Warning: Failed to add dependency - $_" -ForegroundColor Yellow
+            return $false
+        }
+    }
+}
+
+####################################################
+
+function Set-IntuneAppSupersedence {
+    <#
+.SYNOPSIS
+Adds a supersedence relationship between two Intune applications
+.DESCRIPTION
+This function creates a supersedence relationship where the current app supersedes another app.
+The supersedence type can be 'update' (upgrade in place) or 'replace' (uninstall old, install new).
+.PARAMETER ApplicationId
+The ID of the application that supersedes (the newer app)
+.PARAMETER SupersededAppId
+The ID of the application being superseded (the older app)
+.PARAMETER SupersedenceType
+The type of supersedence: 'update' or 'replace'. Default is 'update'.
+.EXAMPLE
+Set-IntuneAppSupersedence -ApplicationId "12345" -SupersededAppId "67890" -SupersedenceType "update"
+.NOTES
+NAME: Set-IntuneAppSupersedence
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SupersededAppId,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('update', 'replace')]
+        [string]$SupersedenceType = 'update'
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        Write-Log -Message "Adding supersedence of app '$SupersededAppId' for application ID: $ApplicationId (Type: $SupersedenceType)"
+
+        $graphApiVersion = "beta"
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId/relationships"
+
+        try {
+            $supersedenceBody = @{
+                "@odata.type"     = "#microsoft.graph.mobileAppSupersedence"
+                "targetId"        = $SupersededAppId
+                "supersedenceType" = $SupersedenceType
+            }
+
+            if ($userName) {
+                $supersedenceJson = $supersedenceBody | ConvertTo-Json -Depth 10
+                $headers = CloneObject $authToken
+                $headers["content-length"] = $supersedenceJson.Length
+                $headers["content-type"] = "application/json"
+                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $supersedenceJson
+            }
+            else {
+                $null = Invoke-MgGraphRequest -Uri $uri -Method Post -Body $supersedenceBody
+            }
+
+            Write-Log -Message "Supersedence added successfully"
+            Write-Host "Supersedence of app '$SupersededAppId' added successfully" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            if ($_.Exception.Message -match "already exists") {
+                Write-Log -Message "Supersedence of app '$SupersededAppId' already exists"
+                Write-Host "Supersedence already exists" -ForegroundColor Green
+                return $true
+            }
+            Write-Log -Message "Error adding supersedence: $_" -LogLevel 2
+            Write-Host "Warning: Failed to add supersedence - $_" -ForegroundColor Yellow
+            return $false
+        }
+    }
+}
+
+####################################################
+
+function Get-IntuneAppByDisplayName {
+    <#
+.SYNOPSIS
+Gets an Intune application by its display name
+.DESCRIPTION
+This function retrieves an Intune Win32 app by display name, returning the app ID and details.
+Used for resolving dependency and supersedence references by name rather than ID.
+.PARAMETER DisplayName
+The display name of the application to find
+.EXAMPLE
+$app = Get-IntuneAppByDisplayName -DisplayName "Microsoft Edge Stable"
+.NOTES
+NAME: Get-IntuneAppByDisplayName
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        Write-Log -Message "Looking up application by display name: '$DisplayName'"
+
+        $graphApiVersion = "beta"
+        $encodedDisplayName = [System.Web.HttpUtility]::UrlEncode($DisplayName)
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps?`$filter=displayName eq '$DisplayName'"
+
+        try {
+            if ($userName) {
+                $response = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
+            }
+            else {
+                $response = Invoke-MgGraphRequest -Uri $uri -Method Get
+            }
+
+            if ($response.value -and $response.value.Count -gt 0) {
+                $app = $response.value[0]
+                Write-Log -Message "Found application: $($app.displayName) (ID: $($app.id))"
+                return $app
+            }
+            else {
+                Write-Log -Message "Application not found: '$DisplayName'" -LogLevel 2
+                return $null
+            }
+        }
+        catch {
+            Write-Log -Message "Error looking up application: $_" -LogLevel 2
+            return $null
+        }
+    }
+}
+
+####################################################
+
+function New-CustomReturnCode {
+    <#
+.SYNOPSIS
+Creates a custom return code object for Win32 app
+.DESCRIPTION
+This function creates a return code object with the specified return code and type.
+.PARAMETER ReturnCode
+The integer return code value
+.PARAMETER Type
+The return code type: failed, success, softReboot, hardReboot, retry
+.EXAMPLE
+$code = New-CustomReturnCode -ReturnCode 3010 -Type "softReboot"
+.NOTES
+NAME: New-CustomReturnCode
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ReturnCode,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('failed', 'success', 'softReboot', 'hardReboot', 'retry')]
+        [string]$Type
+    )
+
+    return @{
+        "returnCode" = $ReturnCode
+        "type"       = $Type
+    }
+}
+
+####################################################
+
+function New-RequirementRule {
+    <#
+.SYNOPSIS
+Creates a requirement rule for Win32 app additional requirements
+.DESCRIPTION
+This function creates requirement rule objects for file, registry, or PowerShell script requirements.
+These are additional requirements beyond the default OS and architecture requirements.
+.PARAMETER File
+Switch to create a file-based requirement rule
+.PARAMETER Registry
+Switch to create a registry-based requirement rule
+.PARAMETER Script
+Switch to create a PowerShell script-based requirement rule
+.PARAMETER Path
+For File rules: The file path to check
+.PARAMETER FileOrFolderName
+For File rules: The file or folder name to detect
+.PARAMETER DetectionType
+For File and Registry rules: The detection type
+.PARAMETER Operator
+The comparison operator: notConfigured, equal, notEqual, greaterThan, greaterThanOrEqual, lessThan, lessThanOrEqual
+.PARAMETER DetectionValue
+The value to compare against
+.PARAMETER Check32BitOn64System
+Whether to check the 32-bit path on 64-bit systems
+.PARAMETER KeyPath
+For Registry rules: The registry key path
+.PARAMETER ValueName
+For Registry rules: The registry value name
+.PARAMETER ScriptFile
+For Script rules: The path to the PowerShell script file
+.PARAMETER RunAsAccount
+For Script rules: The execution context - system or user
+.PARAMETER RunAs32Bit
+For Script rules: Whether to run as 32-bit
+.PARAMETER EnforceSignatureCheck
+For Script rules: Whether to enforce signature check
+.EXAMPLE
+$rule = New-RequirementRule -File -Path "C:\Program Files\MyApp" -FileOrFolderName "app.exe" -DetectionType "exists"
+.NOTES
+NAME: New-RequirementRule
+#>
+
+    [cmdletbinding()]
+    param(
+        [parameter(Mandatory = $true, ParameterSetName = "File")]
+        [Switch]$File,
+
+        [parameter(Mandatory = $true, ParameterSetName = "Registry")]
+        [Switch]$Registry,
+
+        [parameter(Mandatory = $true, ParameterSetName = "Script")]
+        [Switch]$Script,
+
+        # File parameters
+        [parameter(Mandatory = $true, ParameterSetName = "File")]
+        [string]$Path,
+
+        [parameter(Mandatory = $true, ParameterSetName = "File")]
+        [string]$FileOrFolderName,
+
+        [parameter(ParameterSetName = "File")]
+        [parameter(ParameterSetName = "Registry")]
+        [ValidateSet('notConfigured', 'equal', 'notEqual', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual')]
+        [string]$Operator = 'notConfigured',
+
+        [parameter(ParameterSetName = "File")]
+        [parameter(ParameterSetName = "Registry")]
+        [string]$DetectionValue,
+
+        [parameter(ParameterSetName = "File")]
+        [parameter(ParameterSetName = "Registry")]
+        [bool]$Check32BitOn64System = $false,
+
+        [parameter(ParameterSetName = "File")]
+        [ValidateSet('exists', 'doesNotExist', 'string', 'dateModified', 'dateCreated', 'version', 'sizeInMB', 'sizeInBytes')]
+        [string]$FileDetectionType = 'exists',
+
+        # Registry parameters
+        [parameter(Mandatory = $true, ParameterSetName = "Registry")]
+        [string]$KeyPath,
+
+        [parameter(ParameterSetName = "Registry")]
+        [string]$ValueName,
+
+        [parameter(ParameterSetName = "Registry")]
+        [ValidateSet('exists', 'doesNotExist', 'string', 'integer', 'version')]
+        [string]$RegistryDetectionType = 'exists',
+
+        # Script parameters
+        [parameter(Mandatory = $true, ParameterSetName = "Script")]
+        [string]$ScriptFile,
+
+        [parameter(ParameterSetName = "Script")]
+        [ValidateSet('system', 'user')]
+        [string]$RunAsAccount = 'system',
+
+        [parameter(ParameterSetName = "Script")]
+        [bool]$RunAs32Bit = $false,
+
+        [parameter(ParameterSetName = "Script")]
+        [bool]$EnforceSignatureCheck = $false,
+
+        [parameter(ParameterSetName = "Script")]
+        [string]$DisplayName,
+
+        [parameter(ParameterSetName = "Script")]
+        [string]$ScriptOutputDataType = 'notConfigured'
+    )
+
+    if ($File) {
+        $rule = @{
+            "@odata.type"        = "#microsoft.graph.win32LobAppFileSystemRequirement"
+            "path"               = $Path
+            "fileOrFolderName"   = $FileOrFolderName
+            "check32BitOn64System" = $Check32BitOn64System
+            "detectionType"      = $FileDetectionType
+        }
+        if ($Operator -ne 'notConfigured') {
+            $rule["operator"] = $Operator
+            $rule["detectionValue"] = $DetectionValue
+        }
+        return $rule
+    }
+    elseif ($Registry) {
+        $rule = @{
+            "@odata.type"        = "#microsoft.graph.win32LobAppRegistryRequirement"
+            "keyPath"            = $KeyPath
+            "valueName"          = $ValueName
+            "check32BitOn64System" = $Check32BitOn64System
+            "detectionType"      = $RegistryDetectionType
+        }
+        if ($Operator -ne 'notConfigured') {
+            $rule["operator"] = $Operator
+            $rule["detectionValue"] = $DetectionValue
+        }
+        return $rule
+    }
+    elseif ($Script) {
+        # Read and encode the script content
+        if (Test-Path $ScriptFile) {
+            $scriptContent = Get-Content -Path $ScriptFile -Raw -Encoding UTF8
+            $encodedScript = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($scriptContent))
+        }
+        else {
+            Write-Log -Message "Warning: Requirement script file not found: $ScriptFile" -LogLevel 2
+            return $null
+        }
+
+        $rule = @{
+            "@odata.type"         = "#microsoft.graph.win32LobAppPowerShellScriptRequirement"
+            "scriptContent"       = $encodedScript
+            "displayName"         = if ($DisplayName) { $DisplayName } else { [System.IO.Path]::GetFileNameWithoutExtension($ScriptFile) }
+            "enforceSignatureCheck" = $EnforceSignatureCheck
+            "runAs32Bit"          = $RunAs32Bit
+            "runAsAccount"        = $RunAsAccount
+            "detectionValue"      = $DetectionValue
+            "operator"            = $Operator
+        }
+        return $rule
+    }
+}
+
+####################################################
+
+function Get-MinimumOperatingSystemObject {
+    <#
+.SYNOPSIS
+Creates a minimum operating system object for Win32 app requirements
+.DESCRIPTION
+This function creates a windowsMinimumOperatingSystem object based on the specified Windows version.
+.PARAMETER MinimumOS
+The minimum Windows version: v10_1607, v10_1703, v10_1709, v10_1803, v10_1809, v10_1903, v10_1909, v10_2004, v10_2H20, v10_21H1
+.EXAMPLE
+$minOS = Get-MinimumOperatingSystemObject -MinimumOS "v10_1903"
+.NOTES
+NAME: Get-MinimumOperatingSystemObject
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('v10_1507', 'v10_1511', 'v10_1607', 'v10_1703', 'v10_1709', 'v10_1803', 'v10_1809', 'v10_1903', 'v10_1909', 'v10_2004', 'v10_2H20', 'v10_21H1', 'v10_21H2', 'v10_22H2', 'v11_21H2', 'v11_22H2', 'v11_23H2', 'v11_24H2')]
+        [string]$MinimumOS
+    )
+
+    # Create object with the selected version set to true
+    $minOSObject = @{
+        "@odata.type" = "#microsoft.graph.windowsMinimumOperatingSystem"
+    }
+
+    # Set the specified version to true
+    $minOSObject[$MinimumOS] = $true
+
+    return $minOSObject
+}
+
+####################################################
+
+function Get-InstallerVersion {
+    <#
+.SYNOPSIS
+Detects the version of an EXE or MSI file
+.DESCRIPTION
+This function extracts version information from EXE files (using FileVersionInfo) or MSI files (using Windows Installer COM object).
+.PARAMETER FilePath
+The full path to the EXE or MSI file
+.PARAMETER FileType
+The type of file: EXE or MSI
+.EXAMPLE
+$version = Get-InstallerVersion -FilePath "C:\Packages\Setup.exe" -FileType "EXE"
+.NOTES
+NAME: Get-InstallerVersion
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('EXE', 'MSI')]
+        [string]$FileType
+    )
+
+    if (-not (Test-Path $FilePath)) {
+        Write-Log -Message "File not found for version detection: $FilePath" -LogLevel 2
+        return $null
+    }
+
+    try {
+        if ($FileType -eq "EXE") {
+            # Get version from EXE using FileVersionInfo
+            $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($FilePath)
+
+            # Try FileVersion first, then ProductVersion
+            $version = $versionInfo.FileVersion
+            if ([string]::IsNullOrWhiteSpace($version)) {
+                $version = $versionInfo.ProductVersion
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($version)) {
+                # Clean up version string - remove any extra whitespace or text after version number
+                $version = $version.Trim()
+                # Extract just the version number if there's additional text
+                if ($version -match '^[\d\.]+') {
+                    $version = $Matches[0]
+                }
+                Write-Log -Message "Detected EXE version: $version (from $FilePath)"
+                return $version
+            }
+            else {
+                Write-Log -Message "No version information found in EXE: $FilePath" -LogLevel 2
+                return $null
+            }
+        }
+        elseif ($FileType -eq "MSI") {
+            # Get version from MSI using Windows Installer COM object
+            $windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+            $database = $windowsInstaller.OpenDatabase($FilePath, 0) # 0 = msiOpenDatabaseModeReadOnly
+
+            $view = $database.OpenView("SELECT Value FROM Property WHERE Property = 'ProductVersion'")
+            $view.Execute()
+            $record = $view.Fetch()
+
+            if ($null -ne $record) {
+                $version = $record.StringData(1)
+                Write-Log -Message "Detected MSI version: $version (from $FilePath)"
+
+                # Clean up COM objects
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($record) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($database) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($windowsInstaller) | Out-Null
+
+                return $version
+            }
+            else {
+                Write-Log -Message "No ProductVersion found in MSI: $FilePath" -LogLevel 2
+
+                # Clean up COM objects
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($database) | Out-Null
+                [System.Runtime.InteropServices.Marshal]::ReleaseComObject($windowsInstaller) | Out-Null
+
+                return $null
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "Error detecting version from $FilePath : $_" -LogLevel 2
+        return $null
+    }
+}
+
+####################################################
+
+function Update-ConfigFileVersion {
+    <#
+.SYNOPSIS
+Updates the displayVersion in a Config.xml or Config.json file
+.DESCRIPTION
+This function updates the displayVersion field in the configuration file with a new version value.
+.PARAMETER ConfigFilePath
+The full path to the Config.xml or Config.json file
+.PARAMETER NewVersion
+The new version string to write
+.EXAMPLE
+Update-ConfigFileVersion -ConfigFilePath "C:\Packages\MyApp\Config.xml" -NewVersion "2.0.0"
+.NOTES
+NAME: Update-ConfigFileVersion
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigFilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NewVersion
+    )
+
+    if (-not (Test-Path $ConfigFilePath)) {
+        Write-Log -Message "Config file not found for version update: $ConfigFilePath" -LogLevel 3
+        return $false
+    }
+
+    try {
+        $extension = [System.IO.Path]::GetExtension($ConfigFilePath).ToLower()
+
+        if ($extension -eq ".xml") {
+            # Update XML config
+            [xml]$xmlContent = Get-Content $ConfigFilePath -Encoding UTF8
+            $intuneSettings = $xmlContent.SelectSingleNode("//IntuneWin_Settings")
+
+            if ($null -ne $intuneSettings) {
+                $displayVersionNode = $intuneSettings.SelectSingleNode("displayVersion")
+                if ($null -ne $displayVersionNode) {
+                    $displayVersionNode.InnerText = $NewVersion
+                }
+                else {
+                    # Create the node if it doesn't exist
+                    $newNode = $xmlContent.CreateElement("displayVersion")
+                    $newNode.InnerText = $NewVersion
+                    $intuneSettings.AppendChild($newNode) | Out-Null
+                }
+                $xmlContent.Save($ConfigFilePath)
+                Write-Log -Message "Updated displayVersion in XML config to: $NewVersion"
+                return $true
+            }
+            else {
+                Write-Log -Message "IntuneWin_Settings node not found in XML config" -LogLevel 3
+                return $false
+            }
+        }
+        elseif ($extension -eq ".json") {
+            # Update JSON config
+            $jsonContent = Get-Content $ConfigFilePath -Raw | ConvertFrom-Json
+            $jsonContent.displayVersion = $NewVersion
+            $jsonContent | ConvertTo-Json -Depth 10 | Set-Content $ConfigFilePath -Encoding UTF8
+            Write-Log -Message "Updated displayVersion in JSON config to: $NewVersion"
+            return $true
+        }
+        else {
+            Write-Log -Message "Unsupported config file type: $extension" -LogLevel 3
+            return $false
+        }
+    }
+    catch {
+        Write-Log -Message "Error updating config file version: $_" -LogLevel 3
+        return $false
+    }
+}
+
+####################################################
+
+function Invoke-VersionCheck {
+    <#
+.SYNOPSIS
+Checks installer version against config version and prompts user if different
+.DESCRIPTION
+Detects the version from an EXE or MSI file and compares it to the displayVersion in the config.
+If different, prompts the user to use the detected version. Times out after 30 seconds.
+.PARAMETER SourcePath
+The path to the source folder containing the installer
+.PARAMETER PackageName
+The name of the package (without extension)
+.PARAMETER AppType
+The application type: EXE or MSI
+.PARAMETER ConfigFilePath
+The path to the config file (XML or JSON)
+.PARAMETER ConfigVersion
+The current displayVersion from the config
+.EXAMPLE
+Invoke-VersionCheck -SourcePath "C:\Packages\MyApp\Source" -PackageName "Setup" -AppType "EXE" -ConfigFilePath "C:\Packages\MyApp\Config.xml" -ConfigVersion "1.0"
+.NOTES
+NAME: Invoke-VersionCheck
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('EXE', 'MSI')]
+        [string]$AppType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigFilePath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ConfigVersion
+    )
+
+    # Determine file extension based on app type
+    $fileExtension = if ($AppType -eq "EXE") { ".exe" } else { ".msi" }
+    $installerPath = Join-Path $SourcePath "$PackageName$fileExtension"
+
+    # Check if installer file exists
+    if (-not (Test-Path $installerPath)) {
+        Write-Log -Message "Installer file not found for version detection: $installerPath"
+        return
+    }
+
+    # Detect version from installer
+    $detectedVersion = Get-InstallerVersion -FilePath $installerPath -FileType $AppType
+
+    if ([string]::IsNullOrWhiteSpace($detectedVersion)) {
+        Write-Log -Message "Could not detect version from installer file"
+        return
+    }
+
+    # Check if config version is empty or different from detected
+    $configVersionEmpty = [string]::IsNullOrWhiteSpace($ConfigVersion)
+    $versionsMatch = (-not $configVersionEmpty) -and ($ConfigVersion -eq $detectedVersion)
+
+    if ($versionsMatch) {
+        Write-Log -Message "Detected version ($detectedVersion) matches config displayVersion"
+        return
+    }
+
+    # Versions differ or config is empty
+    Write-Host
+    if ($configVersionEmpty) {
+        Write-Host "Version Detection" -ForegroundColor Cyan
+        Write-Host "=================" -ForegroundColor Cyan
+        Write-Host "Detected version from $AppType file: " -NoNewline
+        Write-Host "$detectedVersion" -ForegroundColor Green
+        Write-Host "Config displayVersion: " -NoNewline
+        Write-Host "(empty)" -ForegroundColor Yellow
+        Write-Host
+        Write-Host "The detected version will be used and saved to the config file." -ForegroundColor Cyan
+        Write-Host
+
+        # Auto-use detected version when config is empty
+        $script:displayVersion = $detectedVersion
+        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion $detectedVersion
+        if ($updateResult) {
+            Write-Host "Config file updated with version: $detectedVersion" -ForegroundColor Green
+        }
+        return
+    }
+
+    # Config has a version but it's different - prompt user
+    Write-Host
+    Write-Host "Version Mismatch Detected" -ForegroundColor Yellow
+    Write-Host "=========================" -ForegroundColor Yellow
+    Write-Host "Detected version from $AppType file: " -NoNewline
+    Write-Host "$detectedVersion" -ForegroundColor Green
+    Write-Host "Config displayVersion: " -NoNewline
+    Write-Host "$ConfigVersion" -ForegroundColor Cyan
+    Write-Host
+    Write-Host "Do you want to use the detected version ($detectedVersion) instead?" -ForegroundColor Yellow
+    Write-Host "Press 'Y' for Yes, 'N' for No, or wait 30 seconds to keep config version." -ForegroundColor Gray
+    Write-Host
+
+    # Wait for user input with timeout
+    $timeout = 30
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $useDetectedVersion = $false
+
+    while ($stopwatch.Elapsed.TotalSeconds -lt $timeout) {
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq 'Y') {
+                $useDetectedVersion = $true
+                Write-Host "Using detected version: $detectedVersion" -ForegroundColor Green
+                break
+            }
+            elseif ($key.Key -eq 'N') {
+                $useDetectedVersion = $false
+                Write-Host "Keeping config version: $ConfigVersion" -ForegroundColor Cyan
+                break
+            }
+        }
+
+        # Update countdown display
+        $remaining = [math]::Ceiling($timeout - $stopwatch.Elapsed.TotalSeconds)
+        Write-Host "`rTime remaining: $remaining seconds... " -NoNewline -ForegroundColor Gray
+        Start-Sleep -Milliseconds 500
+    }
+    $stopwatch.Stop()
+
+    Write-Host # New line after countdown
+
+    if ($stopwatch.Elapsed.TotalSeconds -ge $timeout) {
+        Write-Host "Timeout - keeping config version: $ConfigVersion" -ForegroundColor Cyan
+        $useDetectedVersion = $false
+    }
+
+    if ($useDetectedVersion) {
+        # Update the script variable and config file
+        $script:displayVersion = $detectedVersion
+        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion $detectedVersion
+        if ($updateResult) {
+            Write-Host "Config file updated with version: $detectedVersion" -ForegroundColor Green
+        }
+        else {
+            Write-Host "Warning: Could not update config file, but will use detected version for this run" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host
 }
 
 ####################################################
@@ -1033,7 +2051,70 @@ function GetWin32AppBody() {
         $msiUninstallCommandLine,
 
         [parameter(ParameterSetName = "Edge")]
-        [string] $channel
+        [string] $channel,
+
+        # New optional parameters for extended Win32 app settings
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [bool]$isFeatured = $false,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$informationUrl,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$privacyInformationUrl,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$developer,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$owner,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$notes,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [int]$maxRunTimeInMinutes = 60,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [ValidateSet('basedOnReturnCode', 'allow', 'suppress', 'force')]
+        [string]$deviceRestartBehavior = 'suppress',
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [int]$minimumFreeDiskSpaceInMB,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [int]$minimumMemoryInMB,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [int]$minimumNumberOfProcessors,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [int]$minimumCpuSpeedInMHz,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [ValidateSet('none', 'x86', 'x64', 'arm', 'arm64', 'x64,x86', 'x86,x64', 'x86,arm', 'x64,arm64')]
+        [string]$allowedArchitectures,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [string]$minimumSupportedOS,
+
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "MSI")]
+        [array]$requirementRules
 
     )
 
@@ -1042,7 +2123,7 @@ function GetWin32AppBody() {
         $body = @{ "@odata.type" = "#microsoft.graph.win32LobApp" };
         $body.applicableArchitectures = "x64,x86";
         $body.description = $description;
-        $body.developer = "";
+        $body.developer = if ($developer) { $developer } else { "" };
         $body.displayName = $displayName;
         $body.displayVersion = $displayVersion;
         $body.fileName = $filename;
@@ -1052,10 +2133,22 @@ function GetWin32AppBody() {
         else {
             $body.installCommandLine = "msiexec /i `"$SetupFileName`""
         }
-        $body.installExperience = @{"runAsAccount" = "$installExperience" };
-        $body.informationUrl = $null;
-        $body.isFeatured = $false;
-        $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
+        $body.installExperience = @{
+            "runAsAccount" = "$installExperience"
+            "maxRunTimeInMinutes" = $maxRunTimeInMinutes
+            "deviceRestartBehavior" = $deviceRestartBehavior
+        };
+        $body.informationUrl = if ($informationUrl) { $informationUrl } else { $null };
+        $body.isFeatured = $isFeatured;
+
+        # Handle minimum OS - use provided or default
+        if ($minimumSupportedOS) {
+            $body.minimumSupportedOperatingSystem = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+        }
+        else {
+            $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
+        }
+
         $body.msiInformation = @{
             "packageType"    = "$MsiPackageType";
             "productCode"    = "$MsiProductCode";
@@ -1065,9 +2158,9 @@ function GetWin32AppBody() {
             "requiresReboot" = "$MsiRequiresReboot";
             "upgradeCode"    = "$MsiUpgradeCode"
         };
-        $body.notes = "";
-        $body.owner = "";
-        $body.privacyInformationUrl = $null;
+        $body.notes = if ($notes) { $notes } else { "" };
+        $body.owner = if ($owner) { $owner } else { "" };
+        $body.privacyInformationUrl = if ($privacyInformationUrl) { $privacyInformationUrl } else { $null };
         $body.publisher = $publisher;
         $body.runAs32bit = $false;
         $body.setupFilePath = $SetupFileName;
@@ -1080,6 +2173,26 @@ function GetWin32AppBody() {
         $body.allowAvailableUninstall = $true
         $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
 
+        # Add optional system requirement properties if specified
+        if ($minimumFreeDiskSpaceInMB -and $minimumFreeDiskSpaceInMB -gt 0) {
+            $body.minimumFreeDiskSpaceInMB = $minimumFreeDiskSpaceInMB
+        }
+        if ($minimumMemoryInMB -and $minimumMemoryInMB -gt 0) {
+            $body.minimumMemoryInMB = $minimumMemoryInMB
+        }
+        if ($minimumNumberOfProcessors -and $minimumNumberOfProcessors -gt 0) {
+            $body.minimumNumberOfProcessors = $minimumNumberOfProcessors
+        }
+        if ($minimumCpuSpeedInMHz -and $minimumCpuSpeedInMHz -gt 0) {
+            $body.minimumCpuSpeedInMHz = $minimumCpuSpeedInMHz
+        }
+        if ($allowedArchitectures) {
+            $body.allowedArchitectures = $allowedArchitectures
+        }
+        if ($requirementRules -and $requirementRules.Count -gt 0) {
+            $body.requirementRules = $requirementRules
+        }
+
     }
 
     elseif ($EXE) {
@@ -1090,25 +2203,57 @@ function GetWin32AppBody() {
 
         $body = @{ "@odata.type" = "#microsoft.graph.win32LobApp" };
         $body.description = $description;
-        $body.developer = "";
+        $body.developer = if ($developer) { $developer } else { "" };
         $body.displayName = $displayName;
         $body.displayVersion = $displayVersion;
         $body.fileName = $filename;
         $body.installCommandLine = "$installCommandLine"
-        $body.installExperience = @{"runAsAccount" = "$installExperience"; "deviceRestartBehavior" = "suppress" };
-        $body.informationUrl = $null;
-        $body.isFeatured = $false;
-        $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
+        $body.installExperience = @{
+            "runAsAccount" = "$installExperience"
+            "maxRunTimeInMinutes" = $maxRunTimeInMinutes
+            "deviceRestartBehavior" = $deviceRestartBehavior
+        };
+        $body.informationUrl = if ($informationUrl) { $informationUrl } else { $null };
+        $body.isFeatured = $isFeatured;
+
+        # Handle minimum OS - use provided or default
+        if ($minimumSupportedOS) {
+            $body.minimumSupportedOperatingSystem = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+        }
+        else {
+            $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
+        }
+
         $body.msiInformation = $null;
-        $body.notes = "";
-        $body.owner = "";
-        $body.privacyInformationUrl = $null;
+        $body.notes = if ($notes) { $notes } else { "" };
+        $body.owner = if ($owner) { $owner } else { "" };
+        $body.privacyInformationUrl = if ($privacyInformationUrl) { $privacyInformationUrl } else { $null };
         $body.publisher = $publisher;
         $body.runAs32bit = $false;
         $body.setupFilePath = $SetupFileName;
         $body.uninstallCommandLine = "$uninstallCommandLine";
         $body.allowAvailableUninstall = $true
         $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+
+        # Add optional system requirement properties if specified
+        if ($minimumFreeDiskSpaceInMB -and $minimumFreeDiskSpaceInMB -gt 0) {
+            $body.minimumFreeDiskSpaceInMB = $minimumFreeDiskSpaceInMB
+        }
+        if ($minimumMemoryInMB -and $minimumMemoryInMB -gt 0) {
+            $body.minimumMemoryInMB = $minimumMemoryInMB
+        }
+        if ($minimumNumberOfProcessors -and $minimumNumberOfProcessors -gt 0) {
+            $body.minimumNumberOfProcessors = $minimumNumberOfProcessors
+        }
+        if ($minimumCpuSpeedInMHz -and $minimumCpuSpeedInMHz -gt 0) {
+            $body.minimumCpuSpeedInMHz = $minimumCpuSpeedInMHz
+        }
+        if ($allowedArchitectures) {
+            $body.allowedArchitectures = $allowedArchitectures
+        }
+        if ($requirementRules -and $requirementRules.Count -gt 0) {
+            $body.requirementRules = $requirementRules
+        }
 
     }
     elseif ($Edge) {
@@ -1560,7 +2705,87 @@ NAME: Upload-Win32LOB
         [string] $msiUninstallCommandLine,
 
         [parameter(ParameterSetName = "Edge")]
-        [string] $channel
+        [string] $channel,
+
+        # Extended Settings - App Information
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [bool] $isFeatured = $false,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $informationUrl = "",
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $privacyInformationUrl = "",
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $developer = "",
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $owner = "",
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $notes = "",
+
+        # Extended Settings - Install Experience
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [int] $maxRunTimeInMinutes = 60,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [ValidateSet('basedOnReturnCode', 'allow', 'suppress', 'force')]
+        [string] $deviceRestartBehavior = "suppress",
+
+        # Extended Settings - System Requirements
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [int] $minimumFreeDiskSpaceInMB = 0,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [int] $minimumMemoryInMB = 0,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [int] $minimumNumberOfProcessors = 0,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [int] $minimumCpuSpeedInMHz = 0,
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [string] $allowedArchitectures = "",
+
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [hashtable] $minimumSupportedOS = $null,
+
+        # Extended Settings - Requirement Rules
+        [parameter(ParameterSetName = "MSI")]
+        [parameter(ParameterSetName = "EXE")]
+        [parameter(ParameterSetName = "PS1")]
+        [array] $requirementRules = @()
     )
 
     try	{
@@ -1631,7 +2856,22 @@ NAME: Upload-Win32LOB
                     -MsiUpgradeCode $MsiUpgradeCode `
                     -logo $logo `
                     -msiInstallCommandLine $msiInstallCommandLine `
-                    -msiUninstallCommandLine $msiUninstallCommandLine
+                    -msiUninstallCommandLine $msiUninstallCommandLine `
+                    -isFeatured $isFeatured `
+                    -informationUrl $informationUrl `
+                    -privacyInformationUrl $privacyInformationUrl `
+                    -developer $developer `
+                    -owner $owner `
+                    -notes $notes `
+                    -maxRunTimeInMinutes $maxRunTimeInMinutes `
+                    -deviceRestartBehavior $deviceRestartBehavior `
+                    -minimumFreeDiskSpaceInMB $minimumFreeDiskSpaceInMB `
+                    -minimumMemoryInMB $minimumMemoryInMB `
+                    -minimumNumberOfProcessors $minimumNumberOfProcessors `
+                    -minimumCpuSpeedInMHz $minimumCpuSpeedInMHz `
+                    -allowedArchitectures $allowedArchitectures `
+                    -minimumSupportedOS $minimumSupportedOS `
+                    -requirementRules $requirementRules
             }
             else {
                 $mobileAppBody = GetWin32AppBody `
@@ -1651,7 +2891,22 @@ NAME: Upload-Win32LOB
                     -MsiPublisher $MsiPublisher `
                     -MsiRequiresReboot $MsiRequiresReboot `
                     -MsiUpgradeCode $MsiUpgradeCode `
-                    -logo $logo
+                    -logo $logo `
+                    -isFeatured $isFeatured `
+                    -informationUrl $informationUrl `
+                    -privacyInformationUrl $privacyInformationUrl `
+                    -developer $developer `
+                    -owner $owner `
+                    -notes $notes `
+                    -maxRunTimeInMinutes $maxRunTimeInMinutes `
+                    -deviceRestartBehavior $deviceRestartBehavior `
+                    -minimumFreeDiskSpaceInMB $minimumFreeDiskSpaceInMB `
+                    -minimumMemoryInMB $minimumMemoryInMB `
+                    -minimumNumberOfProcessors $minimumNumberOfProcessors `
+                    -minimumCpuSpeedInMHz $minimumCpuSpeedInMHz `
+                    -allowedArchitectures $allowedArchitectures `
+                    -minimumSupportedOS $minimumSupportedOS `
+                    -requirementRules $requirementRules
             }
         }
 
@@ -1659,13 +2914,27 @@ NAME: Upload-Win32LOB
             $mobileAppBody = GetWin32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
                 -description $description -category $Category -filename $FileName -SetupFileName "$SetupFileName" `
                 -installExperience $installExperience -logo $logo `
-                -installCommandLine $installCommandLine -uninstallCommandLine $uninstallCommandLine
+                -installCommandLine $installCommandLine -uninstallCommandLine $uninstallCommandLine `
+                -isFeatured $isFeatured -informationUrl $informationUrl -privacyInformationUrl $privacyInformationUrl `
+                -developer $developer -owner $owner -notes $notes `
+                -maxRunTimeInMinutes $maxRunTimeInMinutes -deviceRestartBehavior $deviceRestartBehavior `
+                -minimumFreeDiskSpaceInMB $minimumFreeDiskSpaceInMB -minimumMemoryInMB $minimumMemoryInMB `
+                -minimumNumberOfProcessors $minimumNumberOfProcessors -minimumCpuSpeedInMHz $minimumCpuSpeedInMHz `
+                -allowedArchitectures $allowedArchitectures -minimumSupportedOS $minimumSupportedOS `
+                -requirementRules $requirementRules
         }
         elseif ($PS1) {
             $mobileAppBody = GetWin32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
                 -description $description -category $Category -filename $FileName -SetupFileName "$SetupFileName" `
                 -installExperience $installExperience -logo $logo `
-                -installCommandLine $ps1InstallCommandLine -uninstallCommandLine $ps1UninstallCommandLine
+                -installCommandLine $ps1InstallCommandLine -uninstallCommandLine $ps1UninstallCommandLine `
+                -isFeatured $isFeatured -informationUrl $informationUrl -privacyInformationUrl $privacyInformationUrl `
+                -developer $developer -owner $owner -notes $notes `
+                -maxRunTimeInMinutes $maxRunTimeInMinutes -deviceRestartBehavior $deviceRestartBehavior `
+                -minimumFreeDiskSpaceInMB $minimumFreeDiskSpaceInMB -minimumMemoryInMB $minimumMemoryInMB `
+                -minimumNumberOfProcessors $minimumNumberOfProcessors -minimumCpuSpeedInMHz $minimumCpuSpeedInMHz `
+                -allowedArchitectures $allowedArchitectures -minimumSupportedOS $minimumSupportedOS `
+                -requirementRules $requirementRules
         }
         elseif ($Edge) {
             Write-Host
@@ -2015,7 +3284,9 @@ NAME: Get-XMLConfig
             if ( $AppType -eq "Edge" ) {
                 Write-Log -Message "Reading commands for AppType: $AppType"
                 $script:displayName = [string]$XMLEntity.displayName
-                $script:Description = [string]$XMLEntity.Description + "`nObject creation: $dayDateTime"
+                # Store base description - user stamp will be added after authentication
+                $script:BaseDescription = [string]$XMLEntity.Description
+                $script:Description = $script:BaseDescription
                 $script:Publisher = [string]$XMLEntity.Publisher
                 $script:Channel = [string]$XMLEntity.Channel
                 # Support both EntraGroupName (preferred) and AADGroupName (legacy)
@@ -2058,7 +3329,9 @@ NAME: Get-XMLConfig
             $script:PackageName = [string]$XMLEntity.PackageName
             $script:displayName = [string]$XMLEntity.displayName
             $script:displayVersion = [string]$XMLEntity.displayVersion
-            $script:Description = [string]$XMLEntity.Description + "`nObject creation: $dayDateTime"
+            # Store base description - user stamp will be added after authentication
+            $script:BaseDescription = [string]$XMLEntity.Description
+            $script:Description = $script:BaseDescription
             $script:Publisher = [string]$XMLEntity.Publisher
             $script:Category = [string]$XMLEntity.Category
             $script:LogoFile = [string]$XMLEntity.LogoFile
@@ -2070,6 +3343,43 @@ NAME: Get-XMLConfig
             if (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag)) {
                 Write-Log -Message "Found ScopeTag in Config.xml: $($script:ConfigScopeTag)"
             }
+
+            # Read optional extended settings from Config.xml
+            # App Information
+            $script:IsFeatured = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.IsFeatured)) { [bool]::Parse([string]$XMLEntity.IsFeatured) } else { $false }
+            $script:InformationUrl = [string]$XMLEntity.InformationUrl
+            $script:PrivacyInformationUrl = [string]$XMLEntity.PrivacyInformationUrl
+            $script:Developer = [string]$XMLEntity.Developer
+            $script:Owner = [string]$XMLEntity.Owner
+            $script:Notes = [string]$XMLEntity.Notes
+
+            # Install Experience settings
+            $script:MaxRunTimeInMinutes = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.MaxRunTimeInMinutes)) { [int]$XMLEntity.MaxRunTimeInMinutes } else { 60 }
+            $script:DeviceRestartBehavior = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DeviceRestartBehavior)) { [string]$XMLEntity.DeviceRestartBehavior } else { "suppress" }
+
+            # System Requirements
+            $script:MinimumFreeDiskSpaceInMB = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.MinimumFreeDiskSpaceInMB)) { [int]$XMLEntity.MinimumFreeDiskSpaceInMB } else { 0 }
+            $script:MinimumMemoryInMB = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.MinimumMemoryInMB)) { [int]$XMLEntity.MinimumMemoryInMB } else { 0 }
+            $script:MinimumNumberOfProcessors = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.MinimumNumberOfProcessors)) { [int]$XMLEntity.MinimumNumberOfProcessors } else { 0 }
+            $script:MinimumCpuSpeedInMHz = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.MinimumCpuSpeedInMHz)) { [int]$XMLEntity.MinimumCpuSpeedInMHz } else { 0 }
+            $script:AllowedArchitectures = [string]$XMLEntity.AllowedArchitectures
+            $script:MinimumSupportedOS = [string]$XMLEntity.MinimumSupportedOS
+
+            # Custom Return Codes (comma-separated list of code:type pairs, e.g., "3010:softReboot,1641:hardReboot")
+            $script:CustomReturnCodes = [string]$XMLEntity.CustomReturnCodes
+
+            # Dependencies (comma-separated list of app display names)
+            $script:Dependencies = [string]$XMLEntity.Dependencies
+            $script:DependencyType = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DependencyType)) { [string]$XMLEntity.DependencyType } else { "autoInstall" }
+
+            # Supersedence (comma-separated list of app display names)
+            $script:Supersedence = [string]$XMLEntity.Supersedence
+            $script:SupersedenceType = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.SupersedenceType)) { [string]$XMLEntity.SupersedenceType } else { "update" }
+
+            # PowerShell Script Detection settings
+            $script:DetectionScriptFile = [string]$XMLEntity.DetectionScriptFile
+            $script:DetectionScriptEnforceSignatureCheck = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptEnforceSignatureCheck)) { [bool]::Parse([string]$XMLEntity.DetectionScriptEnforceSignatureCheck) } else { $false }
+            $script:DetectionScriptRunAs32Bit = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptRunAs32Bit)) { [bool]::Parse([string]$XMLEntity.DetectionScriptRunAs32Bit) } else { $false }
 
             #Strip .ps1 extension, if entered into XML file...
             $lastFourChars = $PackageName.Substring($PackageName.Length - 4)
@@ -2159,7 +3469,9 @@ NAME: Get-JSONConfig
         if ( $AppType -eq "Edge" ) {
             Write-Log -Message "Reading settings for AppType: $AppType"
             $script:displayName = if ($JSON_Content.displayName) { [string]$JSON_Content.displayName } else { [string]$JSON_Content.DisplayName }
-            $script:Description = (if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }) + "`nObject creation: $dayDateTime"
+            # Store base description - user stamp will be added after authentication
+            $script:BaseDescription = if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }
+            $script:Description = $script:BaseDescription
             $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
             $script:Channel = if ($JSON_Content.channel) { [string]$JSON_Content.channel } else { [string]$JSON_Content.Channel }
             # Support both entraGroupName (preferred) and aadGroupName (legacy)
@@ -2207,7 +3519,9 @@ NAME: Get-JSONConfig
         $script:PackageName = if ($JSON_Content.packageName) { [string]$JSON_Content.packageName } else { [string]$JSON_Content.PackageName }
         $script:displayName = if ($JSON_Content.displayName) { [string]$JSON_Content.displayName } else { [string]$JSON_Content.DisplayName }
         $script:displayVersion = if ($JSON_Content.displayVersion) { [string]$JSON_Content.displayVersion } else { [string]$JSON_Content.DisplayVersion }
-        $script:Description = (if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }) + "`nObject creation: $dayDateTime"
+        # Store base description - user stamp will be added after authentication
+        $script:BaseDescription = if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }
+        $script:Description = $script:BaseDescription
         $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
         $script:Category = if ($JSON_Content.category) { [string]$JSON_Content.category } else { [string]$JSON_Content.Category }
         $script:LogoFile = if ($JSON_Content.logoFile) { [string]$JSON_Content.logoFile } else { [string]$JSON_Content.LogoFile }
@@ -2231,6 +3545,46 @@ NAME: Get-JSONConfig
         $script:EspApp = if ($null -ne $JSON_Content.espApp) { [bool]$JSON_Content.espApp } else { $false }
         if ($script:CoreApp) { Write-Log -Message "CoreApp: True" }
         if ($script:EspApp) { Write-Log -Message "EspApp: True" }
+
+        # Read optional extended settings from Config.json
+        # App Information
+        $script:IsFeatured = if ($null -ne $JSON_Content.isFeatured) { [bool]$JSON_Content.isFeatured } else { $false }
+        $script:InformationUrl = if ($JSON_Content.informationUrl) { [string]$JSON_Content.informationUrl } else { "" }
+        $script:PrivacyInformationUrl = if ($JSON_Content.privacyInformationUrl) { [string]$JSON_Content.privacyInformationUrl } else { "" }
+        $script:Developer = if ($JSON_Content.developer) { [string]$JSON_Content.developer } else { "" }
+        $script:Owner = if ($JSON_Content.owner) { [string]$JSON_Content.owner } else { "" }
+        $script:Notes = if ($JSON_Content.notes) { [string]$JSON_Content.notes } else { "" }
+
+        # Install Experience settings
+        $script:MaxRunTimeInMinutes = if ($null -ne $JSON_Content.maxRunTimeInMinutes) { [int]$JSON_Content.maxRunTimeInMinutes } else { 60 }
+        $script:DeviceRestartBehavior = if ($JSON_Content.deviceRestartBehavior) { [string]$JSON_Content.deviceRestartBehavior } else { "suppress" }
+
+        # System Requirements
+        $script:MinimumFreeDiskSpaceInMB = if ($null -ne $JSON_Content.minimumFreeDiskSpaceInMB) { [int]$JSON_Content.minimumFreeDiskSpaceInMB } else { 0 }
+        $script:MinimumMemoryInMB = if ($null -ne $JSON_Content.minimumMemoryInMB) { [int]$JSON_Content.minimumMemoryInMB } else { 0 }
+        $script:MinimumNumberOfProcessors = if ($null -ne $JSON_Content.minimumNumberOfProcessors) { [int]$JSON_Content.minimumNumberOfProcessors } else { 0 }
+        $script:MinimumCpuSpeedInMHz = if ($null -ne $JSON_Content.minimumCpuSpeedInMHz) { [int]$JSON_Content.minimumCpuSpeedInMHz } else { 0 }
+        $script:AllowedArchitectures = if ($JSON_Content.allowedArchitectures) { [string]$JSON_Content.allowedArchitectures } else { "" }
+        $script:MinimumSupportedOS = if ($JSON_Content.minimumSupportedOS) { [string]$JSON_Content.minimumSupportedOS } else { "" }
+
+        # Custom Return Codes (array of objects with returnCode and type)
+        $script:CustomReturnCodes = $JSON_Content.customReturnCodes
+
+        # Dependencies (array of app display names)
+        $script:Dependencies = $JSON_Content.dependencies
+        $script:DependencyType = if ($JSON_Content.dependencyType) { [string]$JSON_Content.dependencyType } else { "autoInstall" }
+
+        # Supersedence (array of app display names)
+        $script:Supersedence = $JSON_Content.supersedence
+        $script:SupersedenceType = if ($JSON_Content.supersedenceType) { [string]$JSON_Content.supersedenceType } else { "update" }
+
+        # PowerShell Script Detection settings
+        $script:DetectionScriptFile = if ($JSON_Content.detectionScriptFile) { [string]$JSON_Content.detectionScriptFile } else { "" }
+        $script:DetectionScriptEnforceSignatureCheck = if ($null -ne $JSON_Content.detectionScriptEnforceSignatureCheck) { [bool]$JSON_Content.detectionScriptEnforceSignatureCheck } else { $false }
+        $script:DetectionScriptRunAs32Bit = if ($null -ne $JSON_Content.detectionScriptRunAs32Bit) { [bool]$JSON_Content.detectionScriptRunAs32Bit } else { $false }
+
+        # Additional Requirement Rules (array of requirement rule objects)
+        $script:RequirementRules = $JSON_Content.requirementRules
 
         # Validate group name length
         if ($script:AADGroupName.Length -gt 50) {
@@ -2633,6 +3987,78 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
             }
 
+            # Process extended settings from config
+            Write-Log -Message "Processing extended settings from config..."
+
+            # Build minimum supported OS object from string
+            $minOSObject = $null
+            if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
+                Write-Log -Message "MinimumSupportedOS from config: $($script:MinimumSupportedOS)"
+                $minOSObject = Get-MinimumOperatingSystemObject -OSVersionString $script:MinimumSupportedOS
+            }
+
+            # Process custom return codes
+            $customReturnCodesList = @()
+            if ($script:CustomReturnCodes) {
+                if ($script:CustomReturnCodes -is [string]) {
+                    # Parse comma-separated code:type pairs from XML
+                    $pairs = $script:CustomReturnCodes -split ','
+                    foreach ($pair in $pairs) {
+                        $pair = $pair.Trim()
+                        if ($pair -match '^(-?\d+):(\w+)$') {
+                            $code = [int]$Matches[1]
+                            $type = $Matches[2].ToLower()
+                            $returnCodeObj = New-CustomReturnCode -returnCode $code -type $type
+                            if ($returnCodeObj) {
+                                $customReturnCodesList += $returnCodeObj
+                            }
+                        }
+                    }
+                }
+                elseif ($script:CustomReturnCodes -is [array]) {
+                    # Process array of objects from JSON
+                    foreach ($rc in $script:CustomReturnCodes) {
+                        if ($rc.returnCode -and $rc.type) {
+                            $returnCodeObj = New-CustomReturnCode -returnCode $rc.returnCode -type $rc.type
+                            if ($returnCodeObj) {
+                                $customReturnCodesList += $returnCodeObj
+                            }
+                        }
+                    }
+                }
+                if ($customReturnCodesList.Count -gt 0) {
+                    Write-Log -Message "Parsed $($customReturnCodesList.Count) custom return code(s)"
+                }
+            }
+
+            # Process additional requirement rules
+            $additionalRequirementRules = @()
+            if ($script:RequirementRules) {
+                foreach ($rule in $script:RequirementRules) {
+                    if ($rule.ruleType) {
+                        $reqRule = New-RequirementRule -ruleType $rule.ruleType `
+                            -path $rule.path `
+                            -fileOrFolderName $rule.fileOrFolderName `
+                            -check32BitOn64System $rule.check32BitOn64System `
+                            -detectionType $rule.detectionType `
+                            -operator $rule.operator `
+                            -detectionValue $rule.detectionValue `
+                            -keyPath $rule.keyPath `
+                            -valueName $rule.valueName `
+                            -scriptFile $rule.scriptFile `
+                            -runAs32Bit $rule.runAs32Bit `
+                            -runAsAccount $rule.runAsAccount `
+                            -enforceSignatureCheck $rule.enforceSignatureCheck
+                        if ($reqRule) {
+                            $additionalRequirementRules += $reqRule
+                        }
+                    }
+                }
+                if ($additionalRequirementRules.Count -gt 0) {
+                    Write-Log -Message "Parsed $($additionalRequirementRules.Count) additional requirement rule(s)"
+                }
+            }
+
             #If ($AppType -eq "Edge") {
             #    $displayName = 'Microsoft Edge Stable1'
             #}
@@ -2804,6 +4230,109 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Host "Warning: Failed to set allowAvailableUninstall - $_" -ForegroundColor Yellow
                     }
 
+                    # Re-apply settings from config file (description, displayVersion, publisher)
+                    Write-Log -Message "Re-applying settings from config file..."
+                    Write-Host "Updating application properties from config..." -ForegroundColor Cyan
+
+                    # Build minimum supported OS object from string for ReplaceExistingContent
+                    $minOSObjectForReplace = $null
+                    if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
+                        $minOSObjectForReplace = Get-MinimumOperatingSystemObject -OSVersionString $script:MinimumSupportedOS
+                    }
+
+                    $settingsBody = @{
+                        "@odata.type"    = "#microsoft.graph.win32LobApp"
+                        "description"    = $script:Description
+                        "displayVersion" = $script:displayVersion
+                        "publisher"      = $script:Publisher
+                    }
+
+                    # Add extended settings if they are provided in config
+                    if ($script:IsFeatured -eq $true) {
+                        $settingsBody["isFeatured"] = $true
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:InformationUrl)) {
+                        $settingsBody["informationUrl"] = $script:InformationUrl
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:PrivacyInformationUrl)) {
+                        $settingsBody["privacyInformationUrl"] = $script:PrivacyInformationUrl
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:Developer)) {
+                        $settingsBody["developer"] = $script:Developer
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:Owner)) {
+                        $settingsBody["owner"] = $script:Owner
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:Notes)) {
+                        $settingsBody["notes"] = $script:Notes
+                    }
+
+                    # Add install experience settings
+                    $installExp = @{
+                        "runAsAccount" = $script:InstallExperience
+                    }
+                    if ($script:MaxRunTimeInMinutes -gt 0) {
+                        $installExp["maxRunTimeInMinutes"] = $script:MaxRunTimeInMinutes
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:DeviceRestartBehavior)) {
+                        $installExp["deviceRestartBehavior"] = $script:DeviceRestartBehavior
+                    }
+                    $settingsBody["installExperience"] = $installExp
+
+                    # Add system requirement settings
+                    if ($script:MinimumFreeDiskSpaceInMB -gt 0) {
+                        $settingsBody["minimumFreeDiskSpaceInMB"] = $script:MinimumFreeDiskSpaceInMB
+                    }
+                    if ($script:MinimumMemoryInMB -gt 0) {
+                        $settingsBody["minimumMemoryInMB"] = $script:MinimumMemoryInMB
+                    }
+                    if ($script:MinimumNumberOfProcessors -gt 0) {
+                        $settingsBody["minimumNumberOfProcessors"] = $script:MinimumNumberOfProcessors
+                    }
+                    if ($script:MinimumCpuSpeedInMHz -gt 0) {
+                        $settingsBody["minimumCpuSpeedInMHz"] = $script:MinimumCpuSpeedInMHz
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($script:AllowedArchitectures)) {
+                        $settingsBody["applicableArchitectures"] = $script:AllowedArchitectures
+                    }
+                    if ($null -ne $minOSObjectForReplace) {
+                        $settingsBody["minimumSupportedOperatingSystem"] = $minOSObjectForReplace
+                    }
+
+                    try {
+                        if ($userName) {
+                            $settingsJson = $settingsBody | ConvertTo-Json -Depth 10
+                            $clonedHeaders = CloneObject $authToken
+                            $clonedHeaders["content-length"] = $settingsJson.Length
+                            $clonedHeaders["content-type"] = "application/json"
+                            $response = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $settingsJson -UseBasicParsing
+                        }
+                        else {
+                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsBody
+                        }
+                        Write-Log -Message "Settings updated: description, displayVersion, publisher and extended settings"
+                        Write-Host "Description: Updated" -ForegroundColor Green
+                        Write-Host "Display Version: $($script:displayVersion)" -ForegroundColor Green
+                        Write-Host "Publisher: $($script:Publisher)" -ForegroundColor Green
+                        if ($script:IsFeatured) { Write-Host "Featured App: $($script:IsFeatured)" -ForegroundColor Green }
+                        if ($script:InformationUrl) { Write-Host "Information URL: $($script:InformationUrl)" -ForegroundColor Green }
+                        if ($script:PrivacyInformationUrl) { Write-Host "Privacy URL: $($script:PrivacyInformationUrl)" -ForegroundColor Green }
+                        if ($script:Developer) { Write-Host "Developer: $($script:Developer)" -ForegroundColor Green }
+                        if ($script:Owner) { Write-Host "Owner: $($script:Owner)" -ForegroundColor Green }
+                        if ($script:MaxRunTimeInMinutes -gt 60) { Write-Host "Max Run Time: $($script:MaxRunTimeInMinutes) minutes" -ForegroundColor Green }
+                        if ($script:DeviceRestartBehavior -ne "suppress") { Write-Host "Device Restart Behavior: $($script:DeviceRestartBehavior)" -ForegroundColor Green }
+                    }
+                    catch {
+                        Write-Log -Message "Warning: Failed to update settings - $_" -LogLevel 2
+                        Write-Host "Warning: Failed to update settings - $_" -ForegroundColor Yellow
+                    }
+
+                    # Apply category from config file
+                    if (-not [string]::IsNullOrWhiteSpace($script:Category)) {
+                        Write-Log -Message "Applying category from config: $($script:Category)"
+                        $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $script:Category
+                    }
+
                     # Skip the normal upload process and group assignment when just replacing content
                     # Jump to scope tag handling if specified
                     $script:contentReplaced = $true
@@ -2861,32 +4390,97 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             elseif ($AppType -eq "MSI") {
                 Write-Log -Message "Preparing MSI package"
 
+                # Build common extended parameters hashtable for splatting
+                $extendedParams = @{
+                    isFeatured = $script:IsFeatured
+                    informationUrl = $script:InformationUrl
+                    privacyInformationUrl = $script:PrivacyInformationUrl
+                    developer = $script:Developer
+                    owner = $script:Owner
+                    notes = $script:Notes
+                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
+                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures = $script:AllowedArchitectures
+                    minimumSupportedOS = $minOSObject
+                    requirementRules = $additionalRequirementRules
+                }
+
                 if ( ( ! ( Test-Null( $installCmdLine) ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
                     Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                        -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine -msiUninstallCommandLine $uninstallCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+                        -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine -msiUninstallCommandLine $uninstallCmdLine `
+                        -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( ! ( Test-Null( $installCmdLine ) ) ) -and ( Test-Null( $uninstallCmdLine ) ) ) {
                     Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                        -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+                        -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine `
+                        -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( Test-Null( $installCmdLine ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
                     Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                        -returnCodes $ReturnCodes -displayName $displayName -msiUninstallCommandLine $uninstallCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+                        -returnCodes $ReturnCodes -displayName $displayName -msiUninstallCommandLine $uninstallCmdLine `
+                        -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( Test-Null( $installCmdLine ) ) -and ( Test-Null( $uninstallCmdLine ) ) ) {
                     Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                        -returnCodes $ReturnCodes -displayName $displayName -installExperience $installExperience -logo $Icon -Category $Category
+                        -returnCodes $ReturnCodes -displayName $displayName `
+                        -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
             }
             elseif ($AppType -eq "EXE") {
                 Write-Log -Message "Preparing EXE package"
+
+                # Build common extended parameters hashtable for splatting
+                $extendedParams = @{
+                    isFeatured = $script:IsFeatured
+                    informationUrl = $script:InformationUrl
+                    privacyInformationUrl = $script:PrivacyInformationUrl
+                    developer = $script:Developer
+                    owner = $script:Owner
+                    notes = $script:Notes
+                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
+                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures = $script:AllowedArchitectures
+                    minimumSupportedOS = $minOSObject
+                    requirementRules = $additionalRequirementRules
+                }
+
                 Upload-Win32Lob -EXE -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                    -returnCodes $ReturnCodes -displayName $displayName -installCommandLine $installCmdLine -uninstallCommandLine $uninstallCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+                    -returnCodes $ReturnCodes -displayName $displayName -installCommandLine $installCmdLine -uninstallCommandLine $uninstallCmdLine `
+                    -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
             }
             elseif ($AppType -eq "PS1") {
                 Write-Log -Message "Preparing PS1 package"
+
+                # Build common extended parameters hashtable for splatting
+                $extendedParams = @{
+                    isFeatured = $script:IsFeatured
+                    informationUrl = $script:InformationUrl
+                    privacyInformationUrl = $script:PrivacyInformationUrl
+                    developer = $script:Developer
+                    owner = $script:Owner
+                    notes = $script:Notes
+                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
+                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures = $script:AllowedArchitectures
+                    minimumSupportedOS = $minOSObject
+                    requirementRules = $additionalRequirementRules
+                }
+
                 Upload-Win32Lob -PS1 -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
-                    -returnCodes $ReturnCodes -displayName $displayName -ps1InstallCommandLine $InstallCmdLine -ps1UninstallCommandLine $UninstallCmdLine -installExperience $installExperience -logo $Icon -Category $Category
+                    -returnCodes $ReturnCodes -displayName $displayName -ps1InstallCommandLine $InstallCmdLine -ps1UninstallCommandLine $UninstallCmdLine `
+                    -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
             }
             elseif ($AppType -eq "Edge") {
                 Write-Log -Message "Preparing Edge package"
@@ -2913,6 +4507,76 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             $body.publishingState = "published";
             $body.channel = "stable";
             #>
+            }
+        }
+
+        # Process Dependencies and Supersedence after app creation/update
+        # Get the app ID if we don't have it yet (for new uploads)
+        if (-not $script:contentReplaced) {
+            Write-Log -Message "Getting application ID for dependency/supersedence processing..."
+            $appID = Get-ApplicationID -AppName $displayName
+            if (Test-Null($appID)) {
+                Write-Log -Message "Warning: Could not get application ID for $displayName - skipping dependencies/supersedence" -LogLevel 2
+            }
+        }
+
+        if (-not (Test-Null($appID))) {
+            # Process Dependencies
+            if ($script:Dependencies) {
+                Write-Log -Message "Processing dependencies..."
+                Write-Host "Processing dependencies..." -ForegroundColor Cyan
+
+                $dependencyList = @()
+                if ($script:Dependencies -is [string]) {
+                    # Parse comma-separated list from XML
+                    $dependencyList = $script:Dependencies -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                }
+                elseif ($script:Dependencies -is [array]) {
+                    # Array from JSON
+                    $dependencyList = $script:Dependencies
+                }
+
+                foreach ($depAppName in $dependencyList) {
+                    if (-not [string]::IsNullOrWhiteSpace($depAppName)) {
+                        Write-Log -Message "Adding dependency: $depAppName"
+                        $result = Set-IntuneAppDependency -SourceAppId $appID -TargetAppDisplayName $depAppName -DependencyType $script:DependencyType
+                        if ($result) {
+                            Write-Host "  Dependency added: $depAppName ($($script:DependencyType))" -ForegroundColor Green
+                        }
+                        else {
+                            Write-Host "  Failed to add dependency: $depAppName" -ForegroundColor Yellow
+                        }
+                    }
+                }
+            }
+
+            # Process Supersedence
+            if ($script:Supersedence) {
+                Write-Log -Message "Processing supersedence..."
+                Write-Host "Processing supersedence..." -ForegroundColor Cyan
+
+                $supersedenceList = @()
+                if ($script:Supersedence -is [string]) {
+                    # Parse comma-separated list from XML
+                    $supersedenceList = $script:Supersedence -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                }
+                elseif ($script:Supersedence -is [array]) {
+                    # Array from JSON
+                    $supersedenceList = $script:Supersedence
+                }
+
+                foreach ($supersededAppName in $supersedenceList) {
+                    if (-not [string]::IsNullOrWhiteSpace($supersededAppName)) {
+                        Write-Log -Message "Adding supersedence: $supersededAppName"
+                        $result = Set-IntuneAppSupersedence -SourceAppId $appID -TargetAppDisplayName $supersededAppName -SupersedenceType $script:SupersedenceType
+                        if ($result) {
+                            Write-Host "  Supersedence added: $supersededAppName ($($script:SupersedenceType))" -ForegroundColor Green
+                        }
+                        else {
+                            Write-Host "  Failed to add supersedence: $supersededAppName" -ForegroundColor Yellow
+                        }
+                    }
+                }
             }
         }
 
@@ -3140,6 +4804,24 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         }
         else {
             Write-Log -Message "Skipping assignment groups"
+        }
+
+        # Apply category to the application (for new uploads - not when content was replaced as that's handled separately)
+        if ((-not($AssignGroupsOnly)) -and (-not($script:contentReplaced)) -and (-not [string]::IsNullOrWhiteSpace($script:Category))) {
+            Write-Log -Message "Checking for category assignment..."
+            if ($null -eq $appID) {
+                Write-Log -Message "Getting application ID for category assignment..."
+                $appID = Get-ApplicationID -AppName $displayName
+            }
+            if ($null -ne $appID) {
+                $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $script:Category
+                if (-not $categoryResult) {
+                    Write-Log -Message "Warning: Category assignment may have failed" -LogLevel 2
+                }
+            }
+            else {
+                Write-Log -Message "Warning: Could not get application ID for category assignment" -LogLevel 2
+            }
         }
 
         # Apply scope tag to the application (after group assignments are complete)
@@ -4727,13 +6409,6 @@ else {
     elseif ($userName) {
         Write-Log -Message "Authenticate to AzureAD..."
         Test-AuthToken -User $Username
-
-        $aryUserFromUPN = $userName.Split("@")
-        $userFromUPN = $aryUserFromUPN[0]
-        Write-Log -Message "Username without UPN address: $userFromUPN"
-
-        $Description = $Description + "`nBy: $userFromUPN"
-        Write-Log -Message "Updated description stamp to: $Description"
     }
     elseif ($CertName) {
         Write-Host "Using certname: $CertName"
@@ -4809,6 +6484,20 @@ else {
         Invoke-Cleanup
         throw "Please specify either a valid certificate name or client secret for authentication"
     }
+
+    # After authentication, update description with user info stamp
+    $dayDateTime = (Get-Date -UFormat "%A %d-%m-%Y %R")
+    $userInfo = Get-AuthenticatedUserInfo
+    if (-not [string]::IsNullOrWhiteSpace($userInfo)) {
+        $script:Description = $script:BaseDescription + "`nObject creation: $dayDateTime`nBy: $userInfo"
+        Write-Log -Message "Updated description with user stamp: $userInfo"
+    }
+    else {
+        # Using app registration - just add date/time without user info
+        $script:Description = $script:BaseDescription + "`nObject creation: $dayDateTime"
+        Write-Log -Message "Updated description with date stamp (no user info - app registration auth)"
+    }
+    Write-Log -Message "Final description: $($script:Description)"
 }
 #endregion auth
 
@@ -4837,6 +6526,18 @@ if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
             Write-Host "  OrigSource: $OrigSourcePath" -ForegroundColor Red
             exit
         }
+    }
+
+    # Version detection for EXE and MSI files
+    if (($AppType -eq "EXE") -or ($AppType -eq "MSI")) {
+        Write-Log -Message "Checking installer version for $AppType package..."
+
+        # Determine which config file is being used
+        $jsonConfigPath = "$packagePath\Config.json"
+        $xmlConfigPath = "$packagePath\Config.xml"
+        $activeConfigPath = if (Test-Path $jsonConfigPath) { $jsonConfigPath } else { $xmlConfigPath }
+
+        Invoke-VersionCheck -SourcePath $EffectiveSourcePath -PackageName $PackageName -AppType $AppType -ConfigFilePath $activeConfigPath -ConfigVersion $script:displayVersion
     }
 
     Write-Log -Message "Call Invoke-IntuneWinAppUtil function..."

@@ -17,6 +17,8 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Configuration Files](#configuration-files)
   - [Config.json Format](#configjson-format)
   - [Config.xml Format](#configxml-format)
+- [Automatic Version Detection](#automatic-version-detection-v16)
+- [Extended Settings](#extended-settings-v15)
 - [Usage Examples](#usage-examples)
 - [Supported Application Types](#supported-application-types)
 - [Detection Rules](#detection-rules)
@@ -44,6 +46,7 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - ✅ Automatic return code configuration
 - ✅ **ESP/Core app designation support** (via Config.json)
 - ✅ **Automatic logo detection and addition** when updating existing apps
+- ✅ **Automatic version detection** for EXE and MSI installers (v1.6)
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -339,6 +342,356 @@ The traditional XML format is still fully supported for backward compatibility.
 | `LogoFile`          | String                               | Path to logo file                               |
 | `EntraGroupName`    | String                               | Entra ID group name for assignments (preferred) |
 | `AADGroupName`      | String                               | AAD group name (legacy, still supported)        |
+
+---
+
+## Automatic Version Detection (v1.6)
+
+Version 1.6 introduces automatic version detection for EXE and MSI installers. The script detects the version from the installer file and compares it to the `displayVersion` in your config file.
+
+### How It Works
+
+1. **EXE files**: Uses `FileVersionInfo.GetVersionInfo()` to read `FileVersion` or `ProductVersion`
+2. **MSI files**: Uses Windows Installer COM object to query `ProductVersion` from the database
+3. **Version comparison**: Compares detected version with `displayVersion` in Config.xml/Config.json
+4. **User prompt**: If versions differ, prompts user to accept the detected version (Y/N)
+5. **30-second timeout**: Auto-selects based on context:
+   - If config has a version → keeps config version
+   - If config version is empty → uses detected version
+6. **Config update**: Automatically updates the config file when user accepts or config is empty
+
+### Example Output
+
+```text
+Checking installer version for EXE package...
+Detected version [2.1.0.456] from installer file
+Config displayVersion is [2.0.0]
+Versions are different. Use detected version [2.1.0.456]? (Y/N) - Auto-selecting in 30 seconds...
+(25 seconds remaining) Y
+User accepted detected version. Updating config file...
+Successfully updated config file with version: 2.1.0.456
+```
+
+> **Note:** Version detection only applies to EXE and MSI package types. PS1 and Edge apps are not affected.
+
+---
+
+## Extended Settings (v1.5)
+
+Version 1.5 introduces comprehensive extended settings that provide full control over Win32 app configuration via the Microsoft Graph API. All extended settings are **optional** - if not specified, sensible defaults are used.
+
+### Extended Settings Overview
+
+| Category                | Settings                                                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **App Information**     | `isFeatured`, `informationUrl`, `privacyInformationUrl`, `developer`, `owner`, `notes`                                                             |
+| **Install Experience**  | `maxRunTimeInMinutes`, `deviceRestartBehavior`                                                                                                     |
+| **System Requirements** | `minimumFreeDiskSpaceInMB`, `minimumMemoryInMB`, `minimumNumberOfProcessors`, `minimumCpuSpeedInMHz`, `allowedArchitectures`, `minimumSupportedOS` |
+| **Return Codes**        | `customReturnCodes`                                                                                                                                |
+| **Dependencies**        | `dependencies`, `dependencyType`                                                                                                                   |
+| **Supersedence**        | `supersedence`, `supersedenceType`                                                                                                                 |
+| **Script Detection**    | `detectionScriptFile`, `detectionScriptEnforceSignatureCheck`, `detectionScriptRunAs32Bit`                                                         |
+
+### App Information Settings
+
+| Setting                 | Type    | Default | Description                                       |
+| ----------------------- | ------- | ------- | ------------------------------------------------- |
+| `isFeatured`            | Boolean | `false` | Show this app as a featured app in Company Portal |
+| `informationUrl`        | String  | (empty) | URL for more information about the app            |
+| `privacyInformationUrl` | String  | (empty) | URL for privacy information                       |
+| `developer`             | String  | (empty) | Developer name                                    |
+| `owner`                 | String  | (empty) | Owner name                                        |
+| `notes`                 | String  | (empty) | Additional notes about the app                    |
+
+### Install Experience Settings
+
+| Setting                 | Type    | Default    | Values                                            | Description                                 |
+| ----------------------- | ------- | ---------- | ------------------------------------------------- | ------------------------------------------- |
+| `maxRunTimeInMinutes`   | Integer | `60`       | 1-1440                                            | Maximum time the install is allowed to run  |
+| `deviceRestartBehavior` | String  | `suppress` | `basedOnReturnCode`, `allow`, `suppress`, `force` | How to handle device restarts after install |
+
+**Restart Behavior Values:**
+- `basedOnReturnCode` - Restart based on the return code from the installer
+- `allow` - Allow restart if requested by the installer
+- `suppress` - Suppress restart requests from the installer (default)
+- `force` - Force a restart after installation
+
+### System Requirements Settings
+
+| Setting                     | Type    | Default          | Description                                        |
+| --------------------------- | ------- | ---------------- | -------------------------------------------------- |
+| `minimumFreeDiskSpaceInMB`  | Integer | 0 (not enforced) | Minimum free disk space required in MB             |
+| `minimumMemoryInMB`         | Integer | 0 (not enforced) | Minimum physical memory required in MB             |
+| `minimumNumberOfProcessors` | Integer | 0 (not enforced) | Minimum number of logical processors required      |
+| `minimumCpuSpeedInMHz`      | Integer | 0 (not enforced) | Minimum CPU speed required in MHz                  |
+| `allowedArchitectures`      | String  | (empty)          | Comma-separated list: `x64`, `x86`, `arm`, `arm64` |
+| `minimumSupportedOS`        | String  | (empty)          | Minimum Windows version (see table below)          |
+
+**Supported OS Version Values:**
+| Value      | Windows Version        |
+| ---------- | ---------------------- |
+| `v10_1903` | Windows 10 1903 (19H1) |
+| `v10_1909` | Windows 10 1909 (19H2) |
+| `v10_2004` | Windows 10 2004 (20H1) |
+| `v10_20H2` | Windows 10 20H2        |
+| `v10_21H1` | Windows 10 21H1        |
+| `v10_21H2` | Windows 10 21H2        |
+| `v10_22H2` | Windows 10 22H2        |
+| `v11_21H2` | Windows 11 21H2        |
+| `v11_22H2` | Windows 11 22H2        |
+| `v11_23H2` | Windows 11 23H2        |
+| `v11_24H2` | Windows 11 24H2        |
+
+### Custom Return Codes
+
+Custom return codes allow you to define how specific exit codes from the installer should be handled.
+
+**Config.xml Format:**
+```xml
+<!-- Comma-separated code:type pairs -->
+<CustomReturnCodes>3010:softReboot,1641:hardReboot,1618:retry</CustomReturnCodes>
+```
+
+**Config.json Format:**
+```json
+{
+  "customReturnCodes": [
+    { "returnCode": 3010, "type": "softReboot" },
+    { "returnCode": 1641, "type": "hardReboot" },
+    { "returnCode": 1618, "type": "retry" }
+  ]
+}
+```
+
+**Return Code Types:**
+| Type         | Description                            |
+| ------------ | -------------------------------------- |
+| `failed`     | Installation failed                    |
+| `success`    | Installation succeeded                 |
+| `softReboot` | Soft reboot required (can be deferred) |
+| `hardReboot` | Hard reboot required (immediate)       |
+| `retry`      | Retry the installation                 |
+
+### Dependencies
+
+Dependencies allow you to specify other Win32 apps that must be installed before this app.
+
+**Config.xml Format:**
+```xml
+<!-- Comma-separated list of app display names -->
+<Dependencies>Microsoft Visual C++ Redistributable,Microsoft .NET Runtime 8.0</Dependencies>
+<DependencyType>autoInstall</DependencyType>
+```
+
+**Config.json Format:**
+```json
+{
+  "dependencies": [
+    "Microsoft Visual C++ Redistributable",
+    "Microsoft .NET Runtime 8.0"
+  ],
+  "dependencyType": "autoInstall"
+}
+```
+
+**Dependency Types:**
+| Type          | Description                                                   |
+| ------------- | ------------------------------------------------------------- |
+| `autoInstall` | Automatically install the dependency if not present (default) |
+| `detect`      | Only check if the dependency is installed, don't auto-install |
+
+> **Note:** Dependencies are processed after the app is created/uploaded. The target apps must already exist in Intune with matching display names.
+
+### Supersedence
+
+Supersedence allows you to specify apps that this app should replace (upgrade or uninstall-then-replace).
+
+**Config.xml Format:**
+```xml
+<!-- Comma-separated list of app display names to supersede -->
+<Supersedence>Old App v1.0,Old App v2.0</Supersedence>
+<SupersedenceType>update</SupersedenceType>
+```
+
+**Config.json Format:**
+```json
+{
+  "supersedence": [
+    "Old App v1.0",
+    "Old App v2.0"
+  ],
+  "supersedenceType": "update"
+}
+```
+
+**Supersedence Types:**
+| Type      | Description                                                         |
+| --------- | ------------------------------------------------------------------- |
+| `update`  | Upgrade the old app to this app (keeps detection, upgrades content) |
+| `replace` | Uninstall the old app first, then install this app                  |
+
+> **Note:** Supersedence relationships are processed after the app is created/uploaded. The superseded apps must already exist in Intune.
+
+### PowerShell Script Detection
+
+As an alternative to TAGFILE, FILE, or REGISTRY detection, you can use a custom PowerShell script for detection.
+
+**Config.xml Format:**
+```xml
+<DetectionScriptFile>Detection\Detect-MyApp.ps1</DetectionScriptFile>
+<DetectionScriptEnforceSignatureCheck>false</DetectionScriptEnforceSignatureCheck>
+<DetectionScriptRunAs32Bit>false</DetectionScriptRunAs32Bit>
+```
+
+**Config.json Format:**
+```json
+{
+  "detectionScriptFile": "Detection/Detect-MyApp.ps1",
+  "detectionScriptEnforceSignatureCheck": false,
+  "detectionScriptRunAs32Bit": false
+}
+```
+
+| Setting                                | Type    | Default | Description                                         |
+| -------------------------------------- | ------- | ------- | --------------------------------------------------- |
+| `detectionScriptFile`                  | String  | (empty) | Path to detection script relative to package folder |
+| `detectionScriptEnforceSignatureCheck` | Boolean | `false` | Require the script to be signed                     |
+| `detectionScriptRunAs32Bit`            | Boolean | `false` | Run the script as a 32-bit process                  |
+
+**Detection Script Requirements:**
+- The script must exit with code 0 for "detected" (app installed)
+- Any non-zero exit code means "not detected" (app not installed)
+- Write output to STDOUT for logging purposes
+
+**Example Detection Script:**
+```powershell
+# Detect-MyApp.ps1
+$appPath = "C:\Program Files\MyApp\MyApp.exe"
+if (Test-Path $appPath) {
+    Write-Output "MyApp detected at $appPath"
+    exit 0
+} else {
+    Write-Output "MyApp not found"
+    exit 1
+}
+```
+
+### Complete Config.json Example with Extended Settings
+
+```json
+{
+  "$schema": "./../pawintuneapp.schema.json",
+  "appType": "EXE",
+  "ruleType": "FILE",
+  "filePath": "C:\\Program Files\\MyApp",
+  "returnCodeType": "DEFAULT",
+  "installExperience": "System",
+  "packageName": "Setup",
+  "displayVersion": "2.0.0",
+  "displayName": "My Application v2.0",
+  "description": "Enterprise application for productivity",
+  "publisher": "Contoso",
+  "category": "Business",
+  "logoFile": "Logo.png",
+  "entraGroupName": "App-MyApp-Required",
+  "scopetag": "CloudPC-Apps",
+  "installCmdLine": "Setup.exe /quiet",
+  "uninstallCmdLine": "Setup.exe /uninstall /quiet",
+
+  "isFeatured": true,
+  "informationUrl": "https://contoso.com/myapp",
+  "privacyInformationUrl": "https://contoso.com/privacy",
+  "developer": "Contoso Development Team",
+  "owner": "IT Department",
+  "notes": "Approved for production deployment",
+
+  "maxRunTimeInMinutes": 120,
+  "deviceRestartBehavior": "suppress",
+
+  "minimumFreeDiskSpaceInMB": 500,
+  "minimumMemoryInMB": 4096,
+  "minimumNumberOfProcessors": 2,
+  "minimumCpuSpeedInMHz": 1000,
+  "allowedArchitectures": "x64",
+  "minimumSupportedOS": "v10_21H2",
+
+  "customReturnCodes": [
+    { "returnCode": 3010, "type": "softReboot" },
+    { "returnCode": 1641, "type": "hardReboot" }
+  ],
+
+  "dependencies": [
+    "Microsoft Visual C++ Redistributable",
+    "Microsoft .NET Runtime 8.0"
+  ],
+  "dependencyType": "autoInstall",
+
+  "supersedence": [
+    "My Application v1.0"
+  ],
+  "supersedenceType": "update"
+}
+```
+
+### Complete Config.xml Example with Extended Settings
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com/beta/deviceAppManagement/</baseUrl>
+        <logRequestUris>$true</logRequestUris>
+        <logHeaders>$false</logHeaders>
+        <logContent>$true</logContent>
+        <azureStorageUploadChunkSizeInMb>6l</azureStorageUploadChunkSizeInMb>
+        <sleep>5</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>EXE</AppType>
+        <installCmdLine>Setup.exe /quiet</installCmdLine>
+        <uninstallCmdLine>Setup.exe /uninstall /quiet</uninstallCmdLine>
+        <RuleType>FILE</RuleType>
+        <FilePath>C:\Program Files\MyApp</FilePath>
+        <ReturnCodeType>DEFAULT</ReturnCodeType>
+        <InstallExperience>System</InstallExperience>
+        <PackageName>Setup</PackageName>
+        <displayName>My Application v2.0</displayName>
+        <displayVersion>2.0.0</displayVersion>
+        <Description>Enterprise application for productivity</Description>
+        <Publisher>Contoso</Publisher>
+        <Category>Business</Category>
+        <LogoFile>Logo.png</LogoFile>
+        <EntraGroupName>App-MyApp-Required</EntraGroupName>
+        <ScopeTag>CloudPC-Apps</ScopeTag>
+
+        <!-- Extended Settings -->
+        <IsFeatured>true</IsFeatured>
+        <InformationUrl>https://contoso.com/myapp</InformationUrl>
+        <PrivacyInformationUrl>https://contoso.com/privacy</PrivacyInformationUrl>
+        <Developer>Contoso Development Team</Developer>
+        <Owner>IT Department</Owner>
+        <Notes>Approved for production deployment</Notes>
+
+        <MaxRunTimeInMinutes>120</MaxRunTimeInMinutes>
+        <DeviceRestartBehavior>suppress</DeviceRestartBehavior>
+
+        <MinimumFreeDiskSpaceInMB>500</MinimumFreeDiskSpaceInMB>
+        <MinimumMemoryInMB>4096</MinimumMemoryInMB>
+        <MinimumNumberOfProcessors>2</MinimumNumberOfProcessors>
+        <MinimumCpuSpeedInMHz>1000</MinimumCpuSpeedInMHz>
+        <AllowedArchitectures>x64</AllowedArchitectures>
+        <MinimumSupportedOS>v10_21H2</MinimumSupportedOS>
+
+        <CustomReturnCodes>3010:softReboot,1641:hardReboot</CustomReturnCodes>
+
+        <Dependencies>Microsoft Visual C++ Redistributable,Microsoft .NET Runtime 8.0</Dependencies>
+        <DependencyType>autoInstall</DependencyType>
+
+        <Supersedence>My Application v1.0</Supersedence>
+        <SupersedenceType>update</SupersedenceType>
+    </IntuneWin_Settings>
+</CONFIG>
+```
 
 ---
 
@@ -825,6 +1178,6 @@ Get-Help .\Upload-IntuneWin.ps1 -Examples
 
 ---
 
-**Script Version**: 1.4
-**Last Updated**: December 5, 2025
+**Script Version**: 1.6
+**Last Updated**: December 2025
 **Author**: Greg Nottage

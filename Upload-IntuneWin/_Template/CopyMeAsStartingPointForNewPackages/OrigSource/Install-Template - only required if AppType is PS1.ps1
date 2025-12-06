@@ -21,7 +21,7 @@ param(
 )
 #$VerbosePreference = "Continue" #Enables Verbose Logging, can be enabled with -verbose on the cmdline too
 $script:exitCode = 0
-$script:BuildVer = "1.3"
+$script:BuildVer = "1.4"
 $script:ProgramFiles = $env:ProgramFiles
 $script:ParentFolder = $PSScriptRoot | Split-Path -Parent
 $script:ScriptName = $myInvocation.MyCommand.Name
@@ -321,6 +321,73 @@ Write-Log -Message "Running in 64-bit mode: $([System.Environment]::Is64BitProce
 #Main Script work section
 ##########################################################################################################
 ##########################################################################################################
+
+#region PSAppDeployToolkit Loading
+# Support both PSADT v4.x module import and legacy dot-source methods
+# Preserve our CMTrace-compatible Write-Log function before loading toolkit
+$savedWriteLog = ${function:Write-Log}
+$psadtLoaded = $false
+
+# Method 1: Try PSADT v4.x module import (module manifest at script root)
+$modulePath = "$PSScriptRoot\PSAppDeployToolkit.psd1"
+If (Test-Path $modulePath -PathType Leaf) {
+    Write-Log -Message "Found PSAppDeployToolkit module at [$modulePath] - attempting module import"
+    Try {
+        Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+        Import-Module -Name $modulePath -Force -ErrorAction Stop
+        $psadtLoaded = $true
+        Write-Log -Message "Successfully imported PSAppDeployToolkit module v4.x"
+    }
+    Catch {
+        Write-Log -Message "Failed to import PSAppDeployToolkit module: $($_.Exception.Message)" -Severity 2
+    }
+}
+
+# Method 2: Try legacy dot-source from same folder
+If (-not $psadtLoaded) {
+    $toolkitPath = "$PSScriptRoot\Invoke-AppDeployToolkit.ps1"
+    If (Test-Path $toolkitPath -PathType Leaf) {
+        Write-Log -Message "Found AppDeployToolkit at [$toolkitPath] - attempting dot-source"
+        Try {
+            . $toolkitPath
+            $psadtLoaded = $true
+            Write-Log -Message "Successfully dot-sourced AppDeployToolkit"
+        }
+        Catch {
+            Write-Log -Message "Failed to dot-source AppDeployToolkit: $($_.Exception.Message)" -Severity 2
+        }
+    }
+}
+
+# Method 3: Try PSADT v4.x Frontend folder structure
+If (-not $psadtLoaded) {
+    $frontendPath = "$PSScriptRoot\Frontend\v4\Invoke-AppDeployToolkit.ps1"
+    If (Test-Path $frontendPath -PathType Leaf) {
+        Write-Log -Message "Found AppDeployToolkit at [$frontendPath] - attempting dot-source"
+        Try {
+            . $frontendPath
+            $psadtLoaded = $true
+            Write-Log -Message "Successfully dot-sourced AppDeployToolkit from Frontend\v4"
+        }
+        Catch {
+            Write-Log -Message "Failed to dot-source AppDeployToolkit from Frontend: $($_.Exception.Message)" -Severity 2
+        }
+    }
+}
+
+# Restore our CMTrace-compatible Write-Log function (toolkit may have overwritten it)
+If ($savedWriteLog) {
+    ${function:Write-Log} = $savedWriteLog
+    If ($psadtLoaded) {
+        Write-Log -Message "Restored custom CMTrace-compatible Write-Log function"
+    }
+}
+
+If (-not $psadtLoaded) {
+    Write-Log -Message "PSAppDeployToolkit not found - continuing without toolkit functions" -Severity 2
+}
+#endregion PSAppDeployToolkit Loading
+
 If ($([System.Environment]::Is64BitProcess)) {
     Write-Log -Message "Running in 64-bit mode, so use normal ProgramFiles path"
     $programFiles = "$($env:ProgramFiles)"

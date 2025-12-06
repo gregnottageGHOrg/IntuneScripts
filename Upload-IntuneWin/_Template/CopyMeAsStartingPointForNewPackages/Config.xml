@@ -49,5 +49,63 @@
         <!-- If left empty or removed, no scope tag will be applied unless specified via -ScopeTagName parameter -->
         <!-- The -ScopeTagName parameter takes precedence over this setting -->
         <ScopeTag></ScopeTag>
+
+        <!-- ===================== EXTENDED SETTINGS (all optional) ===================== -->
+
+        <!-- App Information - These settings are optional and can be removed if not needed -->
+        <!-- Show this app as a featured app in Company Portal (true/false) -->
+        <!-- <IsFeatured>false</IsFeatured> -->
+        <!-- URL for more information about the app -->
+        <!-- <InformationUrl>https://example.com/info</InformationUrl> -->
+        <!-- URL for privacy information about the app -->
+        <!-- <PrivacyInformationUrl>https://example.com/privacy</PrivacyInformationUrl> -->
+        <!-- Developer name -->
+        <!-- <Developer>Developer Name</Developer> -->
+        <!-- Owner name -->
+        <!-- <Owner>Owner Name</Owner> -->
+        <!-- Additional notes about the app -->
+        <!-- <Notes>Any notes about this application</Notes> -->
+
+        <!-- Install Experience Settings -->
+        <!-- Maximum time in minutes the app install is allowed to run (default: 60) -->
+        <!-- <MaxRunTimeInMinutes>60</MaxRunTimeInMinutes> -->
+        <!-- Device restart behavior: basedOnReturnCode, allow, suppress, force (default: suppress) -->
+        <!-- <DeviceRestartBehavior>suppress</DeviceRestartBehavior> -->
+
+        <!-- System Requirements - Set to 0 or remove to not enforce -->
+        <!-- Minimum free disk space required in MB -->
+        <!-- <MinimumFreeDiskSpaceInMB>0</MinimumFreeDiskSpaceInMB> -->
+        <!-- Minimum physical memory required in MB -->
+        <!-- <MinimumMemoryInMB>0</MinimumMemoryInMB> -->
+        <!-- Minimum number of logical processors required -->
+        <!-- <MinimumNumberOfProcessors>0</MinimumNumberOfProcessors> -->
+        <!-- Minimum CPU speed required in MHz -->
+        <!-- <MinimumCpuSpeedInMHz>0</MinimumCpuSpeedInMHz> -->
+        <!-- Allowed architectures: x64, x86 (comma-separated) -->
+        <!-- <AllowedArchitectures>x64,x86</AllowedArchitectures> -->
+        <!-- Minimum supported OS version: v10_1903, v10_1909, v10_2004, v10_20H2, v10_21H1, v11_21H2, v11_22H2, v11_23H2 -->
+        <!-- <MinimumSupportedOS>v10_1903</MinimumSupportedOS> -->
+
+        <!-- Custom Return Codes - Comma-separated code:type pairs -->
+        <!-- Types: failed, success, softReboot, hardReboot, retry -->
+        <!-- <CustomReturnCodes>3010:softReboot,1641:hardReboot,1618:retry</CustomReturnCodes> -->
+
+        <!-- Dependencies - Comma-separated list of app display names this app depends on -->
+        <!-- <Dependencies>Microsoft Visual C++ Redistributable,Microsoft .NET Runtime</Dependencies> -->
+        <!-- Dependency type: autoInstall (install dependency if needed) or detect (just check if installed) -->
+        <!-- <DependencyType>autoInstall</DependencyType> -->
+
+        <!-- Supersedence - Comma-separated list of app display names this app supersedes -->
+        <!-- <Supersedence>Old App v1.0,Old App v2.0</Supersedence> -->
+        <!-- Supersedence type: update (upgrade to new app) or replace (uninstall old, install new) -->
+        <!-- <SupersedenceType>update</SupersedenceType> -->
+
+        <!-- PowerShell Script Detection - Alternative to TAGFILE/FILE/REGTAG detection -->
+        <!-- Path to detection script relative to package folder -->
+        <!-- <DetectionScriptFile>Detection\Detect-MyApp.ps1</DetectionScriptFile> -->
+        <!-- Enforce code signature check on detection script (true/false) -->
+        <!-- <DetectionScriptEnforceSignatureCheck>false</DetectionScriptEnforceSignatureCheck> -->
+        <!-- Run detection script as 32-bit process (true/false) -->
+        <!-- <DetectionScriptRunAs32Bit>false</DetectionScriptRunAs32Bit> -->
     </IntuneWin_Settings>
 </CONFIG>
