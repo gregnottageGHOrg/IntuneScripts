@@ -17,9 +17,12 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Configuration Files](#configuration-files)
   - [Config.json Format](#configjson-format)
   - [Config.xml Format](#configxml-format)
-- [Automatic Tool Download and Update](#automatic-tool-download-and-update-v17)
-- [Automatic Version Detection](#automatic-version-detection-v16)
-- [Extended Settings](#extended-settings-v15)
+- [Automatic Tool Download and Update (v1.7)](#automatic-tool-download-and-update-v17)
+- [EXE File Validation (v1.7)](#exe-file-validation-v17)
+- [Automatic Version Detection (v1.6)](#automatic-version-detection-v16)
+- [Extended Settings (v1.5)](#extended-settings-v15)
+- [Assignment Behavior (v1.7)](#assignment-behavior-v17)
+- [Graph Connection Management (v1.7)](#graph-connection-management-v17)
 - [Usage Examples](#usage-examples)
 - [Supported Application Types](#supported-application-types)
 - [Detection Rules](#detection-rules)
@@ -49,6 +52,10 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - ✅ **Automatic logo detection and addition** when updating existing apps
 - ✅ **Automatic version detection** for EXE and MSI installers (v1.6)
 - ✅ **Auto-download and update of IntuneWinAppUtil.exe** from GitHub (v1.7)
+- ✅ **EXE file validation** with fuzzy matching to detect mismatched installer filenames (v1.7)
+- ✅ **Foreground delivery optimization** for faster app downloads on all assignment types (v1.7)
+- ✅ **Smart notification settings** - hidden for Required/Available, shown for Uninstall (v1.7)
+- ✅ **DisconnectGraph switch** for preserving Graph connections across multiple runs (v1.7)
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -129,15 +136,16 @@ For manual download, visit: [Microsoft Win32 Content Prep Tool](https://github.c
 
 ### Mode Switches
 
-| Switch                        | Description                                                                       |
-| ----------------------------- | --------------------------------------------------------------------------------- |
-| `-IntuneWinPackageOnly`       | Create .intunewin file only, don't upload                                         |
-| `-AssignGroupsOnly`           | Only assign groups to existing app                                                |
-| `-SkipGroupAssignment`        | Upload without assigning groups                                                   |
-| `-SkipPackageRemoval`         | Keep .intunewin file after upload                                                 |
-| `-NewTagPath`                 | Use alternate tagfile path for diagnostics                                        |
-| `-ReplaceExistingContent`     | Replace IntuneWin content of existing app; applies assignments only if none exist |
-| `-ReplaceExistingAssignments` | Clear and replace all assignments on existing app                                 |
+| Switch                        | Description                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `-IntuneWinPackageOnly`       | Create .intunewin file only, don't upload                                                                          |
+| `-AssignGroupsOnly`           | Only assign groups to existing app                                                                                 |
+| `-SkipGroupAssignment`        | Upload without assigning groups                                                                                    |
+| `-SkipPackageRemoval`         | Keep .intunewin file after upload                                                                                  |
+| `-NewTagPath`                 | Use alternate tagfile path for diagnostics                                                                         |
+| `-ReplaceExistingContent`     | Replace IntuneWin content of existing app; applies assignments only if none exist                                  |
+| `-ReplaceExistingAssignments` | Clear and replace all assignments on existing app                                                                  |
+| `-DisconnectGraph`            | Explicitly disconnect from Microsoft Graph after completion (connection is preserved by default with -IntuneAdmin) |
 
 ### Assignment Parameters
 
@@ -409,6 +417,44 @@ IntuneWinAppUtil.exe has been updated successfully!
 
 ---
 
+## EXE File Validation (v1.7)
+
+Version 1.7 introduces automatic validation of EXE installer file references. The script verifies that the EXE file specified in `installCmdLine` actually exists in the Source folder, helping catch common configuration errors before upload.
+
+### Validation Process
+
+1. **File Check**: Extracts the EXE filename from `installCmdLine` and checks if it exists in the Source folder
+2. **Fuzzy Matching**: If not found, searches for the closest matching EXE file using Levenshtein distance algorithm
+3. **User Prompt**: Offers to update the config file with the correct filename
+4. **Config Update**: Automatically updates `installCmdLine` and `PackageName` if user accepts
+
+### Example Output
+
+**When EXE file is not found:**
+
+```text
+Validating EXE file reference...
+EXE file not found: Setup-1.0.exe
+Searching for similar files in Source folder...
+Found potential match: Setup-2.0.exe (similarity: 85%)
+Use Setup-2.0.exe instead? (Y/N) - Auto-selecting in 30 seconds...
+Y
+Updating config file with corrected filename...
+Updated installCmdLine: Setup-2.0.exe /SILENT
+Updated PackageName: Setup-2.0
+```
+
+**When EXE file exists:**
+
+```text
+Validating EXE file reference...
+EXE file found: Setup.exe
+```
+
+> **Note:** EXE validation only applies to EXE package types. MSI, PS1, and Edge apps are not affected.
+
+---
+
 ## Automatic Version Detection (v1.6)
 
 Version 1.6 introduces automatic version detection for EXE and MSI installers. The script detects the version from the installer file and compares it to the `displayVersion` in your config file.
@@ -475,6 +521,7 @@ Version 1.5 introduces comprehensive extended settings that provide full control
 | `deviceRestartBehavior` | String  | `suppress` | `basedOnReturnCode`, `allow`, `suppress`, `force` | How to handle device restarts after install |
 
 **Restart Behavior Values:**
+
 - `basedOnReturnCode` - Restart based on the return code from the installer
 - `allow` - Allow restart if requested by the installer
 - `suppress` - Suppress restart requests from the installer (default)
@@ -492,6 +539,7 @@ Version 1.5 introduces comprehensive extended settings that provide full control
 | `minimumSupportedOS`        | String  | (empty)          | Minimum Windows version (see table below)          |
 
 **Supported OS Version Values:**
+
 | Value      | Windows Version        |
 | ---------- | ---------------------- |
 | `v10_1903` | Windows 10 1903 (19H1) |
@@ -511,12 +559,14 @@ Version 1.5 introduces comprehensive extended settings that provide full control
 Custom return codes allow you to define how specific exit codes from the installer should be handled.
 
 **Config.xml Format:**
+
 ```xml
 <!-- Comma-separated code:type pairs -->
 <CustomReturnCodes>3010:softReboot,1641:hardReboot,1618:retry</CustomReturnCodes>
 ```
 
 **Config.json Format:**
+
 ```json
 {
   "customReturnCodes": [
@@ -528,6 +578,7 @@ Custom return codes allow you to define how specific exit codes from the install
 ```
 
 **Return Code Types:**
+
 | Type         | Description                            |
 | ------------ | -------------------------------------- |
 | `failed`     | Installation failed                    |
@@ -541,6 +592,7 @@ Custom return codes allow you to define how specific exit codes from the install
 Dependencies allow you to specify other Win32 apps that must be installed before this app.
 
 **Config.xml Format:**
+
 ```xml
 <!-- Comma-separated list of app display names -->
 <Dependencies>Microsoft Visual C++ Redistributable,Microsoft .NET Runtime 8.0</Dependencies>
@@ -548,6 +600,7 @@ Dependencies allow you to specify other Win32 apps that must be installed before
 ```
 
 **Config.json Format:**
+
 ```json
 {
   "dependencies": [
@@ -559,6 +612,7 @@ Dependencies allow you to specify other Win32 apps that must be installed before
 ```
 
 **Dependency Types:**
+
 | Type          | Description                                                   |
 | ------------- | ------------------------------------------------------------- |
 | `autoInstall` | Automatically install the dependency if not present (default) |
@@ -571,6 +625,7 @@ Dependencies allow you to specify other Win32 apps that must be installed before
 Supersedence allows you to specify apps that this app should replace (upgrade or uninstall-then-replace).
 
 **Config.xml Format:**
+
 ```xml
 <!-- Comma-separated list of app display names to supersede -->
 <Supersedence>Old App v1.0,Old App v2.0</Supersedence>
@@ -578,6 +633,7 @@ Supersedence allows you to specify apps that this app should replace (upgrade or
 ```
 
 **Config.json Format:**
+
 ```json
 {
   "supersedence": [
@@ -589,6 +645,7 @@ Supersedence allows you to specify apps that this app should replace (upgrade or
 ```
 
 **Supersedence Types:**
+
 | Type      | Description                                                         |
 | --------- | ------------------------------------------------------------------- |
 | `update`  | Upgrade the old app to this app (keeps detection, upgrades content) |
@@ -601,6 +658,7 @@ Supersedence allows you to specify apps that this app should replace (upgrade or
 As an alternative to TAGFILE, FILE, or REGISTRY detection, you can use a custom PowerShell script for detection.
 
 **Config.xml Format:**
+
 ```xml
 <DetectionScriptFile>Detection\Detect-MyApp.ps1</DetectionScriptFile>
 <DetectionScriptEnforceSignatureCheck>false</DetectionScriptEnforceSignatureCheck>
@@ -608,6 +666,7 @@ As an alternative to TAGFILE, FILE, or REGISTRY detection, you can use a custom 
 ```
 
 **Config.json Format:**
+
 ```json
 {
   "detectionScriptFile": "Detection/Detect-MyApp.ps1",
@@ -623,11 +682,13 @@ As an alternative to TAGFILE, FILE, or REGISTRY detection, you can use a custom 
 | `detectionScriptRunAs32Bit`            | Boolean | `false` | Run the script as a 32-bit process                  |
 
 **Detection Script Requirements:**
+
 - The script must exit with code 0 for "detected" (app installed)
 - Any non-zero exit code means "not detected" (app not installed)
 - Write output to STDOUT for logging purposes
 
 **Example Detection Script:**
+
 ```powershell
 # Detect-MyApp.ps1
 $appPath = "C:\Program Files\MyApp\MyApp.exe"
@@ -755,6 +816,104 @@ if (Test-Path $appPath) {
         <SupersedenceType>update</SupersedenceType>
     </IntuneWin_Settings>
 </CONFIG>
+```
+
+---
+
+## Assignment Behavior (v1.7)
+
+Version 1.7 introduces enhanced assignment behavior settings to optimize the app deployment experience.
+
+### Delivery Optimization Priority
+
+All assignment types (Required, Available, and Uninstall) now use **foreground** delivery optimization priority. This setting prioritizes the app download, resulting in faster delivery to devices.
+
+| Priority Setting | Description                                         |
+| ---------------- | --------------------------------------------------- |
+| `foreground`     | Prioritized download for faster app delivery (v1.7) |
+| `notConfigured`  | Default Windows delivery optimization behavior      |
+
+### User Notification Settings
+
+The script now applies intelligent notification settings based on the assignment intent:
+
+| Assignment Intent | Notifications | Behavior                                             |
+| ----------------- | ------------- | ---------------------------------------------------- |
+| **Required**      | Hidden        | Silent installation without user prompts             |
+| **Available**     | Hidden        | App appears in Company Portal without install toasts |
+| **Uninstall**     | Shown         | User notified when app is being removed              |
+
+This configuration provides a streamlined experience:
+
+- **Required apps** install silently without interrupting users
+- **Available apps** are discoverable in Company Portal without unwanted notifications
+- **Uninstall actions** notify users so they understand why an app is being removed
+
+### Assignment Settings Summary
+
+The following settings are applied automatically to all Win32 app assignments:
+
+```json
+{
+  "settings": {
+    "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
+    "notifications": "hideAll",
+    "deliveryOptimizationPriority": "foreground",
+    "installTimeSettings": {
+      "useLocalTime": false,
+      "deadlineDateTime": null
+    }
+  }
+}
+```
+
+> **Note:** For Uninstall assignments, `notifications` is set to `showAll` instead of `hideAll`.
+
+> **Note:** Exclusion group assignments do not include the `settings` property as it is not supported by the Microsoft Graph API.
+
+---
+
+## Graph Connection Management (v1.7)
+
+Version 1.7 introduces improved Microsoft Graph connection management to support batch processing of multiple packages.
+
+### Connection Behavior by Authentication Method
+
+| Authentication Method | Default Behavior                      | Override                             |
+| --------------------- | ------------------------------------- | ------------------------------------ |
+| `-IntuneAdmin`        | Connection **preserved** after script | Add `-DisconnectGraph` to disconnect |
+| `-ClientSecret`       | Connection **always disconnected**    | N/A                                  |
+| `-CertName`           | Connection **always disconnected**    | N/A                                  |
+
+### Benefits of Preserved Connections
+
+When using `-IntuneAdmin`, the Graph connection is preserved by default, enabling:
+
+- **Batch processing**: Upload multiple packages without re-authentication
+- **Faster execution**: No authentication delay between packages
+- **Pipeline support**: Pass multiple paths to `-PackagePath`
+
+### Connection Management Examples
+
+**Run multiple packages with single authentication:**
+
+```powershell
+# First package - authenticates once
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\App1" -IntuneAdmin "admin@contoso.com"
+
+# Second package - reuses existing connection (no auth prompt)
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\App2" -IntuneAdmin "admin@contoso.com"
+
+# Last package - disconnect when done
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\App3" -IntuneAdmin "admin@contoso.com" -DisconnectGraph
+```
+
+**Explicitly disconnect after each run:**
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -IntuneAdmin "admin@contoso.com" `
+    -DisconnectGraph
 ```
 
 ---
@@ -1242,6 +1401,6 @@ Get-Help .\Upload-IntuneWin.ps1 -Examples
 
 ---
 
-**Script Version**: 1.6
+**Script Version**: 1.7
 **Last Updated**: December 2025
 **Author**: Greg Nottage

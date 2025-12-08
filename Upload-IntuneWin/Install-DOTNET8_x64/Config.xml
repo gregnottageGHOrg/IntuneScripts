@@ -3,6 +3,8 @@
     <!-- Apart from username, leave Azure_Settings unchanged -->
     <!-- Completely remove the <Username> element and script will prompt -->
     <Azure_Settings>
+        <Username>
+        </Username>
         <baseUrl>https://graph.microsoft.com/beta/deviceAppManagement/</baseUrl>
         <logRequestUris>$true</logRequestUris>
         <logHeaders>$false</logHeaders>
@@ -12,37 +14,39 @@
     </Azure_Settings>
     <IntuneWin_Settings>
         <!-- Edit the AppType element - supported options are MSI, EXE or PS1 -->
-        <AppType>EXE</AppType>
+        <AppType>ps1</AppType>
         <!-- Edit the installCmdLine element when using the EXE or MSI AppType -->
-        <installCmdLine>VSCodeSetup-x64-1.106.3.exe /SILENT</installCmdLine>
+        <installCmdLine>
+        </installCmdLine>
         <!-- Edit the uninstallCmdLine element when using the EXE or MSI AppType -->
-        <uninstallCmdLine>C:\Program Files\Microsoft VS Code\unins000.exe</uninstallCmdLine>
+        <uninstallCmdLine>
+        </uninstallCmdLine>
         <!-- Edit the RuleType element - supported options are TAGFILE , FILE or REGTAG -->
         <!-- Ignored if AppType is MSI-->
-        <RuleType>FILE</RuleType>
+        <RuleType>TAGFILE</RuleType>
         <!-- Edit the FilePath element when using the FILE RuleType -->
-        <FilePath>C:\Program Files\Microsoft VS Code\unins000.exe</FilePath>
+        <FilePath>
+        </FilePath>
         <!-- !!! Do NOT Edit the ReturnCodeType element !!! -->
         <ReturnCodeType>DEFAULT</ReturnCodeType>
         <!-- Edit the InstallExperience element - supported options are System or User -->
         <InstallExperience>System</InstallExperience>
         <!-- Edit the PackageName element to match the name of the .PS1 script that the IntuneWinAppUtil should reference -->
         <!-- For MSI or EXE AppType - this must be the name of the MSI or executable file in the ..\Source folder - without the .exe in the name -->
-        <PackageName>VSCodeSetup-x64-1.106.3</PackageName>
+        <PackageName>Install-DOTNET8_x64</PackageName>
         <!-- Edit the displayName element that will be shown for the imported package in the Intune console -->
-        <displayName>Microsoft Visual Studio Code</displayName>
+        <displayName>.NET 8 x64 Windows Desktop Runtime</displayName>
+        <!-- Edit the displayVersion element that will be shown for the imported package in the Intune console -->
+        <displayVersion>8.0.22</displayVersion>
         <!-- Edit the Description element that will be shown for the imported package in the Intune console -->
-        <Description>Editor for script development</Description>
+        <Description>Installs .NET 8 64-bit Windows Desktop Runtime</Description>
         <!-- Edit the Publisher name if required -->
         <Publisher>Microsoft</Publisher>
         <!-- Edit the Category element that will be shown for the imported package in the Intune console -->
         <Category>Business</Category>
         <!-- Edit the LogoFile element to provide a logo shown in Company Portal -->
-        <LogoFile>vscodelogo.png</LogoFile>
+        <LogoFile>MSLogo.png</LogoFile>
         <!-- Edit the AADGroupName element used for the required/available/uninstall group creation -->
-        <AADGroupName>ID-WIN10-OBJECT-APP-Install VSCode v1.0</AADGroupName>
-        <displayVersion>1.106.3</displayVersion>
-        <!-- The -ScopeTagName parameter takes precedence over this setting -->
-        <ScopeTag>EUD-CloudPC</ScopeTag>
+        <AADGroupName>GRP-WIN-DOTNET8-x64</AADGroupName>
     </IntuneWin_Settings>
 </CONFIG>

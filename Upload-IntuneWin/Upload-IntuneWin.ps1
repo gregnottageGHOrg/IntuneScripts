@@ -111,6 +111,14 @@
     Can also be combined with -ReplaceExistingContent to replace both content and assignments.
     Requires at least one assignment group parameter (-RequiredAADGroupName, -AvailableAADGroupName, or -UninstallAADGroupName).
 
+.PARAMETER DisconnectGraph
+    Switch parameter that disconnects from Microsoft Graph after the script completes.
+    By default, when using -IntuneAdmin, the Graph connection is preserved to allow running
+    multiple scripts without re-authentication. Use this switch to explicitly disconnect
+    when you're done with all operations.
+    Note: For ClientSecret and CertName authentication methods, the connection is always
+    disconnected regardless of this switch.
+
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com"
 
@@ -346,7 +354,11 @@ param(
 
     [Parameter(HelpMessage = 'Removes all existing assignments before applying new ones. Can be used standalone or with -ReplaceExistingContent. Requires at least one assignment group parameter.'
     )]
-    [switch] $ReplaceExistingAssignments
+    [switch] $ReplaceExistingAssignments,
+
+    [Parameter(HelpMessage = 'Disconnects from Microsoft Graph after the script completes. By default, the Graph connection is preserved when using -IntuneAdmin for running multiple scripts without re-authentication.'
+    )]
+    [switch] $DisconnectGraph
 )
 $script:exitCode = 0
 $script:contentReplaced = $false
@@ -941,8 +953,8 @@ NAME: Set-IntuneAppCategory
             return $true
         }
         catch {
-            # Check if error is because category is already assigned
-            if ($_.Exception.Message -match "already exists") {
+            # Check if error is because category is already assigned (409 Conflict or "already exists")
+            if ($_.Exception.Message -match "already exists" -or $_.Exception.Message -match "409" -or $_.Exception.Message -match "Conflict") {
                 Write-Log -Message "Category '$CategoryName' is already assigned to this application"
                 Write-Host "Category '$CategoryName' is already assigned" -ForegroundColor Green
                 return $true
@@ -1563,7 +1575,14 @@ NAME: Update-ConfigFileVersion
         elseif ($extension -eq ".json") {
             # Update JSON config
             $jsonContent = Get-Content $ConfigFilePath -Raw | ConvertFrom-Json
-            $jsonContent.displayVersion = $NewVersion
+            # Check if displayVersion property exists, if not add it
+            if (-not ($jsonContent.PSObject.Properties.Name -contains 'displayVersion')) {
+                $jsonContent | Add-Member -MemberType NoteProperty -Name 'displayVersion' -Value $NewVersion
+                Write-Log -Message "Added missing displayVersion property to JSON config"
+            }
+            else {
+                $jsonContent.displayVersion = $NewVersion
+            }
             $jsonContent | ConvertTo-Json -Depth 10 | Set-Content $ConfigFilePath -Encoding UTF8
             Write-Log -Message "Updated displayVersion in JSON config to: $NewVersion"
             return $true
@@ -1663,8 +1682,8 @@ NAME: Invoke-VersionCheck
         Write-Host
 
         # Auto-use detected version when config is empty
-        $script:displayVersion = $detectedVersion
-        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion $detectedVersion
+        $script:displayVersion = [string]$detectedVersion
+        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion ([string]$detectedVersion)
         if ($updateResult) {
             Write-Host "Config file updated with version: $detectedVersion" -ForegroundColor Green
         }
@@ -1720,13 +1739,364 @@ NAME: Invoke-VersionCheck
 
     if ($useDetectedVersion) {
         # Update the script variable and config file
-        $script:displayVersion = $detectedVersion
-        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion $detectedVersion
+        $script:displayVersion = [string]$detectedVersion
+        $updateResult = Update-ConfigFileVersion -ConfigFilePath $ConfigFilePath -NewVersion ([string]$detectedVersion)
         if ($updateResult) {
             Write-Host "Config file updated with version: $detectedVersion" -ForegroundColor Green
         }
         else {
             Write-Host "Warning: Could not update config file, but will use detected version for this run" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host
+}
+
+####################################################
+
+function Get-LevenshteinDistance {
+    <#
+.SYNOPSIS
+Calculates the Levenshtein distance between two strings
+.DESCRIPTION
+Returns the minimum number of single-character edits required to change one string into another
+.PARAMETER Source
+The source string
+.PARAMETER Target
+The target string
+.EXAMPLE
+Get-LevenshteinDistance -Source "test" -Target "tent"
+.NOTES
+NAME: Get-LevenshteinDistance
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Target
+    )
+
+    $sourceLen = $Source.Length
+    $targetLen = $Target.Length
+
+    # Handle edge cases
+    if ($sourceLen -eq 0) { return $targetLen }
+    if ($targetLen -eq 0) { return $sourceLen }
+
+    # Create distance matrix using jagged array (PowerShell-compatible)
+    $matrix = @()
+    for ($i = 0; $i -le $sourceLen; $i++) {
+        $row = @(0) * ($targetLen + 1)
+        $matrix += , $row
+    }
+
+    # Initialize first column and row
+    for ($i = 0; $i -le $sourceLen; $i++) { $matrix[$i][0] = $i }
+    for ($j = 0; $j -le $targetLen; $j++) { $matrix[0][$j] = $j }
+
+    # Fill in the rest of the matrix
+    for ($i = 1; $i -le $sourceLen; $i++) {
+        for ($j = 1; $j -le $targetLen; $j++) {
+            $cost = if ($Source[$i - 1] -eq $Target[$j - 1]) { 0 } else { 1 }
+
+            $deletion = $matrix[$i - 1][$j] + 1
+            $insertion = $matrix[$i][$j - 1] + 1
+            $substitution = $matrix[$i - 1][$j - 1] + $cost
+
+            $matrix[$i][$j] = [Math]::Min([Math]::Min($deletion, $insertion), $substitution)
+        }
+    }
+
+    return $matrix[$sourceLen][$targetLen]
+}
+
+####################################################
+
+function Update-ConfigInstallCmdLine {
+    <#
+.SYNOPSIS
+Updates the installCmdLine and optionally PackageName in a Config.xml or Config.json file
+.DESCRIPTION
+This function updates the installCmdLine field in the configuration file with a corrected exe filename.
+It preserves any command-line arguments from the original installCmdLine.
+.PARAMETER ConfigFilePath
+The full path to the Config.xml or Config.json file
+.PARAMETER NewExeFileName
+The corrected exe filename (just the filename, not full path)
+.PARAMETER OriginalInstallCmdLine
+The original installCmdLine value to extract arguments from
+.PARAMETER UpdatePackageName
+If specified, also update the PackageName element (without extension)
+.EXAMPLE
+Update-ConfigInstallCmdLine -ConfigFilePath "C:\Packages\MyApp\Config.xml" -NewExeFileName "Setup-2.0.exe" -OriginalInstallCmdLine "Setup-1.0.exe /SILENT"
+.NOTES
+NAME: Update-ConfigInstallCmdLine
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigFilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NewExeFileName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OriginalInstallCmdLine,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$UpdatePackageName
+    )
+
+    if (-not (Test-Path $ConfigFilePath)) {
+        Write-Log -Message "Config file not found for installCmdLine update: $ConfigFilePath" -LogLevel 3
+        return $false
+    }
+
+    try {
+        # Extract arguments from original command line (everything after the first .exe)
+        $arguments = ""
+        if ($OriginalInstallCmdLine -match '\.exe\s+(.+)$') {
+            $arguments = " " + $Matches[1]
+        }
+
+        $newInstallCmdLine = $NewExeFileName + $arguments
+        $newPackageName = [System.IO.Path]::GetFileNameWithoutExtension($NewExeFileName)
+
+        $extension = [System.IO.Path]::GetExtension($ConfigFilePath).ToLower()
+
+        if ($extension -eq ".xml") {
+            # Update XML config
+            [xml]$xmlContent = Get-Content $ConfigFilePath -Encoding UTF8
+            $intuneSettings = $xmlContent.SelectSingleNode("//IntuneWin_Settings")
+
+            if ($null -ne $intuneSettings) {
+                # Update installCmdLine
+                $installCmdLineNode = $intuneSettings.SelectSingleNode("installCmdLine")
+                if ($null -ne $installCmdLineNode) {
+                    $installCmdLineNode.InnerText = $newInstallCmdLine
+                }
+
+                # Update PackageName if requested
+                if ($UpdatePackageName) {
+                    $packageNameNode = $intuneSettings.SelectSingleNode("PackageName")
+                    if ($null -ne $packageNameNode) {
+                        $packageNameNode.InnerText = $newPackageName
+                    }
+                }
+
+                $xmlContent.Save($ConfigFilePath)
+                Write-Log -Message "Updated installCmdLine in XML config to: $newInstallCmdLine"
+                if ($UpdatePackageName) {
+                    Write-Log -Message "Updated PackageName in XML config to: $newPackageName"
+                }
+                return $true
+            }
+            else {
+                Write-Log -Message "IntuneWin_Settings node not found in XML config" -LogLevel 3
+                return $false
+            }
+        }
+        elseif ($extension -eq ".json") {
+            # Update JSON config
+            $jsonContent = Get-Content $ConfigFilePath -Raw | ConvertFrom-Json
+
+            # Update installCmdLine
+            if ($jsonContent.PSObject.Properties.Name -contains 'installCmdLine') {
+                $jsonContent.installCmdLine = $newInstallCmdLine
+            }
+
+            # Update PackageName if requested
+            if ($UpdatePackageName -and ($jsonContent.PSObject.Properties.Name -contains 'PackageName')) {
+                $jsonContent.PackageName = $newPackageName
+            }
+
+            $jsonContent | ConvertTo-Json -Depth 10 | Set-Content $ConfigFilePath -Encoding UTF8
+            Write-Log -Message "Updated installCmdLine in JSON config to: $newInstallCmdLine"
+            if ($UpdatePackageName) {
+                Write-Log -Message "Updated PackageName in JSON config to: $newPackageName"
+            }
+            return $true
+        }
+        else {
+            Write-Log -Message "Unsupported config file type: $extension" -LogLevel 3
+            return $false
+        }
+    }
+    catch {
+        Write-Log -Message "Error updating config file installCmdLine: $_" -LogLevel 3
+        return $false
+    }
+}
+
+####################################################
+
+function Invoke-ExeValidation {
+    <#
+.SYNOPSIS
+Validates that the exe file specified in installCmdLine exists in the Source folder
+.DESCRIPTION
+Checks if the exe file referenced in installCmdLine exists. If not found, searches for the
+closest matching exe file in the Source folder using fuzzy matching and offers to update the config.
+.PARAMETER SourcePath
+The path to the source folder containing the installer
+.PARAMETER InstallCmdLine
+The current installCmdLine from the config
+.PARAMETER ConfigFilePath
+The path to the config file (XML or JSON)
+.PARAMETER PackageName
+The current PackageName from the config
+.EXAMPLE
+Invoke-ExeValidation -SourcePath "C:\Packages\MyApp\Source" -InstallCmdLine "Setup-1.0.exe /SILENT" -ConfigFilePath "C:\Packages\MyApp\Config.xml" -PackageName "Setup-1.0"
+.NOTES
+NAME: Invoke-ExeValidation
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallCmdLine,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigFilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    # Extract exe filename from installCmdLine (first token ending in .exe)
+    if ($InstallCmdLine -match '^([^\s]+\.exe)') {
+        $configuredExe = $Matches[1]
+    }
+    else {
+        Write-Log -Message "Could not extract .exe filename from installCmdLine: $InstallCmdLine"
+        return
+    }
+
+    $fullExePath = Join-Path $SourcePath $configuredExe
+
+    # Check if the configured exe exists
+    if (Test-Path $fullExePath) {
+        Write-Log -Message "Validated: $configuredExe exists in Source folder"
+        return
+    }
+
+    Write-Log -Message "EXE file not found: $configuredExe" -LogLevel 2
+
+    # Get all exe files in the Source folder
+    $exeFiles = Get-ChildItem -Path $SourcePath -Filter "*.exe" -File -ErrorAction SilentlyContinue
+
+    if ($null -eq $exeFiles -or $exeFiles.Count -eq 0) {
+        Write-Log -Message "No .exe files found in Source folder: $SourcePath" -LogLevel 3
+        Write-Host "Error: No .exe files found in Source folder!" -ForegroundColor Red
+        Write-Host "Source path: $SourcePath" -ForegroundColor Red
+        return
+    }
+
+    # Find the closest matching exe using Levenshtein distance
+    $bestMatch = $null
+    $bestDistance = [int]::MaxValue
+
+    foreach ($exeFile in $exeFiles) {
+        $distance = Get-LevenshteinDistance -Source $configuredExe.ToLower() -Target $exeFile.Name.ToLower()
+        if ($distance -lt $bestDistance) {
+            $bestDistance = $distance
+            $bestMatch = $exeFile.Name
+        }
+    }
+
+    if ($null -eq $bestMatch) {
+        Write-Log -Message "Could not find a matching .exe file in Source folder" -LogLevel 3
+        return
+    }
+
+    # Display the mismatch and best match to user
+    Write-Host
+    Write-Host "EXE File Mismatch Detected" -ForegroundColor Yellow
+    Write-Host "==========================" -ForegroundColor Yellow
+    Write-Host "Configured in installCmdLine: " -NoNewline
+    Write-Host "$configuredExe" -ForegroundColor Red
+    Write-Host "File not found in: " -NoNewline
+    Write-Host "$SourcePath" -ForegroundColor Cyan
+    Write-Host
+    Write-Host "Available .exe files in Source folder:" -ForegroundColor Cyan
+    foreach ($exeFile in $exeFiles) {
+        if ($exeFile.Name -eq $bestMatch) {
+            Write-Host "  * $($exeFile.Name) (best match)" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  - $($exeFile.Name)" -ForegroundColor Gray
+        }
+    }
+    Write-Host
+    Write-Host "Do you want to update the config to use: " -NoNewline -ForegroundColor Yellow
+    Write-Host "$bestMatch" -ForegroundColor Green -NoNewline
+    Write-Host "?" -ForegroundColor Yellow
+    Write-Host "This will also update the PackageName element." -ForegroundColor Gray
+    Write-Host "Press 'Y' for Yes, 'N' for No, or wait 30 seconds to cancel." -ForegroundColor Gray
+    Write-Host
+
+    # Wait for user input with timeout
+    $timeout = 30
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $useNewExe = $false
+
+    while ($stopwatch.Elapsed.TotalSeconds -lt $timeout) {
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq 'Y') {
+                $useNewExe = $true
+                Write-Host "Using corrected exe: $bestMatch" -ForegroundColor Green
+                break
+            }
+            elseif ($key.Key -eq 'N') {
+                $useNewExe = $false
+                Write-Host "Keeping original configuration (script may fail)" -ForegroundColor Yellow
+                break
+            }
+        }
+
+        # Update countdown display
+        $remaining = [math]::Ceiling($timeout - $stopwatch.Elapsed.TotalSeconds)
+        Write-Host "`rTime remaining: $remaining seconds... " -NoNewline -ForegroundColor Gray
+        Start-Sleep -Milliseconds 500
+    }
+    $stopwatch.Stop()
+
+    Write-Host # New line after countdown
+
+    if ($stopwatch.Elapsed.TotalSeconds -ge $timeout) {
+        Write-Host "Timeout - cancelling operation. Original configuration kept." -ForegroundColor Yellow
+        return
+    }
+
+    if ($useNewExe) {
+        # Extract the new package name (without extension)
+        $newPackageName = [System.IO.Path]::GetFileNameWithoutExtension($bestMatch)
+
+        # Update the script variables
+        # Extract arguments from original install command line
+        $arguments = ""
+        if ($InstallCmdLine -match '\.exe\s+(.+)$') {
+            $arguments = " " + $Matches[1]
+        }
+        $script:installCmdLine = $bestMatch + $arguments
+        $script:PackageName = $newPackageName
+
+        Write-Log -Message "Updated script variables - installCmdLine: $($script:installCmdLine), PackageName: $($script:PackageName)"
+
+        # Update the config file
+        $updateResult = Update-ConfigInstallCmdLine -ConfigFilePath $ConfigFilePath -NewExeFileName $bestMatch -OriginalInstallCmdLine $InstallCmdLine -UpdatePackageName
+        if ($updateResult) {
+            Write-Host "Config file updated successfully!" -ForegroundColor Green
+            Write-Host "  installCmdLine: $($script:installCmdLine)" -ForegroundColor Cyan
+            Write-Host "  PackageName: $($script:PackageName)" -ForegroundColor Cyan
+        }
+        else {
+            Write-Host "Warning: Could not update config file, but will use corrected values for this run" -ForegroundColor Yellow
         }
     }
 
@@ -2140,10 +2510,9 @@ function GetWin32AppBody() {
         [ValidateSet('system', 'user')]
         $installExperience = "system",
 
-        [parameter(Mandatory = $true, ParameterSetName = "EXE")]
-        [parameter(Mandatory = $true, ParameterSetName = "MSI")]
-        #[parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
+        [parameter(Mandatory = $false, ParameterSetName = "EXE")]
+        [parameter(Mandatory = $false, ParameterSetName = "MSI")]
+        #[parameter(Mandatory = $false)]
         [string]$logo,
 
         [parameter(Mandatory = $true, ParameterSetName = "EXE")]
@@ -2241,7 +2610,7 @@ function GetWin32AppBody() {
 
         [parameter(ParameterSetName = "EXE")]
         [parameter(ParameterSetName = "MSI")]
-        [ValidateSet('none', 'x86', 'x64', 'arm', 'arm64', 'x64,x86', 'x86,x64', 'x86,arm', 'x64,arm64')]
+        [ValidateSet('', 'none', 'x86', 'x64', 'arm', 'arm64', 'x64,x86', 'x86,x64', 'x86,arm', 'x64,arm64')]
         [string]$allowedArchitectures,
 
         [parameter(ParameterSetName = "EXE")]
@@ -2307,7 +2676,9 @@ function GetWin32AppBody() {
             $body.uninstallCommandLine = "msiexec /x `"$MsiProductCode`" $msiUninstallCommandLine"
         }
         $body.allowAvailableUninstall = $true
-        $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+        if (-not [string]::IsNullOrWhiteSpace($logo)) {
+            $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+        }
 
         # Add optional system requirement properties if specified
         if ($minimumFreeDiskSpaceInMB -and $minimumFreeDiskSpaceInMB -gt 0) {
@@ -2369,7 +2740,9 @@ function GetWin32AppBody() {
         $body.setupFilePath = $SetupFileName;
         $body.uninstallCommandLine = "$uninstallCommandLine";
         $body.allowAvailableUninstall = $true
-        $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+        if (-not [string]::IsNullOrWhiteSpace($logo)) {
+            $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+        }
 
         # Add optional system requirement properties if specified
         if ($minimumFreeDiskSpaceInMB -and $minimumFreeDiskSpaceInMB -gt 0) {
@@ -2804,11 +3177,10 @@ NAME: Upload-Win32LOB
         [ValidateSet('system', 'user')]
         [string] $installExperience = "system",
 
-        [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 7)]
-        [parameter(Mandatory = $true, ParameterSetName = "EXE", Position = 7)]
-        [parameter(Mandatory = $true, ParameterSetName = "PS1", Position = 7)]
+        [parameter(Mandatory = $false, ParameterSetName = "MSI", Position = 7)]
+        [parameter(Mandatory = $false, ParameterSetName = "EXE", Position = 7)]
+        [parameter(Mandatory = $false, ParameterSetName = "PS1", Position = 7)]
         #[parameter(Mandatory = $false, Position = 7)]
-        [ValidateNotNullOrEmpty()]
         $logo,
 
         [parameter(Mandatory = $true, ParameterSetName = "MSI", Position = 8)]
@@ -3406,7 +3778,7 @@ NAME: Get-XMLConfig
         }
 
         foreach ($XMLEntity in $XML_Content.GetElementsByTagName("IntuneWin_Settings")) {
-            if ($script:AADGroupName.Length -gt 50) {
+            if ($script:EntraGroupName.Length -gt 50) {
                 Write-Log -Message "Error - Entra ID group name longer than 50 chars. Shorten then retry."
                 exit
             }
@@ -3426,7 +3798,7 @@ NAME: Get-XMLConfig
                 $script:Publisher = [string]$XMLEntity.Publisher
                 $script:Channel = [string]$XMLEntity.Channel
                 # Support both EntraGroupName (preferred) and AADGroupName (legacy)
-                $script:AADGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
+                $script:EntraGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
                 return
             }
             $script:RuleType = [string]$XMLEntity.RuleType
@@ -3472,7 +3844,7 @@ NAME: Get-XMLConfig
             $script:Category = [string]$XMLEntity.Category
             $script:LogoFile = [string]$XMLEntity.LogoFile
             # Support both EntraGroupName (preferred) and AADGroupName (legacy)
-            $script:AADGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
+            $script:EntraGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
 
             # Read optional ScopeTag from Config.xml
             $script:ConfigScopeTag = [string]$XMLEntity.ScopeTag
@@ -3611,7 +3983,7 @@ NAME: Get-JSONConfig
             $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
             $script:Channel = if ($JSON_Content.channel) { [string]$JSON_Content.channel } else { [string]$JSON_Content.Channel }
             # Support both entraGroupName (preferred) and aadGroupName (legacy)
-            $script:AADGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
+            $script:EntraGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
                 elseif ($JSON_Content.EntraGroupName) { [string]$JSON_Content.EntraGroupName } `
                 elseif ($JSON_Content.aadGroupName) { [string]$JSON_Content.aadGroupName } `
                 else { [string]$JSON_Content.AADGroupName }
@@ -3662,7 +4034,7 @@ NAME: Get-JSONConfig
         $script:Category = if ($JSON_Content.category) { [string]$JSON_Content.category } else { [string]$JSON_Content.Category }
         $script:LogoFile = if ($JSON_Content.logoFile) { [string]$JSON_Content.logoFile } else { [string]$JSON_Content.LogoFile }
         # Support both entraGroupName (preferred) and aadGroupName (legacy)
-        $script:AADGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
+        $script:EntraGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
             elseif ($JSON_Content.EntraGroupName) { [string]$JSON_Content.EntraGroupName } `
             elseif ($JSON_Content.aadGroupName) { [string]$JSON_Content.aadGroupName } `
             else { [string]$JSON_Content.AADGroupName }
@@ -3723,7 +4095,7 @@ NAME: Get-JSONConfig
         $script:RequirementRules = $JSON_Content.requirementRules
 
         # Validate group name length
-        if ($script:AADGroupName.Length -gt 50) {
+        if ($script:EntraGroupName.Length -gt 50) {
             Write-Log -Message "Error - Entra ID group name longer than 50 chars. Shorten then retry."
             exit
         }
@@ -3877,7 +4249,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         [string]$ReturnCodeType,
         [string]$InstallExperience,
         [string]$LogoFile,
-        [string]$AADGroupName
+        [string]$EntraGroupName
     )
 
     begin {
@@ -3891,7 +4263,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             Write-Log -Message "ReturnCodeType: [$ReturnCodeType]"
             Write-Log -Message "InstallExperience: [$InstallExperience]"
             Write-Log -Message "LogoFile: [$LogoFile]"
-            Write-Log -Message "EntraGroupName: [$AADGroupName]"
+            Write-Log -Message "EntraGroupName: [$EntraGroupName]"
 
             if ( $AppType -ne "Edge" ) {
                 if ( ( $AppType -eq "PS1" ) -and ( $RuleType -eq "TAGFILE" ) -or ( $RuleType -eq "POWERSHELL" ) ) {
@@ -4290,8 +4662,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Log -Message "Using image type: $imageType"
 
                         # Update the app with the logo using direct Graph API call
-                        # Note: Using Invoke-MgGraphRequest directly with a hashtable body
-                        # because it handles the JSON serialization and content-type correctly
+                        # Note: Using explicit JSON conversion with -Compress to ensure proper formatting
                         $logoBody = @{
                             "@odata.type" = "#microsoft.graph.win32LobApp"
                             "largeIcon"   = @{
@@ -4303,17 +4674,18 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Log -Message "Logo PATCH URI: $logoUri"
                         Write-Log -Message "Logo icon Base64 length: $($Icon.Length)"
                         try {
+                            # Convert to JSON explicitly with proper depth to ensure correct serialization
+                            $logoJson = $logoBody | ConvertTo-Json -Depth 10 -Compress
                             if ($userName) {
                                 # Using legacy auth token method
-                                $logoJson = $logoBody | ConvertTo-Json -Depth 10
                                 $clonedHeaders = CloneObject $authToken
                                 $clonedHeaders["content-length"] = $logoJson.Length
                                 $clonedHeaders["content-type"] = "application/json"
                                 $response = Invoke-RestMethod -Uri $logoUri -Method Patch -Headers $clonedHeaders -Body $logoJson -UseBasicParsing
                             }
                             else {
-                                # Using Invoke-MgGraphRequest with hashtable - this handles JSON correctly
-                                $response = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoBody
+                                # Using Invoke-MgGraphRequest with pre-serialized JSON string and explicit content type
+                                $response = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoJson -ContentType "application/json"
                             }
                             Write-Log -Message "Logo added successfully"
                             Write-Host "Logo added successfully" -ForegroundColor Green
@@ -4383,6 +4755,25 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         "publisher"      = $script:Publisher
                     }
 
+                    # Add logo to settings body if loaded from config
+                    if (-not [string]::IsNullOrWhiteSpace($Icon)) {
+                        # Determine image type based on file extension
+                        $imageType = "image/png"
+                        if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                            $extension = [System.IO.Path]::GetExtension($LogoFile).ToLower()
+                            switch ($extension) {
+                                ".jpg" { $imageType = "image/jpeg" }
+                                ".jpeg" { $imageType = "image/jpeg" }
+                                ".png" { $imageType = "image/png" }
+                            }
+                        }
+                        $settingsBody["largeIcon"] = @{
+                            "type"  = $imageType
+                            "value" = $Icon
+                        }
+                        Write-Log -Message "Including logo in settings update (Base64 length: $($Icon.Length))"
+                    }
+
                     # Add extended settings if they are provided in config
                     if ($script:IsFeatured -eq $true) {
                         $settingsBody["isFeatured"] = $true
@@ -4436,20 +4827,22 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     }
 
                     try {
+                        # Convert to JSON explicitly with proper depth to ensure correct serialization (especially for largeIcon)
+                        $settingsJson = $settingsBody | ConvertTo-Json -Depth 10 -Compress
                         if ($userName) {
-                            $settingsJson = $settingsBody | ConvertTo-Json -Depth 10
                             $clonedHeaders = CloneObject $authToken
                             $clonedHeaders["content-length"] = $settingsJson.Length
                             $clonedHeaders["content-type"] = "application/json"
                             $response = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $settingsJson -UseBasicParsing
                         }
                         else {
-                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsBody
+                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsJson -ContentType "application/json"
                         }
                         Write-Log -Message "Settings updated: description, displayVersion, publisher and extended settings"
                         Write-Host "Description: Updated" -ForegroundColor Green
                         Write-Host "Display Version: $($script:displayVersion)" -ForegroundColor Green
                         Write-Host "Publisher: $($script:Publisher)" -ForegroundColor Green
+                        if (-not [string]::IsNullOrWhiteSpace($Icon)) { Write-Host "Logo: Updated" -ForegroundColor Green }
                         if ($script:IsFeatured) { Write-Host "Featured App: $($script:IsFeatured)" -ForegroundColor Green }
                         if ($script:InformationUrl) { Write-Host "Information URL: $($script:InformationUrl)" -ForegroundColor Green }
                         if ($script:PrivacyInformationUrl) { Write-Host "Privacy URL: $($script:PrivacyInformationUrl)" -ForegroundColor Green }
@@ -4718,19 +5111,28 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
         # Handle ReplaceExistingAssignments mode - validate and set flag
         if ($ReplaceExistingAssignments) {
-            # Validate that at least one assignment group is specified
-            if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-                Write-Log -Message "Error: -ReplaceExistingAssignments requires at least one assignment group parameter" -LogLevel 3
+            # Validate that at least one assignment group is specified (either via parameter or config file)
+            $hasAssignmentGroup = $RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName -or (-not [string]::IsNullOrWhiteSpace($script:EntraGroupName))
+            if (-not $hasAssignmentGroup) {
+                Write-Log -Message "Error: -ReplaceExistingAssignments requires at least one assignment group parameter or EntraGroupName in config" -LogLevel 3
                 Write-Host
-                Write-Host "Error: -ReplaceExistingAssignments requires at least one of the following parameters:" -ForegroundColor Red
-                Write-Host "  -RequiredAADGroupName / -RequiredEntraGroupName" -ForegroundColor Yellow
-                Write-Host "  -AvailableAADGroupName / -AvailableEntraGroupName" -ForegroundColor Yellow
-                Write-Host "  -UninstallAADGroupName / -UninstallEntraGroupName" -ForegroundColor Yellow
+                Write-Host "Error: -ReplaceExistingAssignments requires at least one of the following:" -ForegroundColor Red
+                Write-Host "  Parameters:" -ForegroundColor Yellow
+                Write-Host "    -RequiredAADGroupName / -RequiredEntraGroupName" -ForegroundColor Yellow
+                Write-Host "    -AvailableAADGroupName / -AvailableEntraGroupName" -ForegroundColor Yellow
+                Write-Host "    -UninstallAADGroupName / -UninstallEntraGroupName" -ForegroundColor Yellow
+                Write-Host "  Or in Config.xml/Config.json:" -ForegroundColor Yellow
+                Write-Host "    <AADGroupName> / <EntraGroupName> element" -ForegroundColor Yellow
                 Write-Host
                 exit
             }
             $script:replaceAssignmentsMode = $true
-            Write-Log -Message "ReplaceExistingAssignments mode enabled - will clear existing assignments before applying new ones"
+            if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
+                Write-Log -Message "ReplaceExistingAssignments mode enabled - using group name from config: $($script:EntraGroupName)"
+            }
+            else {
+                Write-Log -Message "ReplaceExistingAssignments mode enabled - will clear existing assignments before applying new ones"
+            }
         }
 
         # Skip group assignment if content was replaced (existing assignments are preserved)
@@ -4771,10 +5173,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 Write-Log -Message "Prepare Entra ID group for required assignment targeting: $RequiredAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
-                    $script:exitCode = New-AADGroup -groupName $RequiredAADGroupName
+                    $script:exitCode = New-EntraGroup -groupName $RequiredAADGroupName
                 }
                 else {
-                    $script:exitCode = New-AADGroupMG -groupName $RequiredAADGroupName
+                    $script:exitCode = New-EntraGroupMG -groupName $RequiredAADGroupName
                 }
 
                 if ($script:groupsWereCreated) {
@@ -4809,10 +5211,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 Write-Log -Message "Prepare Entra ID group for available assignment targeting: $AvailableAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
-                    $script:exitCode = New-AADGroup -groupName $AvailableAADGroupName
+                    $script:exitCode = New-EntraGroup -groupName $AvailableAADGroupName
                 }
                 else {
-                    $script:exitCode = New-AADGroupMG -groupName $AvailableAADGroupName
+                    $script:exitCode = New-EntraGroupMG -groupName $AvailableAADGroupName
                 }
 
                 if ($script:groupsWereCreated) {
@@ -4847,10 +5249,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 Write-Log -Message "Prepare Entra ID group for uninstall assignment targeting: $UninstallAADGroupName"
                 $script:groupsWereCreated = $false
                 if ($userName) {
-                    $script:exitCode = New-AADGroup -groupName $UninstallAADGroupName
+                    $script:exitCode = New-EntraGroup -groupName $UninstallAADGroupName
                 }
                 else {
-                    $script:exitCode = New-AADGroupMG -groupName $UninstallAADGroupName
+                    $script:exitCode = New-EntraGroupMG -groupName $UninstallAADGroupName
                 }
 
                 if ($script:groupsWereCreated) {
@@ -4886,10 +5288,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 Write-Log -Message "Create Entra ID groups for install/uninstall"
                 $script:groupsWereCreated = $false
                 if ($userName) {
-                    $script:exitCode = New-AADGroup -groupName $AADGroupName
+                    $script:exitCode = New-EntraGroup -groupName $EntraGroupName
                 }
                 else {
-                    $script:exitCode = New-AADGroupMG -groupName $AADGroupName
+                    $script:exitCode = New-EntraGroupMG -groupName $EntraGroupName
                 }
 
                 if ($script:groupsWereCreated) {
@@ -4910,22 +5312,22 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 Write-Log -Message "Reading group IDs"
 
                 if ($userName) {
-                    $installReqGroup = Get-GroupID -GroupName "$AADGroupName-Required"
+                    $installReqGroup = Get-GroupID -GroupName "$EntraGroupName-Required"
                 }
                 else {
-                    $installReqGroup = Get-GroupIDMG -GroupName "$AADGroupName-Required"
+                    $installReqGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Required"
                 }
                 if ($userName) {
-                    $installAvailGroup = Get-GroupID -GroupName "$AADGroupName-Available"
+                    $installAvailGroup = Get-GroupID -GroupName "$EntraGroupName-Available"
                 }
                 else {
-                    $installAvailGroup = Get-GroupIDMG -GroupName "$AADGroupName-Available"
+                    $installAvailGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Available"
                 }
                 if ($userName) {
-                    $uninstallGroup = Get-GroupID -GroupName "$AADGroupName-UnInstall"
+                    $uninstallGroup = Get-GroupID -GroupName "$EntraGroupName-UnInstall"
                 }
                 else {
-                    $uninstallGroup = Get-GroupIDMG -GroupName "$AADGroupName-UnInstall"
+                    $uninstallGroup = Get-GroupIDMG -GroupName "$EntraGroupName-UnInstall"
                 }
 
                 Write-Log -Message "Assigning groups to application..."
@@ -4961,9 +5363,11 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         }
 
         # Apply scope tag to the application (after group assignments are complete)
-        # Skip if content was replaced (preserving existing configuration)
-        # Exception: Apply scope tag if content was replaced but there were no existing assignments
-        $shouldApplyScopeTag = (-not($AssignGroupsOnly)) -and ((-not($script:contentReplaced)) -or ($script:noExistingAssignments -eq $true))
+        # Apply scope tag if:
+        # 1. Not in AssignGroupsOnly mode, AND
+        # 2. Either content wasn't replaced, OR a scope tag was explicitly specified (config or parameter)
+        $hasScopeTagSpecified = (-not [string]::IsNullOrWhiteSpace($ScopeTagName)) -or (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag))
+        $shouldApplyScopeTag = (-not($AssignGroupsOnly)) -and ((-not($script:contentReplaced)) -or $hasScopeTagSpecified)
         if ($shouldApplyScopeTag) {
             Write-Log -Message "Checking for scope tag assignment..."
             if ($null -eq $appID) {
@@ -4979,6 +5383,12 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             else {
                 Write-Log -Message "Warning: Could not get application ID for scope tag assignment" -LogLevel 2
             }
+        }
+        elseif ($AssignGroupsOnly) {
+            Write-Log -Message "Skipping scope tag assignment (AssignGroupsOnly mode)"
+        }
+        else {
+            Write-Log -Message "Skipping scope tag assignment (content replaced, no scope tag specified)"
         }
     }
 
@@ -5253,7 +5663,7 @@ NAME: Invoke-ScopeTagAssignment
 
 ####################################################
 
-function New-AADGroupMG {
+function New-EntraGroupMG {
     <#
 .SYNOPSIS
 This function creates the relevant install/uninstall Entra ID groups
@@ -5261,10 +5671,10 @@ This function creates the relevant install/uninstall Entra ID groups
 This function creates the relevant install/uninstall Entra ID groups. Returns a hashtable with
 'ExitCode' and 'GroupsCreated' properties to indicate if any groups were newly created.
 .EXAMPLE
-$result = New-AADGroupMG -groupName "MyGroupName"
+$result = New-EntraGroupMG -groupName "MyGroupName"
 This function creates the relevant install/uninstall Entra ID groups
 .NOTES
-NAME: New-AADGroupMG -groupName
+NAME: New-EntraGroupMG -groupName
 #>
 
     [cmdletbinding()]
@@ -5283,13 +5693,13 @@ NAME: New-AADGroupMG -groupName
     process {
         Write-Log -Message "groupName: [$groupName]"
 
-        $AADGroups = $groupName
+        $EntraGroups = $groupName
         if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-            $AADGroups = @("$groupName-Required", "$groupName-Available", "$groupName-Uninstall")
+            $EntraGroups = @("$groupName-Required", "$groupName-Available", "$groupName-Uninstall")
         }
 
         $graphApiVersion = "v1.0"
-        foreach ($group in $AADGroups) {
+        foreach ($group in $EntraGroups) {
             # Check if group exists using REST API
             $uri = "https://graph.microsoft.com/$graphApiVersion/groups?`$filter=displayName eq '$group'"
             try {
@@ -5331,7 +5741,7 @@ NAME: New-AADGroupMG -groupName
 
 ####################################################
 
-function New-AADGroup {
+function New-EntraGroup {
     <#
 .SYNOPSIS
 This function creates the relevant install/uninstall Entra ID groups
@@ -5339,10 +5749,10 @@ This function creates the relevant install/uninstall Entra ID groups
 This function creates the relevant install/uninstall Entra ID groups. Sets $script:groupsWereCreated
 to indicate if any groups were newly created.
 .EXAMPLE
-New-AADGroup -groupName "MyGroupName"
+New-EntraGroup -groupName "MyGroupName"
 This function creates the relevant install/uninstall Entra ID groups
 .NOTES
-NAME: New-AADGroup -groupName
+NAME: New-EntraGroup -groupName
 #>
 
     [cmdletbinding()]
@@ -5361,12 +5771,12 @@ NAME: New-AADGroup -groupName
     process {
         Write-Log -Message "groupName: [$groupName]"
 
-        $AADGroups = $groupName
+        $EntraGroups = $groupName
         if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-            $AADGroups = @("$groupName-Required", "$groupName-Available", "$groupName-Uninstall")
+            $EntraGroups = @("$groupName-Required", "$groupName-Available", "$groupName-Uninstall")
         }
 
-        foreach ($group in $AADGroups) {
+        foreach ($group in $EntraGroups) {
             if (Get-AzureADGroup -SearchString $group) {
                 Write-Log -Message "Entra ID group $group already exists!"
             }
@@ -5725,12 +6135,12 @@ function Get-IntuneApplicationMG {
 function Set-GroupMember {
     <#
 .SYNOPSIS
-This function is used to make an object a member of an AAD group
+This function is used to make an object a member of an Entra group
 .DESCRIPTION
-This function is used to make an object a member of an AAD group
+This function is used to make an object a member of an Entra group
 .EXAMPLE
 Set-GroupMember -AddToGroup GroupIDObject -MemberToAdd GroupIDObject
-This function is used to make an object a member of an AAD group
+This function is used to make an object a member of an Entra group
 .NOTES
 NAME: Set-GroupMember
 #>
@@ -5860,15 +6270,19 @@ NAME: Add-ApplicationAssignment
 
             #if($AssignedGroups.target.GroupId -contains $TargetGroupId){
 
-            #   Write-Log -Message "'$AADGroup' is already targetted to this application, can't add an AAD Group already assigned..."
+            #   Write-Log -Message "'$AADGroup' is already targetted to this application, can't add an Entra group already assigned..."
 
             #}
 
             #else {
 
+            # Determine notification setting based on install intent
+            # Hide notifications for Required and Available, show for Uninstall
+            $notificationSetting = if ($InstallIntent -eq "uninstall") { "showAll" } else { "hideAll" }
+
             if ( ! ( $exclude ) ) {
                 # Creating header of JSON File
-                Write-Log -Message "Creating header of JSON File for include"
+                Write-Log -Message "Creating header of JSON File for include (notifications: $notificationSetting)"
 
                 $JSON = @"
 {
@@ -5882,7 +6296,7 @@ NAME: Add-ApplicationAssignment
       "intent": "$InstallIntent",
       "settings": {
         "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
-        "notifications": "hideAll",
+        "notifications": "$notificationSetting",
         "installTimeSettings": {
           "useLocalTime": false,
           "deadlineDateTime": null
@@ -5905,16 +6319,7 @@ NAME: Add-ApplicationAssignment
         "@odata.type": "#microsoft.graph.exclusionGroupAssignmentTarget",
         "groupId": "$TargetGroupId"
       },
-      "intent": "$InstallIntent",
-      "settings": {
-        "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
-        "notifications": "hideAll",
-        "installTimeSettings": {
-          "useLocalTime": false,
-          "deadlineDateTime": null
-        },
-        "deliveryOptimizationPriority": "foreground"
-      }
+      "intent": "$InstallIntent"
     },
 "@
             }
@@ -5985,9 +6390,13 @@ NAME: Add-ApplicationAssignment
 
         else {
 
+            # Determine notification setting based on install intent
+            # Hide notifications for Required and Available, show for Uninstall
+            $notificationSetting = if ($InstallIntent -eq "uninstall") { "showAll" } else { "hideAll" }
+
             if ( ! ( $exclude ) ) {
                 # Creating header of JSON File
-                Write-Log -Message "Creating header of JSON File for include with no additional assignments"
+                Write-Log -Message "Creating header of JSON File for include with no additional assignments (notifications: $notificationSetting)"
 
                 $JSON = @"
 {
@@ -6001,7 +6410,7 @@ NAME: Add-ApplicationAssignment
         "intent": "$InstallIntent",
         "settings": {
           "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
-          "notifications": "hideAll",
+          "notifications": "$notificationSetting",
           "installTimeSettings": {
             "useLocalTime": false,
             "deadlineDateTime": null
@@ -6026,16 +6435,7 @@ NAME: Add-ApplicationAssignment
         "@odata.type": "#microsoft.graph.exclusionGroupAssignmentTarget",
         "groupId": "$TargetGroupId"
         },
-        "intent": "$InstallIntent",
-        "settings": {
-          "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
-          "notifications": "hideAll",
-          "installTimeSettings": {
-            "useLocalTime": false,
-            "deadlineDateTime": null
-          },
-          "deliveryOptimizationPriority": "foreground"
-        }
+        "intent": "$InstallIntent"
     }
     ]
 }
@@ -6072,7 +6472,7 @@ NAME: Add-ApplicationAssignment
         #>
     }
 
-    Write-Host "Sleeping for $sleep seconds to allow AAD group assignment..." -f Magenta
+    Write-Host "Sleeping for $sleep seconds to allow Entra group assignment..." -f Magenta
     Start-Sleep $sleep
     Write-Host
 }
@@ -6384,7 +6784,13 @@ function Test-AuthToken() {
 ####################################################
 
 function Invoke-Cleanup {
-    $null = Disconnect-MgGraph | Out-Null
+    param(
+        [switch]$ForceDisconnect
+    )
+    if ($ForceDisconnect) {
+        Write-Log -Message "Disconnecting from Microsoft Graph..."
+        $null = Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    }
 }
 
 ####################################################
@@ -6527,7 +6933,7 @@ if ( $AppType -ne "Edge" ) {
 }
 
 if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-    Write-Log -Message "AADGroupName: [$AADGroupName]"
+    Write-Log -Message "EntraGroupName: [$EntraGroupName]"
 }
 Write-Log -Message "Path to IntuneWinAppUtil: [$IntuneWinAppUtil]"
 Write-Log -Message "SourcePath: [$SourcePath]"
@@ -6548,10 +6954,32 @@ else {
     if ($IntuneAdmin) {
         Write-Host "`nUsing IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
 
-        #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All" | Out-Null
-        #$global:authToken = Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
-        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All", "Group.ReadWrite.All"
-        #$null = Select-MgProfile -Name "beta" | Out-Null
+        # Required scopes for Intune app management and Entra ID group operations
+        $requiredScopes = @(
+            "DeviceManagementApps.ReadWrite.All",    # For creating/updating Intune apps
+            "Group.ReadWrite.All",                    # For creating Entra ID groups
+            "GroupMember.ReadWrite.All",              # For managing group memberships
+            "DeviceManagementConfiguration.Read.All"  # For reading scope tags
+        )
+
+        # Check if already connected and if current scopes are sufficient
+        $context = Get-MgContext
+        if ($null -ne $context) {
+            $currentScopes = $context.Scopes
+            $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
+            if ($missingScopes.Count -gt 0) {
+                Write-Host "Current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+                Write-Host "Disconnecting and reconnecting with required scopes..." -ForegroundColor Yellow
+                Disconnect-MgGraph | Out-Null
+                Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+            }
+            else {
+                Write-Host "Already connected with required scopes" -ForegroundColor Green
+            }
+        }
+        else {
+            Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+        }
     }
     elseif ($userName) {
         Write-Log -Message "Authenticate to AzureAD..."
@@ -6573,7 +7001,7 @@ else {
             Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint ## Or -CertificateThumbprint instead of -CertificateName
         }
         else {
-            Invoke-Cleanup
+            Invoke-Cleanup -ForceDisconnect
             throw "Error - cert not found: $CertName"
         }
         #$null = Select-MgProfile -Name "beta" | Out-Null
@@ -6628,7 +7056,7 @@ else {
         #endRegion Auth
     }
     else {
-        Invoke-Cleanup
+        Invoke-Cleanup -ForceDisconnect
         throw "Please specify either a valid certificate name or client secret for authentication"
     }
 
@@ -6687,6 +7115,25 @@ if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
         Invoke-VersionCheck -SourcePath $EffectiveSourcePath -PackageName $PackageName -AppType $AppType -ConfigFilePath $activeConfigPath -ConfigVersion $script:displayVersion
     }
 
+    # Validate EXE file exists in Source folder (EXE type only)
+    if ($AppType -eq "EXE") {
+        Write-Log -Message "Validating EXE file in installCmdLine..."
+
+        # Determine which config file is being used (reuse if already set)
+        if (-not $activeConfigPath) {
+            $jsonConfigPath = "$packagePath\Config.json"
+            $xmlConfigPath = "$packagePath\Config.xml"
+            $activeConfigPath = if (Test-Path $jsonConfigPath) { $jsonConfigPath } else { $xmlConfigPath }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($script:installCmdLine)) {
+            Invoke-ExeValidation -SourcePath $EffectiveSourcePath -InstallCmdLine $script:installCmdLine -ConfigFilePath $activeConfigPath -PackageName $script:PackageName
+        }
+        else {
+            Write-Log -Message "Warning: installCmdLine is empty for EXE type package" -LogLevel 2
+        }
+    }
+
     Write-Log -Message "Call Invoke-IntuneWinAppUtil function..."
     Invoke-IntuneWinAppUtil -AppType $AppType -IntuneWinAppPath $IntuneWinAppUtil -PackageSourcePath $EffectiveSourcePath -IntuneAppPackage "$PackageName"
     Write-Log -Message "Return code from IntuneWin: $script:exitCode"
@@ -6703,7 +7150,7 @@ if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
 }
 
 Write-Log -Message "Call Build-IntuneAppPackage function..."
-Build-IntuneAppPackage -AppType $AppType -RuleType $RuleType -ReturnCodeType $ReturnCodeType -InstallExperience $InstallExperience -Logo $LogoFile -AADGroupName $AADGroupName
+Build-IntuneAppPackage -AppType $AppType -RuleType $RuleType -ReturnCodeType $ReturnCodeType -InstallExperience $InstallExperience -Logo $LogoFile -EntraGroupName $EntraGroupName
 Write-Log -Message "Return code from Build-IntuneAppPackage: $script:exitCode"
 
 if ( $script:exitCode -eq "-1" ) {
@@ -6720,8 +7167,21 @@ if (-not($SkipPackageRemoval -or $AssignGroupsOnly)) {
 }
 
 Write-Log "$ScriptName completed." -WriteEventLog
-if (-not($Username)) {
-    Invoke-Cleanup
+
+# Handle Graph disconnection based on authentication method and -DisconnectGraph switch
+if ($IntuneAdmin) {
+    # When using -IntuneAdmin, only disconnect if explicitly requested with -DisconnectGraph
+    if ($DisconnectGraph) {
+        Write-Log -Message "Disconnecting from Microsoft Graph as requested..."
+        Invoke-Cleanup -ForceDisconnect
+    }
+    else {
+        Write-Log -Message "Preserving Microsoft Graph connection for subsequent runs. Use -DisconnectGraph to explicitly disconnect."
+    }
+}
+elseif (-not($Username)) {
+    # For other auth methods (ClientSecret, CertName), always disconnect
+    Invoke-Cleanup -ForceDisconnect
 }
 return $script:exitCode
 

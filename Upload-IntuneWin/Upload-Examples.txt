@@ -1,0 +1,13 @@
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -ReplaceExistingContent -SkipPackageRemoval
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -IntuneWinPackageOnly -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval -ReplaceExistingContent
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -SkipPackageRemoval -ReplaceExistingContent -ReplaceExistingAssignments
+
+.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval -ReplaceExistingAssignments

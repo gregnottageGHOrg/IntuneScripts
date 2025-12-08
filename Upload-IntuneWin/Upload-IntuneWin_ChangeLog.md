@@ -6,6 +6,49 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
 
 ---
 
+## Version 1.7 (December 2025)
+
+### Automatic Tool Download and Update
+
+- Added `Test-IntuneWinAppUtil` function to validate and update IntuneWinAppUtil.exe
+- Automatic download from GitHub if IntuneWinAppUtil.exe is not present
+- Automatic version checking and update if a newer version is available on GitHub
+- Uses GitHub API to compare local file date with last commit date
+- Provides clear user feedback about tool status, version, and updates
+
+### EXE File Validation
+
+- Added `Invoke-ExeValidation` function to validate installer file references
+- Checks if the EXE file specified in `installCmdLine` exists in the Source folder
+- Uses Levenshtein distance algorithm for fuzzy matching when file not found
+- Added `Get-LevenshteinDistance` function for string similarity calculation
+- Offers to update Config.xml/Config.json with corrected filename
+- Added `Update-ConfigInstallCmdLine` function to update config files with corrected EXE names
+- 30-second timeout with intelligent defaults
+
+### Assignment Enhancements
+
+- **Foreground delivery optimization**: All assignment types (Required, Available, Uninstall) now use foreground download priority for faster app delivery
+- **Smart notification settings**: User notifications are now hidden by default for Required and Available assignments, but shown for Uninstall assignments
+- Fixed exclusion assignment issue: Removed unsupported `settings` property from exclusion assignments (Graph API doesn't support settings for exclusion targets)
+
+### Graph Connection Management
+
+- Added `-DisconnectGraph` switch parameter to explicitly disconnect from Microsoft Graph
+- When using `-IntuneAdmin`, Graph connection is now preserved by default for running multiple scripts
+- Allows batch processing of multiple packages without re-authentication
+- Connection is always disconnected for `ClientSecret` and `CertName` authentication methods
+
+### Internal Improvements
+
+- Renamed AAD variables and functions to Entra ID naming convention:
+  - `New-AADGroup` → `New-EntraGroup`
+  - `New-AADGroupMG` → `New-EntraGroupMG`
+  - Internal variable naming updated for consistency
+- Maintained backward compatibility with existing `-RequiredAADGroupName`, `-AvailableAADGroupName`, `-UninstallAADGroupName` parameters
+
+---
+
 ## Version 1.6 (December 2025)
 
 ### Automatic Version Detection
@@ -150,3 +193,14 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
 1. **Version detection is automatic** - No config changes required
 2. **Prompts for EXE/MSI only** - PS1 and Edge apps are not affected
 3. **Config file updates** - If user accepts detected version, config file is modified automatically
+
+### Upgrading from v1.6 to v1.7
+
+1. **IntuneWinAppUtil.exe auto-download** - Tool is now automatically downloaded and updated from GitHub
+2. **EXE validation is automatic** - Validates installer file exists in Source folder for EXE packages
+3. **Graph connection preserved** - When using `-IntuneAdmin`, add `-DisconnectGraph` if you want to disconnect after each run
+4. **Assignment behavior changes**:
+   - Notifications now hidden for Required/Available assignments (previously always hidden)
+   - Notifications shown for Uninstall assignments (new behavior)
+   - Delivery optimization set to foreground for all assignment types
+5. **No breaking changes** - All existing config files and parameters remain compatible
