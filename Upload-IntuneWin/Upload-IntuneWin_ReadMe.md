@@ -17,6 +17,7 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Configuration Files](#configuration-files)
   - [Config.json Format](#configjson-format)
   - [Config.xml Format](#configxml-format)
+- [Automatic Tool Download and Update](#automatic-tool-download-and-update-v17)
 - [Automatic Version Detection](#automatic-version-detection-v16)
 - [Extended Settings](#extended-settings-v15)
 - [Usage Examples](#usage-examples)
@@ -47,6 +48,7 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - ✅ **ESP/Core app designation support** (via Config.json)
 - ✅ **Automatic logo detection and addition** when updating existing apps
 - ✅ **Automatic version detection** for EXE and MSI installers (v1.6)
+- ✅ **Auto-download and update of IntuneWinAppUtil.exe** from GitHub (v1.7)
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -60,6 +62,7 @@ Before running the script, ensure you have:
    - `Microsoft.Graph.Authentication`
 3. **Microsoft Win32 Content Prep Tool**:
    - `IntuneWinAppUtil.exe` (in the script directory or specified path)
+   - **Note:** The script will automatically download the tool if not present, or update it if a newer version is available on GitHub
 4. **Required Permissions**:
    - Intune Administrator role or equivalent permissions
    - Application permissions for Microsoft Graph API
@@ -74,11 +77,15 @@ Before running the script, ensure you have:
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
 ```
 
-### Download Win32 Content Prep Tool
+### Win32 Content Prep Tool (Auto-Download)
 
-Download `IntuneWinAppUtil.exe` from the link below:
+The script **automatically downloads and updates** `IntuneWinAppUtil.exe` from GitHub:
 
-- [Microsoft Win32 Content Prep Tool](https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool)
+- If the tool is not present, it will be downloaded automatically
+- If the tool exists, the script checks GitHub for updates and downloads a newer version if available
+- No manual download is required
+
+For manual download, visit: [Microsoft Win32 Content Prep Tool](https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool)
 
 ---
 
@@ -86,7 +93,7 @@ Download `IntuneWinAppUtil.exe` from the link below:
 
 ### Complete Upload Workflow
 
-1. **Validate Prerequisites** - Checks for IntuneWinAppUtil.exe and required modules
+1. **Validate Prerequisites** - Checks for IntuneWinAppUtil.exe (auto-downloads or updates from GitHub if needed) and required modules
 2. **Read Configuration** - Parses Config.json (preferred) or Config.xml settings
 3. **Create IntuneWin Package** - Runs IntuneWinAppUtil.exe to create the encrypted package
 4. **Authenticate to Graph** - Connects using specified authentication method
@@ -342,6 +349,63 @@ The traditional XML format is still fully supported for backward compatibility.
 | `LogoFile`          | String                               | Path to logo file                               |
 | `EntraGroupName`    | String                               | Entra ID group name for assignments (preferred) |
 | `AADGroupName`      | String                               | AAD group name (legacy, still supported)        |
+
+---
+
+## Automatic Tool Download and Update (v1.7)
+
+Version 1.7 introduces automatic download and update functionality for `IntuneWinAppUtil.exe`. The script automatically manages the Microsoft Win32 Content Prep Tool, eliminating the need for manual downloads.
+
+### How It Works
+
+1. **Tool Check**: When the script runs, it checks if `IntuneWinAppUtil.exe` exists at the expected location
+2. **Auto-Download**: If the tool is not found, it is automatically downloaded from GitHub
+3. **Version Check**: If the tool exists, the script queries the GitHub API to check for updates
+4. **Auto-Update**: If a newer version is available on GitHub, it is automatically downloaded and replaces the old version
+5. **User Notification**: The script provides clear feedback about the tool status:
+   - Current local version
+   - Whether an update is available
+   - Download progress and success/failure status
+
+### Example Output
+
+**When tool needs to be downloaded:**
+
+```text
+Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe not found at: C:\Scripts\IntuneWinAppUtil.exe
+Downloading from GitHub...
+IntuneWinAppUtil.exe downloaded successfully!
+  Version: 1.8.6.0
+```
+
+**When tool is up to date:**
+
+```text
+Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe found at: C:\Scripts\IntuneWinAppUtil.exe
+  Local version: 1.8.6.0
+  Local file date: 2024-11-15 10:30:00 UTC
+Checking GitHub for updates...
+  GitHub last commit date: 2024-11-15 09:00:00 UTC
+Local version is up to date. No update required.
+```
+
+**When update is available:**
+
+```text
+Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe found at: C:\Scripts\IntuneWinAppUtil.exe
+  Local version: 1.8.5.0
+  Local file date: 2024-10-01 08:00:00 UTC
+Checking GitHub for updates...
+  GitHub last commit date: 2024-11-15 09:00:00 UTC
+A newer version is available on GitHub. Downloading update...
+  Downloaded version: 1.8.6.0
+IntuneWinAppUtil.exe has been updated successfully!
+```
+
+> **Note:** The script uses the GitHub API to check for updates. If the API is unavailable (e.g., due to rate limiting or network issues), the script will continue with the existing local version.
 
 ---
 

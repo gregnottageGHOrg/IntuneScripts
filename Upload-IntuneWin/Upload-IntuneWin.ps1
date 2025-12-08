@@ -166,9 +166,15 @@
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.6
+    Version        : 1.7
     Prerequisite   : Microsoft.Graph.Authentication module
-                     IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool)
+                     IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
+
+    Automatic Tool Download and Update (v1.7):
+    The script automatically manages IntuneWinAppUtil.exe:
+    - If not found locally, downloads from GitHub automatically
+    - If found locally, checks GitHub for updates and downloads newer versions
+    - Provides clear user feedback about tool status and updates
 
     Automatic Version Detection (v1.6):
     For EXE and MSI packages, the script automatically detects the installer version:
@@ -347,7 +353,7 @@ $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.6"
+$BuildVer = "1.7"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -469,6 +475,136 @@ function Test-Null($objectToCheck) {
     }
 
     return $false
+}
+
+####################################################
+
+function Test-IntuneWinAppUtil {
+    <#
+.SYNOPSIS
+Validates and updates IntuneWinAppUtil.exe from GitHub
+.DESCRIPTION
+This function checks if IntuneWinAppUtil.exe exists locally. If not, it downloads
+the tool from GitHub. If it exists, it compares the local version with the GitHub
+version and downloads a newer version if available.
+.PARAMETER ToolPath
+The full path where IntuneWinAppUtil.exe should be located
+.EXAMPLE
+Test-IntuneWinAppUtil -ToolPath "C:\Tools\IntuneWinAppUtil.exe"
+.NOTES
+NAME: Test-IntuneWinAppUtil
+#>
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ToolPath
+    )
+
+    $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/raw/master/IntuneWinAppUtil.exe"
+    $githubApiUrl = "https://api.github.com/repos/microsoft/Microsoft-Win32-Content-Prep-Tool/commits?path=IntuneWinAppUtil.exe&per_page=1"
+
+    try {
+        # Check if the tool exists locally
+        if (Test-Path $ToolPath) {
+            Write-Host "IntuneWinAppUtil.exe found at: $ToolPath" -ForegroundColor Green
+
+            # Get local file info
+            $localFile = Get-Item $ToolPath
+            $localLastWriteTime = $localFile.LastWriteTimeUtc
+            $localVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ToolPath)
+            Write-Host "  Local version: $($localVersion.FileVersion)" -ForegroundColor Cyan
+            Write-Host "  Local file date: $($localLastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')) UTC" -ForegroundColor Cyan
+
+            # Check GitHub for the latest commit date on the file
+            Write-Host "Checking GitHub for updates..." -ForegroundColor Yellow
+            try {
+                # Set TLS 1.2 for GitHub API
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+                $headers = @{
+                    "User-Agent" = "PowerShell-IntuneWinAppUtil-Updater"
+                    "Accept"     = "application/vnd.github.v3+json"
+                }
+
+                $response = Invoke-RestMethod -Uri $githubApiUrl -Headers $headers -Method Get -ErrorAction Stop
+
+                if ($response -and $response.Count -gt 0) {
+                    $githubCommitDate = [DateTime]::Parse($response[0].commit.committer.date).ToUniversalTime()
+                    Write-Host "  GitHub last commit date: $($githubCommitDate.ToString('yyyy-MM-dd HH:mm:ss')) UTC" -ForegroundColor Cyan
+
+                    # Compare dates - if GitHub version is newer (commit date is after local file date)
+                    if ($githubCommitDate -gt $localLastWriteTime.AddMinutes(5)) {
+                        Write-Host "A newer version is available on GitHub. Downloading update..." -ForegroundColor Yellow
+
+                        # Download the new version
+                        $tempPath = Join-Path $env:TEMP "IntuneWinAppUtil_new.exe"
+                        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempPath -UseBasicParsing
+
+                        # Verify download
+                        if (Test-Path $tempPath) {
+                            $newVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($tempPath)
+                            Write-Host "  Downloaded version: $($newVersion.FileVersion)" -ForegroundColor Cyan
+
+                            # Replace the old file
+                            Remove-Item $ToolPath -Force
+                            Move-Item $tempPath $ToolPath -Force
+                            Write-Host "IntuneWinAppUtil.exe has been updated successfully!" -ForegroundColor Green
+                        }
+                        else {
+                            Write-Host "Failed to download the update. Continuing with existing version." -ForegroundColor Yellow
+                        }
+                    }
+                    else {
+                        Write-Host "Local version is up to date. No update required." -ForegroundColor Green
+                    }
+                }
+                else {
+                    Write-Host "Could not retrieve GitHub commit information. Using existing local version." -ForegroundColor Yellow
+                }
+            }
+            catch {
+                Write-Host "Unable to check for updates from GitHub: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Continuing with existing local version." -ForegroundColor Yellow
+            }
+        }
+        else {
+            # Tool doesn't exist - download it
+            Write-Host "IntuneWinAppUtil.exe not found at: $ToolPath" -ForegroundColor Yellow
+            Write-Host "Downloading from GitHub..." -ForegroundColor Yellow
+
+            # Set TLS 1.2 for GitHub
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+            # Ensure the directory exists
+            $toolDirectory = Split-Path $ToolPath -Parent
+            if (!(Test-Path $toolDirectory)) {
+                New-Item -Path $toolDirectory -ItemType Directory -Force | Out-Null
+            }
+
+            # Download the tool
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $ToolPath -UseBasicParsing
+
+            if (Test-Path $ToolPath) {
+                $downloadedVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ToolPath)
+                Write-Host "IntuneWinAppUtil.exe downloaded successfully!" -ForegroundColor Green
+                Write-Host "  Version: $($downloadedVersion.FileVersion)" -ForegroundColor Cyan
+            }
+            else {
+                throw "Failed to download IntuneWinAppUtil.exe from GitHub"
+            }
+        }
+
+        # Final verification that the tool exists
+        if (!(Test-Path $ToolPath)) {
+            throw "IntuneWinAppUtil.exe is not available at: $ToolPath"
+        }
+
+        return $true
+    }
+    catch {
+        Write-Host "Error validating IntuneWinAppUtil.exe: $($_.Exception.Message)" -ForegroundColor Red
+        throw $_
+    }
 }
 
 ####################################################
@@ -864,8 +1000,8 @@ NAME: Set-IntuneAppDependency
 
         try {
             $dependencyBody = @{
-                "@odata.type"  = "#microsoft.graph.mobileAppDependency"
-                "targetId"     = $DependencyAppId
+                "@odata.type"    = "#microsoft.graph.mobileAppDependency"
+                "targetId"       = $DependencyAppId
                 "dependencyType" = $DependencyType
             }
 
@@ -943,8 +1079,8 @@ NAME: Set-IntuneAppSupersedence
 
         try {
             $supersedenceBody = @{
-                "@odata.type"     = "#microsoft.graph.mobileAppSupersedence"
-                "targetId"        = $SupersededAppId
+                "@odata.type"      = "#microsoft.graph.mobileAppSupersedence"
+                "targetId"         = $SupersededAppId
                 "supersedenceType" = $SupersedenceType
             }
 
@@ -1183,11 +1319,11 @@ NAME: New-RequirementRule
 
     if ($File) {
         $rule = @{
-            "@odata.type"        = "#microsoft.graph.win32LobAppFileSystemRequirement"
-            "path"               = $Path
-            "fileOrFolderName"   = $FileOrFolderName
+            "@odata.type"          = "#microsoft.graph.win32LobAppFileSystemRequirement"
+            "path"                 = $Path
+            "fileOrFolderName"     = $FileOrFolderName
             "check32BitOn64System" = $Check32BitOn64System
-            "detectionType"      = $FileDetectionType
+            "detectionType"        = $FileDetectionType
         }
         if ($Operator -ne 'notConfigured') {
             $rule["operator"] = $Operator
@@ -1197,11 +1333,11 @@ NAME: New-RequirementRule
     }
     elseif ($Registry) {
         $rule = @{
-            "@odata.type"        = "#microsoft.graph.win32LobAppRegistryRequirement"
-            "keyPath"            = $KeyPath
-            "valueName"          = $ValueName
+            "@odata.type"          = "#microsoft.graph.win32LobAppRegistryRequirement"
+            "keyPath"              = $KeyPath
+            "valueName"            = $ValueName
             "check32BitOn64System" = $Check32BitOn64System
-            "detectionType"      = $RegistryDetectionType
+            "detectionType"        = $RegistryDetectionType
         }
         if ($Operator -ne 'notConfigured') {
             $rule["operator"] = $Operator
@@ -1221,14 +1357,14 @@ NAME: New-RequirementRule
         }
 
         $rule = @{
-            "@odata.type"         = "#microsoft.graph.win32LobAppPowerShellScriptRequirement"
-            "scriptContent"       = $encodedScript
-            "displayName"         = if ($DisplayName) { $DisplayName } else { [System.IO.Path]::GetFileNameWithoutExtension($ScriptFile) }
+            "@odata.type"           = "#microsoft.graph.win32LobAppPowerShellScriptRequirement"
+            "scriptContent"         = $encodedScript
+            "displayName"           = if ($DisplayName) { $DisplayName } else { [System.IO.Path]::GetFileNameWithoutExtension($ScriptFile) }
             "enforceSignatureCheck" = $EnforceSignatureCheck
-            "runAs32Bit"          = $RunAs32Bit
-            "runAsAccount"        = $RunAsAccount
-            "detectionValue"      = $DetectionValue
-            "operator"            = $Operator
+            "runAs32Bit"            = $RunAs32Bit
+            "runAsAccount"          = $RunAsAccount
+            "detectionValue"        = $DetectionValue
+            "operator"              = $Operator
         }
         return $rule
     }
@@ -2134,8 +2270,8 @@ function GetWin32AppBody() {
             $body.installCommandLine = "msiexec /i `"$SetupFileName`""
         }
         $body.installExperience = @{
-            "runAsAccount" = "$installExperience"
-            "maxRunTimeInMinutes" = $maxRunTimeInMinutes
+            "runAsAccount"          = "$installExperience"
+            "maxRunTimeInMinutes"   = $maxRunTimeInMinutes
             "deviceRestartBehavior" = $deviceRestartBehavior
         };
         $body.informationUrl = if ($informationUrl) { $informationUrl } else { $null };
@@ -2209,8 +2345,8 @@ function GetWin32AppBody() {
         $body.fileName = $filename;
         $body.installCommandLine = "$installCommandLine"
         $body.installExperience = @{
-            "runAsAccount" = "$installExperience"
-            "maxRunTimeInMinutes" = $maxRunTimeInMinutes
+            "runAsAccount"          = "$installExperience"
+            "maxRunTimeInMinutes"   = $maxRunTimeInMinutes
             "deviceRestartBehavior" = $deviceRestartBehavior
         };
         $body.informationUrl = if ($informationUrl) { $informationUrl } else { $null };
@@ -4392,21 +4528,21 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 # Build common extended parameters hashtable for splatting
                 $extendedParams = @{
-                    isFeatured = $script:IsFeatured
-                    informationUrl = $script:InformationUrl
-                    privacyInformationUrl = $script:PrivacyInformationUrl
-                    developer = $script:Developer
-                    owner = $script:Owner
-                    notes = $script:Notes
-                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
-                    deviceRestartBehavior = $script:DeviceRestartBehavior
-                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
-                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    isFeatured                = $script:IsFeatured
+                    informationUrl            = $script:InformationUrl
+                    privacyInformationUrl     = $script:PrivacyInformationUrl
+                    developer                 = $script:Developer
+                    owner                     = $script:Owner
+                    notes                     = $script:Notes
+                    maxRunTimeInMinutes       = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior     = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB  = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB         = $script:MinimumMemoryInMB
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
-                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
-                    allowedArchitectures = $script:AllowedArchitectures
-                    minimumSupportedOS = $minOSObject
-                    requirementRules = $additionalRequirementRules
+                    minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures      = $script:AllowedArchitectures
+                    minimumSupportedOS        = $minOSObject
+                    requirementRules          = $additionalRequirementRules
                 }
 
                 if ( ( ! ( Test-Null( $installCmdLine) ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
@@ -4435,21 +4571,21 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 # Build common extended parameters hashtable for splatting
                 $extendedParams = @{
-                    isFeatured = $script:IsFeatured
-                    informationUrl = $script:InformationUrl
-                    privacyInformationUrl = $script:PrivacyInformationUrl
-                    developer = $script:Developer
-                    owner = $script:Owner
-                    notes = $script:Notes
-                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
-                    deviceRestartBehavior = $script:DeviceRestartBehavior
-                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
-                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    isFeatured                = $script:IsFeatured
+                    informationUrl            = $script:InformationUrl
+                    privacyInformationUrl     = $script:PrivacyInformationUrl
+                    developer                 = $script:Developer
+                    owner                     = $script:Owner
+                    notes                     = $script:Notes
+                    maxRunTimeInMinutes       = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior     = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB  = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB         = $script:MinimumMemoryInMB
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
-                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
-                    allowedArchitectures = $script:AllowedArchitectures
-                    minimumSupportedOS = $minOSObject
-                    requirementRules = $additionalRequirementRules
+                    minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures      = $script:AllowedArchitectures
+                    minimumSupportedOS        = $minOSObject
+                    requirementRules          = $additionalRequirementRules
                 }
 
                 Upload-Win32Lob -EXE -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
@@ -4461,21 +4597,21 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 # Build common extended parameters hashtable for splatting
                 $extendedParams = @{
-                    isFeatured = $script:IsFeatured
-                    informationUrl = $script:InformationUrl
-                    privacyInformationUrl = $script:PrivacyInformationUrl
-                    developer = $script:Developer
-                    owner = $script:Owner
-                    notes = $script:Notes
-                    maxRunTimeInMinutes = $script:MaxRunTimeInMinutes
-                    deviceRestartBehavior = $script:DeviceRestartBehavior
-                    minimumFreeDiskSpaceInMB = $script:MinimumFreeDiskSpaceInMB
-                    minimumMemoryInMB = $script:MinimumMemoryInMB
+                    isFeatured                = $script:IsFeatured
+                    informationUrl            = $script:InformationUrl
+                    privacyInformationUrl     = $script:PrivacyInformationUrl
+                    developer                 = $script:Developer
+                    owner                     = $script:Owner
+                    notes                     = $script:Notes
+                    maxRunTimeInMinutes       = $script:MaxRunTimeInMinutes
+                    deviceRestartBehavior     = $script:DeviceRestartBehavior
+                    minimumFreeDiskSpaceInMB  = $script:MinimumFreeDiskSpaceInMB
+                    minimumMemoryInMB         = $script:MinimumMemoryInMB
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
-                    minimumCpuSpeedInMHz = $script:MinimumCpuSpeedInMHz
-                    allowedArchitectures = $script:AllowedArchitectures
-                    minimumSupportedOS = $minOSObject
-                    requirementRules = $additionalRequirementRules
+                    minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
+                    allowedArchitectures      = $script:AllowedArchitectures
+                    minimumSupportedOS        = $minOSObject
+                    requirementRules          = $additionalRequirementRules
                 }
 
                 Upload-Win32Lob -PS1 -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
@@ -6282,6 +6418,17 @@ If ($Env:PSModulePath -NotLike "*$ModulePath*") {
 #Check package path is valid
 if ( ! ( Test-Path $packagePath ) ) {
     Write-Log -Message "Error - path not valid: $packagePath"
+    break
+}
+
+#Validate IntuneWinAppUtil.exe exists and is up to date
+Write-Log -Message "Validating IntuneWinAppUtil.exe..." -WriteHost Yellow
+try {
+    Test-IntuneWinAppUtil -ToolPath $IntuneWinAppUtil
+    Write-Log -Message "IntuneWinAppUtil.exe validation complete"
+}
+catch {
+    Write-Log -Message "Error: Failed to validate IntuneWinAppUtil.exe - $($_.Exception.Message)" -LogLevel 3
     break
 }
 
