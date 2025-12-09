@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com</baseUrl>
+        <logRequestUris>False</logRequestUris>
+        <logHeaders>False</logHeaders>
+        <logContent>False</logContent>
+        <sleep>30</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>MSI</AppType>
+        <RuleType>MSI</RuleType>
+        <ReturnCodeType>default</ReturnCodeType>
+        <InstallExperience>system</InstallExperience>
+        <PackageName>Test-MSI</PackageName>
+        <displayName>MSI Test Package</displayName>
+        <displayVersion>1.0.0</displayVersion>
+        <Description>Test package</Description>
+        <Publisher>Test Publisher</Publisher>
+        <MSIProductCode>{12345678-1234-1234-1234-123456789012}</MSIProductCode>
+    </IntuneWin_Settings>
+</CONFIG>

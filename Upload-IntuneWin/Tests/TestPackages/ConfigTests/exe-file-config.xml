@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com</baseUrl>
+        <logRequestUris>False</logRequestUris>
+        <logHeaders>False</logHeaders>
+        <logContent>False</logContent>
+        <sleep>30</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>EXE</AppType>
+        <RuleType>FILE</RuleType>
+        <ReturnCodeType>default</ReturnCodeType>
+        <InstallExperience>system</InstallExperience>
+        <PackageName>Test-EXE</PackageName>
+        <displayName>EXE Test Package</displayName>
+        <displayVersion>1.0.0</displayVersion>
+        <Description>Test package</Description>
+        <Publisher>Test Publisher</Publisher>
+        <installCmdLine>setup.exe /S</installCmdLine>
+        <uninstallCmdLine>uninstall.exe /S</uninstallCmdLine>
+        <FilePath>C:\Program Files\Test\app.exe</FilePath>
+        <FileDetectionType>exists</FileDetectionType>
+    </IntuneWin_Settings>
+</CONFIG>

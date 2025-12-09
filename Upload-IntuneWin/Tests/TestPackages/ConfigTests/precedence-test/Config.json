@@ -1,0 +1,16 @@
+{
+  "displayName": "JSON Version",
+  "AppType": "PS1",
+  "Publisher": "Test Publisher",
+  "ReturnCodeType": "default",
+  "logRequestUris": false,
+  "Description": "Test package for unit testing",
+  "logHeaders": false,
+  "RuleType": "TAGFILE",
+  "sleep": 30,
+  "PackageName": "Test-Package",
+  "baseUrl": "https://graph.microsoft.com",
+  "logContent": false,
+  "displayVersion": "1.0.0",
+  "InstallExperience": "system"
+}

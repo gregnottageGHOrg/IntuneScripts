@@ -17,6 +17,7 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Configuration Files](#configuration-files)
   - [Config.json Format](#configjson-format)
   - [Config.xml Format](#configxml-format)
+- [Script Optimizations (v1.9)](#script-optimizations-v19)
 - [Automatic Tool Download and Update (v1.7)](#automatic-tool-download-and-update-v17)
 - [EXE File Validation (v1.7)](#exe-file-validation-v17)
 - [Automatic Version Detection (v1.6)](#automatic-version-detection-v16)
@@ -56,6 +57,10 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - ✅ **Foreground delivery optimization** for faster app downloads on all assignment types (v1.7)
 - ✅ **Smart notification settings** - hidden for Required/Available, shown for Uninstall (v1.7)
 - ✅ **DisconnectGraph switch** for preserving Graph connections across multiple runs (v1.7)
+- ✅ **Automatic retry logic** for Graph API calls with exponential backoff (v1.9)
+- ✅ **Enhanced configuration validation** with centralized error checking (v1.9)
+- ✅ **WhatIf support** to preview operations before execution (v1.9)
+- ✅ **Improved error handling** with proper control flow management (v1.9)
 - ✅ Detailed logging for troubleshooting
 
 ---
@@ -360,11 +365,59 @@ The traditional XML format is still fully supported for backward compatibility.
 
 ---
 
+## Script Optimizations (v1.9)
+
+Version 1.9 introduces significant internal optimizations to improve reliability, error handling, and maintainability.
+
+### Automatic Graph API Retry Logic
+
+The script now includes built-in retry logic for Microsoft Graph API calls via the `Invoke-GraphRequestWithRetry` helper function:
+
+- **Throttling handling** - Automatically detects HTTP 429 responses and waits the appropriate time before retrying
+- **Server error recovery** - Retries on 5xx server errors with exponential backoff
+- **Network resilience** - Handles transient network issues gracefully
+- **Configurable retries** - Default of 3 retry attempts with 2-second initial delay
+
+### Enhanced Configuration Validation
+
+The `Test-ConfigurationValidity` function provides centralized validation before processing:
+
+- **AppType validation** - Ensures valid application types (MSI, EXE, PS1, Edge)
+- **Path validation** - Verifies package paths exist before processing
+- **Group name uniqueness** - Prevents duplicate group names across Required, Available, and Uninstall
+- **Config file detection** - Checks for Config.json or Config.xml presence
+
+### WhatIf Support
+
+The script now fully supports the `-WhatIf` parameter to preview operations:
+
+```powershell
+# Preview what would happen without making changes
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -WhatIf
+```
+
+WhatIf mode shows:
+
+- Applications that would be uploaded, updated, or deleted
+- Entra ID groups that would be created
+- Assignments that would be applied or cleared
+
+### Improved Error Handling
+
+Version 1.9 includes comprehensive error handling improvements:
+
+- **Proper control flow** - Replaced improper `break` statements with appropriate `return` or `throw` statements
+- **Consistent error patterns** - Standardized error handling across all functions
+- **Better error messages** - More descriptive error information for troubleshooting
+- **Graceful failure handling** - Script continues or exits appropriately based on error severity
+
+---
+
 ## Automatic Tool Download and Update (v1.7)
 
 Version 1.7 introduces automatic download and update functionality for `IntuneWinAppUtil.exe`. The script automatically manages the Microsoft Win32 Content Prep Tool, eliminating the need for manual downloads.
 
-### How It Works
+### Tool Download Process
 
 1. **Tool Check**: When the script runs, it checks if `IntuneWinAppUtil.exe` exists at the expected location
 2. **Auto-Download**: If the tool is not found, it is automatically downloaded from GitHub
@@ -375,7 +428,7 @@ Version 1.7 introduces automatic download and update functionality for `IntuneWi
    - Whether an update is available
    - Download progress and success/failure status
 
-### Example Output
+### Tool Download Examples
 
 **When tool needs to be downloaded:**
 
@@ -428,7 +481,7 @@ Version 1.7 introduces automatic validation of EXE installer file references. Th
 3. **User Prompt**: Offers to update the config file with the correct filename
 4. **Config Update**: Automatically updates `installCmdLine` and `PackageName` if user accepts
 
-### Example Output
+### EXE Validation Examples
 
 **When EXE file is not found:**
 
@@ -459,7 +512,7 @@ EXE file found: Setup.exe
 
 Version 1.6 introduces automatic version detection for EXE and MSI installers. The script detects the version from the installer file and compares it to the `displayVersion` in your config file.
 
-### How It Works
+### Version Detection Process
 
 1. **EXE files**: Uses `FileVersionInfo.GetVersionInfo()` to read `FileVersion` or `ProductVersion`
 2. **MSI files**: Uses Windows Installer COM object to query `ProductVersion` from the database
@@ -470,7 +523,7 @@ Version 1.6 introduces automatic version detection for EXE and MSI installers. T
    - If config version is empty → uses detected version
 6. **Config update**: Automatically updates the config file when user accepts or config is empty
 
-### Example Output
+### Version Detection Example
 
 ```text
 Checking installer version for EXE package...
@@ -1401,6 +1454,6 @@ Get-Help .\Upload-IntuneWin.ps1 -Examples
 
 ---
 
-**Script Version**: 1.7
+**Script Version**: 1.9
 **Last Updated**: December 2025
 **Author**: Greg Nottage

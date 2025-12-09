@@ -1,0 +1,16 @@
+{
+  "displayName": "PowerShell Detection Test",
+  "AppType": "PS1",
+  "Publisher": "Test Publisher",
+  "ReturnCodeType": "default",
+  "logRequestUris": false,
+  "Description": "Test package for unit testing",
+  "logHeaders": false,
+  "RuleType": "POWERSHELL",
+  "sleep": 30,
+  "PackageName": "Test-PSDetection",
+  "baseUrl": "https://graph.microsoft.com",
+  "logContent": false,
+  "displayVersion": "1.0.0",
+  "InstallExperience": "system"
+}

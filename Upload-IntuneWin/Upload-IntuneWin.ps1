@@ -119,6 +119,26 @@
     Note: For ClientSecret and CertName authentication methods, the connection is always
     disconnected regardless of this switch.
 
+.PARAMETER DeleteApp
+    Switch parameter that deletes an application from Intune instead of uploading.
+    When used with -PackagePath, reads the displayName from the Config.json or Config.xml file
+    and deletes that application. Can also be combined with -AppNameToDelete to specify app
+    names directly without requiring a config file.
+
+.PARAMETER AppNameToDelete
+    Specifies the display name(s) of the application(s) to delete from Intune.
+    Can be a single string or an array of strings. Supports pipeline input.
+    When used with -DeleteApp, the -PackagePath parameter becomes optional.
+    If both -PackagePath and -AppNameToDelete are provided, all specified apps are deleted.
+
+.PARAMETER WhatIf
+    Shows what would happen if the script runs. The script performs all validation and
+    displays the actions that would be taken without actually making any changes to Intune.
+    Use this parameter to preview operations before executing them.
+
+.PARAMETER Confirm
+    Prompts you for confirmation before executing any operation that modifies Intune.
+
 .EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com"
 
@@ -172,11 +192,48 @@
 
     Updates the IntuneWin package content AND replaces all existing assignments with the new Required assignment.
 
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -DeleteApp
+
+    Deletes the application specified in the Config.json or Config.xml file from Intune.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -IntuneAdmin "admin@contoso.com" -DeleteApp -AppNameToDelete "My Old Application"
+
+    Deletes the application named "My Old Application" from Intune without requiring a config file.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -IntuneAdmin "admin@contoso.com" -DeleteApp -AppNameToDelete "App1", "App2", "App3"
+
+    Deletes multiple applications from Intune in a single operation.
+
+.EXAMPLE
+    "App1", "App2" | .\Upload-IntuneWin.ps1 -IntuneAdmin "admin@contoso.com" -DeleteApp
+
+    Deletes multiple applications from Intune using pipeline input.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -WhatIf
+
+    Shows what would happen when uploading a package without actually making any changes.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -IntuneAdmin "admin@contoso.com" -DeleteApp -AppNameToDelete "OldApp" -WhatIf
+
+    Shows what would happen when deleting an application without actually deleting it.
+
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.7
+    Version        : 1.9
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
+
+    WhatIf Support (v1.9):
+    The script supports -WhatIf to preview operations without making changes:
+    - Shows what applications would be uploaded, updated, or deleted
+    - Shows what Entra ID groups would be created
+    - Shows what assignments would be applied or cleared
+    Use -WhatIf to safely preview operations before executing them.
 
     Automatic Tool Download and Update (v1.7):
     The script automatically manages IntuneWinAppUtil.exe:
@@ -255,7 +312,7 @@
 ####################################################
 #Instantiate Vars
 ####################################################
-[CmdLetBinding()]
+[CmdLetBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [Parameter(Position = 1, ValueFromPipelineByPropertyName = $true,
         HelpMessage = 'Provide Intune Administrator user name'
@@ -270,9 +327,8 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $UserName,
 
-    [Parameter(Mandatory = $true, Position = 3, ValueFromPipelineByPropertyName = $true,
-        ValueFromPipeline = $True,
-        HelpMessage = 'Please enter path to package folder, containing Config.json or Config.xml file'
+    [Parameter(Position = 3, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Please enter path to package folder, containing Config.json or Config.xml file. Required unless using -DeleteApp with -AppNameToDelete.'
     )]
     [Alias("PackageName")]
     [string[]] $PackagePath,
@@ -358,14 +414,24 @@ param(
 
     [Parameter(HelpMessage = 'Disconnects from Microsoft Graph after the script completes. By default, the Graph connection is preserved when using -IntuneAdmin for running multiple scripts without re-authentication.'
     )]
-    [switch] $DisconnectGraph
+    [switch] $DisconnectGraph,
+
+    [Parameter(HelpMessage = 'Deletes the application from Intune instead of uploading. Uses displayName from config file or -AppNameToDelete parameter.'
+    )]
+    [switch] $DeleteApp,
+
+    [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true,
+        HelpMessage = 'Specifies the display name(s) of the application(s) to delete from Intune. Supports pipeline input.'
+    )]
+    [Alias("DisplayName", "Name")]
+    [string[]] $AppNameToDelete
 )
 $script:exitCode = 0
 $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.7"
+$BuildVer = "1.9"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -375,11 +441,13 @@ $logFile = "$logPath\$LogName.log"
 Add-Type -AssemblyName Microsoft.VisualBasic
 $script:EventLogName = "Application"
 $script:EventLogSource = "EventSystem"
-$packagePath = $packagePath.Trim()
+if ($packagePath) {
+    $packagePath = $packagePath.Trim()
+}
 
 # Determine source path - use Source folder if it exists, otherwise fall back to OrigSource
-$SourcePath = "$packagePath\Source"
-$OrigSourcePath = "$packagePath\OrigSource"
+$SourcePath = if ($packagePath) { "$packagePath\Source" } else { $null }
+$OrigSourcePath = if ($packagePath) { "$packagePath\OrigSource" } else { $null }
 
 if (!($intuneWinAppUtilPath)) {
     $IntuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
@@ -487,6 +555,199 @@ function Test-Null($objectToCheck) {
     }
 
     return $false
+}
+
+####################################################
+
+function Invoke-GraphRequestWithRetry {
+    <#
+.SYNOPSIS
+Invokes a Microsoft Graph API request with automatic retry logic for transient failures.
+.DESCRIPTION
+This function wraps Invoke-MgGraphRequest with retry logic to handle transient errors
+such as throttling (429), server errors (5xx), and network issues.
+.PARAMETER Method
+The HTTP method to use (GET, POST, PATCH, DELETE, PUT)
+.PARAMETER Uri
+The Graph API URI to call
+.PARAMETER Body
+Optional body for POST/PATCH/PUT requests
+.PARAMETER ContentType
+Content type for the request (default: application/json)
+.PARAMETER MaxRetries
+Maximum number of retry attempts (default: 3)
+.PARAMETER InitialDelaySeconds
+Initial delay between retries in seconds (default: 2)
+.EXAMPLE
+Invoke-GraphRequestWithRetry -Method GET -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps"
+.NOTES
+NAME: Invoke-GraphRequestWithRetry
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('GET', 'POST', 'PATCH', 'DELETE', 'PUT')]
+        [string]$Method,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+
+        [Parameter(Mandatory = $false)]
+        [object]$Body,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ContentType = 'application/json',
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxRetries = 3,
+
+        [Parameter(Mandatory = $false)]
+        [int]$InitialDelaySeconds = 2
+    )
+
+    $retryCount = 0
+    $delay = $InitialDelaySeconds
+
+    while ($true) {
+        try {
+            $params = @{
+                Method = $Method
+                Uri    = $Uri
+            }
+
+            if ($Body) {
+                if ($Body -is [string]) {
+                    $params['Body'] = $Body
+                }
+                else {
+                    $params['Body'] = $Body | ConvertTo-Json -Depth 10
+                }
+                $params['ContentType'] = $ContentType
+            }
+
+            $result = Invoke-MgGraphRequest @params
+            return $result
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+
+            # Determine if error is retryable
+            $isRetryable = $false
+            $retryAfter = $delay
+
+            if ($statusCode -eq 429) {
+                # Throttling - check Retry-After header
+                $isRetryable = $true
+                $retryHeader = $_.Exception.Response.Headers | Where-Object { $_.Key -eq 'Retry-After' }
+                if ($retryHeader) {
+                    $retryAfter = [int]$retryHeader.Value[0]
+                }
+                Write-Log -Message "Request throttled (429). Waiting $retryAfter seconds..." -LogLevel 2
+            }
+            elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
+                # Server error - retry with exponential backoff
+                $isRetryable = $true
+                Write-Log -Message "Server error ($statusCode). Retrying in $delay seconds..." -LogLevel 2
+            }
+            elseif ($_.Exception.Message -match 'network|timeout|connection') {
+                # Network error - retry
+                $isRetryable = $true
+                Write-Log -Message "Network error. Retrying in $delay seconds..." -LogLevel 2
+            }
+
+            if ($isRetryable -and $retryCount -lt $MaxRetries) {
+                $retryCount++
+                Write-Log -Message "Retry attempt $retryCount of $MaxRetries for: $Uri"
+                Start-Sleep -Seconds $retryAfter
+                $delay = $delay * 2  # Exponential backoff
+            }
+            else {
+                # Not retryable or max retries exceeded
+                if ($retryCount -ge $MaxRetries) {
+                    Write-Log -Message "Max retries ($MaxRetries) exceeded for: $Uri" -LogLevel 3
+                }
+                throw
+            }
+        }
+    }
+}
+
+####################################################
+
+function Test-ConfigurationValidity {
+    <#
+.SYNOPSIS
+Validates configuration parameters before processing
+.DESCRIPTION
+This function validates all required configuration parameters and returns
+a validation result object with success status and any error messages.
+.PARAMETER Config
+A hashtable containing configuration parameters to validate
+.PARAMETER AppType
+The type of application (MSI, EXE, PS1, Edge)
+.EXAMPLE
+$result = Test-ConfigurationValidity -Config @{DisplayName = "Test"; AppType = "MSI"} -AppType "MSI"
+.NOTES
+NAME: Test-ConfigurationValidity
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Config = @{},
+
+        [Parameter(Mandatory = $false)]
+        [string]$AppType,
+
+        [Parameter(Mandatory = $false)]
+        [string]$PackagePath,
+
+        [Parameter(Mandatory = $false)]
+        [string]$RequiredAADGroupName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$AvailableAADGroupName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UninstallAADGroupName
+    )
+
+    $errors = [System.Collections.ArrayList]::new()
+    $warnings = [System.Collections.ArrayList]::new()
+
+    # Validate AppType
+    $validAppTypes = @('MSI', 'EXE', 'PS1', 'Edge')
+    if ($AppType -and $AppType -notin $validAppTypes) {
+        [void]$errors.Add("Invalid AppType '$AppType'. Valid types are: $($validAppTypes -join ', ')")
+    }
+
+    # Validate PackagePath
+    if ($PackagePath -and -not (Test-Path $PackagePath)) {
+        [void]$errors.Add("Package path does not exist: $PackagePath")
+    }
+
+    # Validate group name uniqueness
+    $groupNames = @($RequiredAADGroupName, $AvailableAADGroupName, $UninstallAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $uniqueGroups = $groupNames | Select-Object -Unique
+    if ($groupNames.Count -ne $uniqueGroups.Count) {
+        [void]$errors.Add("Group names must be unique. RequiredAADGroupName, AvailableAADGroupName, and UninstallAADGroupName cannot be the same.")
+    }
+
+    # Check for config file if PackagePath is specified
+    if ($PackagePath -and (Test-Path $PackagePath)) {
+        $hasConfig = (Test-Path "$PackagePath\Config.json") -or (Test-Path "$PackagePath\Config.xml")
+        if (-not $hasConfig) {
+            [void]$errors.Add("No Config.json or Config.xml found in package path: $PackagePath")
+        }
+    }
+
+    return [PSCustomObject]@{
+        IsValid  = ($errors.Count -eq 0)
+        Errors   = $errors.ToArray()
+        Warnings = $warnings.ToArray()
+    }
 }
 
 ####################################################
@@ -746,7 +1007,8 @@ NAME: Get-AuthToken
             Write-Host
             Write-Host "Authorization Access Token is null, please re-run authentication..." -ForegroundColor Red
             Write-Host
-            break
+            $script:exitCode = 1
+            return $null
 
         }
 
@@ -757,7 +1019,8 @@ NAME: Get-AuthToken
         Write-Host $_.Exception.Message -f Red
         Write-Host $_.Exception.ItemName -f Red
         Write-Host
-        break
+        $script:exitCode = 1
+        return $null
 
     }
 
@@ -939,7 +1202,7 @@ NAME: Set-IntuneAppCategory
 
             if ($userName) {
                 $categoryJson = $categoryBody | ConvertTo-Json -Depth 10
-                $headers = CloneObject $authToken
+                $headers = Copy-Object $authToken
                 $headers["content-length"] = $categoryJson.Length
                 $headers["content-type"] = "application/json"
                 $null = Invoke-RestMethod -Uri $categoryUri -Headers $headers -Method Post -Body $categoryJson
@@ -1019,7 +1282,7 @@ NAME: Set-IntuneAppDependency
 
             if ($userName) {
                 $dependencyJson = $dependencyBody | ConvertTo-Json -Depth 10
-                $headers = CloneObject $authToken
+                $headers = Copy-Object $authToken
                 $headers["content-length"] = $dependencyJson.Length
                 $headers["content-type"] = "application/json"
                 $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $dependencyJson
@@ -1098,7 +1361,7 @@ NAME: Set-IntuneAppSupersedence
 
             if ($userName) {
                 $supersedenceJson = $supersedenceBody | ConvertTo-Json -Depth 10
-                $headers = CloneObject $authToken
+                $headers = Copy-Object $authToken
                 $headers["content-length"] = $supersedenceJson.Length
                 $headers["content-type"] = "application/json"
                 $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $supersedenceJson
@@ -1155,7 +1418,6 @@ NAME: Get-IntuneAppByDisplayName
         Write-Log -Message "Looking up application by display name: '$DisplayName'"
 
         $graphApiVersion = "beta"
-        $encodedDisplayName = [System.Web.HttpUtility]::UrlEncode($DisplayName)
         $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps?`$filter=displayName eq '$DisplayName'"
 
         try {
@@ -1180,6 +1442,96 @@ NAME: Get-IntuneAppByDisplayName
             Write-Log -Message "Error looking up application: $_" -LogLevel 2
             return $null
         }
+    }
+}
+
+####################################################
+
+function Remove-IntuneApp {
+    <#
+.SYNOPSIS
+Removes an Intune application by display name
+.DESCRIPTION
+This function deletes an Intune Win32 app by display name. Returns a result object
+indicating success or failure with details. Supports -WhatIf to preview the operation.
+.PARAMETER DisplayName
+The display name of the application to delete
+.EXAMPLE
+$result = Remove-IntuneApp -DisplayName "My Application"
+.NOTES
+NAME: Remove-IntuneApp
+#>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        $result = [PSCustomObject]@{
+            DisplayName = $DisplayName
+            Status      = "Unknown"
+            AppId       = $null
+            Message     = ""
+        }
+
+        Write-Log -Message "Attempting to delete application: '$DisplayName'"
+        Write-Host "Looking for application: '$DisplayName'..." -ForegroundColor Cyan
+
+        # First, find the application
+        $app = Get-IntuneAppByDisplayName -DisplayName $DisplayName
+
+        if ($null -eq $app) {
+            $result.Status = "NotFound"
+            $result.Message = "Application not found in Intune"
+            Write-Host "  Application not found: '$DisplayName'" -ForegroundColor Yellow
+            Write-Log -Message "Application not found: '$DisplayName'" -LogLevel 2
+            return $result
+        }
+
+        $result.AppId = $app.id
+        Write-Host "  Found application with ID: $($app.id)" -ForegroundColor Green
+
+        $graphApiVersion = "beta"
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$($app.id)"
+
+        # Check WhatIf before performing destructive operation
+        if (-not $PSCmdlet.ShouldProcess("Application '$DisplayName' (ID: $($app.id))", "Delete from Intune")) {
+            $result.Status = "WhatIf"
+            $result.Message = "Would delete application (WhatIf mode)"
+            Write-Host "  WhatIf: Would delete application '$DisplayName'" -ForegroundColor Cyan
+            return $result
+        }
+
+        try {
+            Write-Host "  Deleting application..." -ForegroundColor Yellow
+            Write-Log -Message "Deleting application with ID: $($app.id)"
+
+            if ($userName) {
+                Invoke-RestMethod -Uri $uri -Headers $authToken -Method Delete
+            }
+            else {
+                Invoke-MgGraphRequest -Uri $uri -Method Delete
+            }
+
+            $result.Status = "Deleted"
+            $result.Message = "Application successfully deleted"
+            Write-Host "  Successfully deleted: '$DisplayName'" -ForegroundColor Green
+            Write-Log -Message "Successfully deleted application: '$DisplayName' (ID: $($app.id))"
+        }
+        catch {
+            $result.Status = "Error"
+            $result.Message = $_.Exception.Message
+            Write-Host "  Error deleting application: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log -Message "Error deleting application '$DisplayName': $($_.Exception.Message)" -LogLevel 3
+        }
+
+        return $result
     }
 }
 
@@ -2105,7 +2457,7 @@ NAME: Invoke-ExeValidation
 
 ####################################################
 
-function CloneObject($object) {
+function Copy-Object($object) {
 
     $stream = New-Object IO.MemoryStream;
     $formatter = New-Object Runtime.Serialization.Formatters.Binary.BinaryFormatter;
@@ -2116,7 +2468,7 @@ function CloneObject($object) {
 
 ####################################################
 
-function WriteHeaders($authToken) {
+function Write-AuthHeaders($authToken) {
 
     foreach ($header in $authToken.GetEnumerator()) {
         if ($header.Name.ToLower() -eq "authorization") {
@@ -2129,10 +2481,10 @@ function WriteHeaders($authToken) {
 
 ####################################################
 
-function MakeGetRequest($collectionPath) {
+function Invoke-GetRequest($collectionPath) {
 
-    Write-Host "Running MakeGetRequest: $collectionPath" -ForegroundColor Green
-    Write-Host "Running MakeGetRequest baseURL: $baseUrl" -ForegroundColor Green
+    Write-Host "Running Invoke-GetRequest: $collectionPath" -ForegroundColor Green
+    Write-Host "Running Invoke-GetRequest baseURL: $baseUrl" -ForegroundColor Green
     Write-Host
 
 
@@ -2141,7 +2493,7 @@ function MakeGetRequest($collectionPath) {
 
     if ($userName) {
         if ($logRequestUris) { Write-Host $request; }
-        if ($logHeaders) { WriteHeaders $authToken; }
+        if ($logHeaders) { Write-AuthHeaders $authToken; }
     }
 
     try {
@@ -2168,25 +2520,25 @@ function MakeGetRequest($collectionPath) {
 
 ####################################################
 
-function MakePatchRequest($collectionPath, $body) {
+function Invoke-PatchRequest($collectionPath, $body) {
 
-    MakeRequest "PATCH" $collectionPath $body;
-
-}
-
-####################################################
-
-function MakePostRequest($collectionPath, $body) {
-
-    MakeRequest "POST" $collectionPath $body;
+    Invoke-GraphRequest "PATCH" $collectionPath $body;
 
 }
 
 ####################################################
 
-function MakeRequest($verb, $collectionPath, $body) {
+function Invoke-PostRequest($collectionPath, $body) {
 
-    Write-Host "Running MakeRequest" -ForegroundColor Green
+    Invoke-GraphRequest "POST" $collectionPath $body;
+
+}
+
+####################################################
+
+function Invoke-GraphRequest($verb, $collectionPath, $body) {
+
+    Write-Host "Running Invoke-GraphRequest" -ForegroundColor Green
 
     $uri = "$baseUrl$collectionPath";
     $request = "$verb $uri";
@@ -2198,14 +2550,14 @@ function MakeRequest($verb, $collectionPath, $body) {
     Else { Throw "No authToken" }
     #$authToken | Format-List *
 
-    $clonedHeaders = CloneObject $authToken;
+    $clonedHeaders = Copy-Object $authToken;
     #$clonedHeaders | Format-List *
     $clonedHeaders["content-length"] = $body.Length;
     Write-Host "After clonedHeaders length" -ForegroundColor Yellow
     $clonedHeaders["content-type"] = "application/json";
 
     if ($logRequestUris) { Write-Host $request; }
-    if ($logHeaders) { WriteHeaders $clonedHeaders; }
+    if ($logHeaders) { Write-AuthHeaders $clonedHeaders; }
     if ($logContent) { Write-Host -ForegroundColor Gray $body; }
 
     Exit
@@ -2226,7 +2578,7 @@ function MakeRequest($verb, $collectionPath, $body) {
         }
         else { throw "No authToken" }
 
-        $clonedHeaders = CloneObject $authToken;
+        $clonedHeaders = Copy-Object $authToken;
         #Write-Host "clonedHeaders: $clonedHeaders" -ForegroundColor Green
         #$clonedHeaders | Format-List *
 
@@ -2234,7 +2586,7 @@ function MakeRequest($verb, $collectionPath, $body) {
         $clonedHeaders["content-type"] = "application/json";
 
         Write-Host $request
-        WriteHeaders $clonedHeaders
+        Write-AuthHeaders $clonedHeaders
         Write-Host -ForegroundColor Gray $body`n
     }
     try {
@@ -2257,7 +2609,7 @@ function MakeRequest($verb, $collectionPath, $body) {
 
 ####################################################
 
-function UploadAzureStorageChunk($sasUri, $id, $body) {
+function Send-AzureStorageChunk($sasUri, $id, $body) {
 
     $uri = "$sasUri&comp=block&blockid=$id";
     $request = "PUT $uri";
@@ -2267,7 +2619,7 @@ function UploadAzureStorageChunk($sasUri, $id, $body) {
     };
 
     if ($logRequestUris) { Write-Host $request; }
-    if ($logHeaders) { WriteHeaders $headers; }
+    if ($logHeaders) { Write-AuthHeaders $headers; }
 
     try {
         # Upload binary data directly without text encoding conversion
@@ -2283,7 +2635,7 @@ function UploadAzureStorageChunk($sasUri, $id, $body) {
 
 ####################################################
 
-function FinalizeAzureStorageUpload($sasUri, $ids) {
+function Complete-AzureStorageUpload($sasUri, $ids) {
 
     $uri = "$sasUri&comp=blocklist";
     $request = "PUT $uri";
@@ -2338,7 +2690,7 @@ function FinalizeAzureStorageUpload($sasUri, $ids) {
 
 ####################################################
 
-function UploadFileToAzureStorage($sasUri, $filepath, $fileUri) {
+function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
 
     try {
 
@@ -2351,7 +2703,7 @@ function UploadFileToAzureStorage($sasUri, $filepath, $fileUri) {
         $fileSize = (Get-Item $filepath).length;
         $chunks = [Math]::Ceiling($fileSize / $chunkSizeInBytes);
         $reader = New-Object System.IO.BinaryReader([System.IO.File]::Open($filepath, [System.IO.FileMode]::Open));
-        $position = $reader.BaseStream.Seek(0, [System.IO.SeekOrigin]::Begin);
+        $null = $reader.BaseStream.Seek(0, [System.IO.SeekOrigin]::Begin);
 
         # Upload each chunk. Check whether a SAS URI renewal is required after each chunk is uploaded and renew if needed.
         $ids = @();
@@ -2370,13 +2722,13 @@ function UploadFileToAzureStorage($sasUri, $filepath, $fileUri) {
             Write-Progress -Activity "Uploading File to Azure Storage" -Status "Uploading chunk $currentChunk of $chunks" `
                 -PercentComplete ($currentChunk / $chunks * 100)
 
-            $uploadResponse = UploadAzureStorageChunk $sasUri $id $bytes;
+            $null = Send-AzureStorageChunk $sasUri $id $bytes
 
             # Renew the SAS URI if 7 minutes have elapsed since the upload started or was renewed last.
             if ($currentChunk -lt $chunks -and $sasRenewalTimer.ElapsedMilliseconds -ge 450000) {
 
-                $renewalResponse = RenewAzureStorageUpload $fileUri;
-                $sasRenewalTimer.Restart();
+                $null = Update-AzureStorageUpload $fileUri
+                $sasRenewalTimer.Restart()
 
             }
 
@@ -2397,39 +2749,37 @@ function UploadFileToAzureStorage($sasUri, $filepath, $fileUri) {
     # Finalize the upload.
     Write-Host -ForegroundColor Magenta "`nPreparing to finalize upload with $($ids.Count) blocks..."
     Write-Host -ForegroundColor Magenta "Block IDs: $($ids -join ', ')"
-    $uploadResponse = FinalizeAzureStorageUpload $sasUri $ids;
+    $null = Complete-AzureStorageUpload $sasUri $ids
     Write-Host -ForegroundColor Green "Finalize completed successfully!"
 
 }
 
 ####################################################
 
-function RenewAzureStorageUpload($fileUri) {
+function Update-AzureStorageUpload($fileUri) {
 
     $renewalUri = "$fileUri/renewUpload";
     $actionBody = "";
-    $rewnewUriResult = MakePostRequest $renewalUri $actionBody;
+    $null = Invoke-PostRequest $renewalUri $actionBody;
 
-    $file = WaitForFileProcessing $fileUri "AzureStorageUriRenewal" $azureStorageRenewSasUriBackOffTimeInSeconds;
+    $null = Wait-FileProcessing $fileUri "AzureStorageUriRenewal" $azureStorageRenewSasUriBackOffTimeInSeconds;
 
 }
 
 ####################################################
 
-function WaitForFileProcessing($fileUri, $stage) {
+function Wait-FileProcessing($fileUri, $stage) {
 
-    Write-Host "WaitForFileProcessing: $fileUri" -ForegroundColor Cyan
+    Write-Host "Wait-FileProcessing: $fileUri" -ForegroundColor Cyan
     $attempts = 600;
     $waitTimeInSeconds = 10;
 
-    $successState = "$($stage)Success";
-    $pendingState = "$($stage)Pending";
-    $failedState = "$($stage)Failed";
-    $timedOutState = "$($stage)TimedOut";
+    $successState = "$($stage)Success"
+    $pendingState = "$($stage)Pending"
 
-    $file = $null;
+    $file = $null
     while ($attempts -gt 0) {
-        $file = MakeGetRequest $fileUri;
+        $file = Invoke-GetRequest $fileUri;
 
         Write-Host
         Write-Host "File: $($file | Out-String)" -ForegroundColor Yellow
@@ -2456,7 +2806,7 @@ function WaitForFileProcessing($fileUri, $stage) {
 
 ####################################################
 
-function GetWin32AppBody() {
+function Get-Win32AppBody() {
 
     param
     (
@@ -2789,7 +3139,7 @@ function GetWin32AppBody() {
 
 ####################################################
 
-function GetAppFileBody($name, $size, $sizeEncrypted, $manifest) {
+function Get-AppFileBody($name, $size, $sizeEncrypted, $manifest) {
 
     $body = @{ "@odata.type" = "#microsoft.graph.mobileAppContentFile" };
     $body.name = $name;
@@ -2803,7 +3153,7 @@ function GetAppFileBody($name, $size, $sizeEncrypted, $manifest) {
 
 ####################################################
 
-function GetAppCommitBody($contentVersionId, $LobType) {
+function Get-AppCommitBody($contentVersionId, $LobType) {
 
     $body = @{ "@odata.type" = "#$LobType" };
     $body.committedContentVersion = $contentVersionId;
@@ -2829,7 +3179,7 @@ function Test-SourceFile() {
 
             Write-Host
             Write-Host "Source File '$sourceFile' doesn't exist..." -ForegroundColor Red
-            throw
+            throw "Source file not found: $SourceFile"
 
         }
 
@@ -2839,7 +3189,8 @@ function Test-SourceFile() {
 
         Write-Host -ForegroundColor Red $_.Exception.Message;
         Write-Host
-        break
+        $script:exitCode = 1
+        throw
 
     }
 
@@ -2945,7 +3296,8 @@ function New-DetectionRule() {
             Write-Host "Could not find file '$ScriptFile'..." -ForegroundColor Red
             Write-Host "Script can't continue..." -ForegroundColor Red
             Write-Host
-            break
+            $script:exitCode = 1
+            throw "Detection script file not found: $ScriptFile"
 
         }
 
@@ -3107,21 +3459,21 @@ function Get-IntuneWinFile() {
 
 ####################################################
 
-function Upload-Win32Lob() {
+function Send-Win32Lob() {
 
     <#
 .SYNOPSIS
 This function is used to upload a Win32 Application to the Intune Service
 .DESCRIPTION
-This function is used to upload a Win32 Application to the Intune Service
+This function is used to upload a Win32 Application to the Intune Service. Supports -WhatIf to preview the operation.
 .EXAMPLE
-Upload-Win32Lob "C:\Packages\package.intunewin" -publisher "Microsoft" -description "Package"
+Send-Win32Lob "C:\Packages\package.intunewin" -publisher "Microsoft" -description "Package"
 This example uses all parameters required to add an intunewin File into the Intune Service
 .NOTES
-NAME: Upload-Win32LOB
+NAME: Send-Win32Lob
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -3298,6 +3650,13 @@ NAME: Upload-Win32LOB
 
     try	{
 
+        # Check WhatIf before performing upload operation
+        if (-not $PSCmdlet.ShouldProcess("Application '$displayName'", "Upload to Intune")) {
+            Write-Host "WhatIf: Would upload application '$displayName' to Intune" -ForegroundColor Cyan
+            Write-Log -Message "WhatIf: Would upload application '$displayName' to Intune"
+            return
+        }
+
         $LOBType = "microsoft.graph.win32LobApp"
         Write-Host
         Write-Host "Creating JSON data to pass to the service..." -ForegroundColor Yellow
@@ -3345,7 +3704,7 @@ NAME: Upload-Win32LOB
             $detectionRules = @($MSIRule)
 
             if ( ! ($null -eq $msiInstallCommandLine ) ) {
-                $mobileAppBody = GetWin32AppBody `
+                $mobileAppBody = Get-Win32AppBody `
                     -MSI `
                     -displayName "$DisplayName" `
                     -displayVersion "$DisplayVersion" `
@@ -3382,7 +3741,7 @@ NAME: Upload-Win32LOB
                     -requirementRules $requirementRules
             }
             else {
-                $mobileAppBody = GetWin32AppBody `
+                $mobileAppBody = Get-Win32AppBody `
                     -MSI `
                     -displayName "$DisplayName" `
                     -displayVersion "$DisplayVersion" `
@@ -3419,7 +3778,7 @@ NAME: Upload-Win32LOB
         }
 
         if ($EXE) {
-            $mobileAppBody = GetWin32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
+            $mobileAppBody = Get-Win32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
                 -description $description -category $Category -filename $FileName -SetupFileName "$SetupFileName" `
                 -installExperience $installExperience -logo $logo `
                 -installCommandLine $installCommandLine -uninstallCommandLine $uninstallCommandLine `
@@ -3432,7 +3791,7 @@ NAME: Upload-Win32LOB
                 -requirementRules $requirementRules
         }
         elseif ($PS1) {
-            $mobileAppBody = GetWin32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
+            $mobileAppBody = Get-Win32AppBody -EXE -displayName "$DisplayName" -displayVersion "$DisplayVersion" -publisher "$publisher" `
                 -description $description -category $Category -filename $FileName -SetupFileName "$SetupFileName" `
                 -installExperience $installExperience -logo $logo `
                 -installCommandLine $ps1InstallCommandLine -uninstallCommandLine $ps1UninstallCommandLine `
@@ -3453,12 +3812,12 @@ NAME: Upload-Win32LOB
             #$displayName = 'Microsoft Edge Stable1'
             #$channel = 'stable'
 
-            $mobileAppBody = GetWin32AppBody -Edge -displayName "$DisplayName" -publisher "$publisher" `
+            $mobileAppBody = Get-Win32AppBody -Edge -displayName "$DisplayName" -publisher "$publisher" `
                 -description $description -channel $channel
 
             Write-Host
             Write-Host "Creating application in Intune..." -ForegroundColor Yellow
-            $mobileApp = MakePostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json)
+            $mobileApp = Invoke-PostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json)
 
             return
         }
@@ -3470,7 +3829,8 @@ NAME: Upload-Win32LOB
             Write-Warning "A Detection Rule can either be 'Manually configure detection rules' or 'Use a custom detection script'"
             Write-Warning "It can't include both..."
             Write-Host
-            break
+            $script:exitCode = 1
+            throw "Invalid detection rules: Cannot combine script detection with other detection methods"
 
         }
 
@@ -3494,20 +3854,21 @@ NAME: Upload-Win32LOB
             Write-Warning "Intunewin file requires ReturnCodes to be specified"
             Write-Warning "If you want to use the default ReturnCode run 'Get-DefaultReturnCodes'"
             Write-Host
-            break
+            $script:exitCode = 1
+            throw "ReturnCodes must be specified for intunewin file"
 
         }
 
         Write-Host
         Write-Host "Creating application in Intune..." -ForegroundColor Yellow
-        $mobileApp = MakePostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json);
+        $mobileApp = Invoke-PostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json);
 
         # Get the content version for the new app (this will always be 1 until the new app is committed).
         Write-Host
         Write-Host "Creating Content Version in the service for the application..." -ForegroundColor Yellow
         $appId = $mobileApp.id;
         $contentVersionUri = "mobileApps/$appId/$LOBType/contentVersions";
-        $contentVersion = MakePostRequest $contentVersionUri "{}";
+        $contentVersion = Invoke-PostRequest $contentVersionUri "{}";
 
         # Encrypt file and Get File Information
         Write-Host
@@ -3535,23 +3896,23 @@ NAME: Upload-Win32LOB
         Write-Host
         Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
         $contentVersionId = $contentVersion.id;
-        $fileBody = GetAppFileBody "$FileName" $Size $EncrySize $null;
+        $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null;
         $filesUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files";
-        $file = MakePostRequest $filesUri ($fileBody | ConvertTo-Json);
+        $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json);
 
         # Wait for the service to process the new file request.
         Write-Host
         Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
         $fileId = $file.id;
         $fileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId";
-        $file = WaitForFileProcessing $fileUri "azureStorageUriRequest";
+        $file = Wait-FileProcessing $fileUri "azureStorageUriRequest";
 
         # Upload the content to Azure Storage.
         Write-Host
         Write-Host "Uploading file to Azure Storage..." -f Yellow
 
         #$sasUri = $file.azureStorageUri;
-        UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
+        Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
 
         # Wait a few seconds for Azure Storage to fully commit and replicate
         Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
@@ -3567,19 +3928,19 @@ NAME: Upload-Win32LOB
         Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
         Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
         $commitFileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit";
-        MakePostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json);
+        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json);
 
         # Wait for the service to process the commit file request.
         Write-Host
         Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
-        $file = WaitForFileProcessing $fileUri "CommitFile";
+        $file = Wait-FileProcessing $fileUri "CommitFile";
 
         # Commit the app.
         Write-Host
         Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
         $commitAppUri = "mobileApps/$appId";
-        $commitAppBody = GetAppCommitBody $contentVersionId $LOBType;
-        MakePatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json);
+        $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType;
+        Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json);
 
         Write-Host "Sleeping for $sleep seconds to allow package upload completion..." -f Magenta
         Start-Sleep $sleep
@@ -3600,7 +3961,7 @@ function Update-Win32LobContent {
 This function is used to update the content (IntuneWin file) of an existing Win32 Application in Intune
 .DESCRIPTION
 This function replaces only the IntuneWin package content of an existing Win32 application while
-preserving all other configuration (assignments, detection rules, requirements, etc.)
+preserving all other configuration (assignments, detection rules, requirements, etc.). Supports -WhatIf.
 .EXAMPLE
 Update-Win32LobContent -AppId "12345678-1234-1234-1234-123456789012" -SourceFile "C:\Packages\package.intunewin"
 This example updates the content of an existing Intune app with the new .intunewin file
@@ -3608,7 +3969,7 @@ This example updates the content of an existing Intune app with the new .intunew
 NAME: Update-Win32LobContent
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -3622,6 +3983,13 @@ NAME: Update-Win32LobContent
     )
 
     try {
+        # Check WhatIf before performing content update
+        if (-not $PSCmdlet.ShouldProcess("Application ID '$AppId'", "Update content in Intune")) {
+            Write-Host "WhatIf: Would update content for application ID '$AppId'" -ForegroundColor Cyan
+            Write-Log -Message "WhatIf: Would update content for application ID '$AppId'"
+            return
+        }
+
         $LOBType = "microsoft.graph.win32LobApp"
 
         Write-Host
@@ -3640,7 +4008,7 @@ NAME: Update-Win32LobContent
         Write-Host
         Write-Host "Creating new Content Version for the existing application..." -ForegroundColor Yellow
         $contentVersionUri = "mobileApps/$AppId/$LOBType/contentVersions"
-        $contentVersion = MakePostRequest $contentVersionUri "{}"
+        $contentVersion = Invoke-PostRequest $contentVersionUri "{}"
 
         # Get encryption information from the new package
         Write-Host
@@ -3668,21 +4036,21 @@ NAME: Update-Win32LobContent
         Write-Host
         Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
         $contentVersionId = $contentVersion.id
-        $fileBody = GetAppFileBody "$FileName" $Size $EncrySize $null
+        $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null
         $filesUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files"
-        $file = MakePostRequest $filesUri ($fileBody | ConvertTo-Json)
+        $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json)
 
         # Wait for the file entry to be ready
         Write-Host
         Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
         $fileId = $file.id
         $fileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId"
-        $file = WaitForFileProcessing $fileUri "azureStorageUriRequest"
+        $file = Wait-FileProcessing $fileUri "azureStorageUriRequest"
 
         # Upload the content to Azure Storage
         Write-Host
         Write-Host "Uploading file to Azure Storage..." -ForegroundColor Yellow
-        UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri
+        Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri
 
         # Wait for Azure Storage to finalize
         Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
@@ -3697,19 +4065,19 @@ NAME: Update-Win32LobContent
         Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
         Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
         $commitFileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit"
-        MakePostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json)
+        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json)
 
         # Wait for the commit to complete
         Write-Host
         Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
-        $file = WaitForFileProcessing $fileUri "CommitFile"
+        $file = Wait-FileProcessing $fileUri "CommitFile"
 
         # Commit the new content version to the app
         Write-Host
         Write-Host "Committing the new content version to the application..." -ForegroundColor Yellow
         $commitAppUri = "mobileApps/$AppId"
-        $commitAppBody = GetAppCommitBody $contentVersionId $LOBType
-        MakePatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json)
+        $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType
+        Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json)
 
         Write-Host "Sleeping for $sleep seconds to allow package update completion..." -ForegroundColor Magenta
         Start-Sleep $sleep
@@ -3755,7 +4123,6 @@ NAME: Get-XMLConfig
     }
 
     process {
-        $dayDateTime = (Get-Date -UFormat "%A %d-%m-%Y %R")
         if (-not(Test-Path $XMLFile)) {
             Write-Log -Message "Error - XML file not found: $XMLFile" -LogLevel 3
             return $Skip = $true
@@ -3934,7 +4301,6 @@ NAME: Get-JSONConfig
     }
 
     process {
-        $dayDateTime = (Get-Date -UFormat "%A %d-%m-%Y %R")
         if (-not(Test-Path $JSONFile)) {
             Write-Log -Message "Error - JSON file not found: $JSONFile" -LogLevel 3
             return $Skip = $true
@@ -4678,14 +5044,14 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                             $logoJson = $logoBody | ConvertTo-Json -Depth 10 -Compress
                             if ($userName) {
                                 # Using legacy auth token method
-                                $clonedHeaders = CloneObject $authToken
+                                $clonedHeaders = Copy-Object $authToken
                                 $clonedHeaders["content-length"] = $logoJson.Length
                                 $clonedHeaders["content-type"] = "application/json"
-                                $response = Invoke-RestMethod -Uri $logoUri -Method Patch -Headers $clonedHeaders -Body $logoJson -UseBasicParsing
+                                $null = Invoke-RestMethod -Uri $logoUri -Method Patch -Headers $clonedHeaders -Body $logoJson -UseBasicParsing
                             }
                             else {
                                 # Using Invoke-MgGraphRequest with pre-serialized JSON string and explicit content type
-                                $response = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoJson -ContentType "application/json"
+                                $null = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoJson -ContentType "application/json"
                             }
                             Write-Log -Message "Logo added successfully"
                             Write-Host "Logo added successfully" -ForegroundColor Green
@@ -4721,14 +5087,14 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         if ($userName) {
                             # Using legacy auth token method
                             $uninstallJson = $uninstallBody | ConvertTo-Json -Depth 10
-                            $clonedHeaders = CloneObject $authToken
+                            $clonedHeaders = Copy-Object $authToken
                             $clonedHeaders["content-length"] = $uninstallJson.Length
                             $clonedHeaders["content-type"] = "application/json"
-                            $response = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $uninstallJson -UseBasicParsing
+                            $null = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $uninstallJson -UseBasicParsing
                         }
                         else {
                             # Using Invoke-MgGraphRequest with hashtable
-                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $uninstallBody
+                            $null = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $uninstallBody
                         }
                         Write-Log -Message "allowAvailableUninstall set to true successfully"
                         Write-Host "Allow available uninstall: Enabled" -ForegroundColor Green
@@ -4830,13 +5196,13 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         # Convert to JSON explicitly with proper depth to ensure correct serialization (especially for largeIcon)
                         $settingsJson = $settingsBody | ConvertTo-Json -Depth 10 -Compress
                         if ($userName) {
-                            $clonedHeaders = CloneObject $authToken
+                            $clonedHeaders = Copy-Object $authToken
                             $clonedHeaders["content-length"] = $settingsJson.Length
                             $clonedHeaders["content-type"] = "application/json"
-                            $response = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $settingsJson -UseBasicParsing
+                            $null = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $settingsJson -UseBasicParsing
                         }
                         else {
-                            $response = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsJson -ContentType "application/json"
+                            $null = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsJson -ContentType "application/json"
                         }
                         Write-Log -Message "Settings updated: description, displayVersion, publisher and extended settings"
                         Write-Host "Description: Updated" -ForegroundColor Green
@@ -4939,22 +5305,22 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 if ( ( ! ( Test-Null( $installCmdLine) ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
-                    Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                    Send-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                         -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine -msiUninstallCommandLine $uninstallCmdLine `
                         -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( ! ( Test-Null( $installCmdLine ) ) ) -and ( Test-Null( $uninstallCmdLine ) ) ) {
-                    Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                    Send-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                         -returnCodes $ReturnCodes -displayName $displayName -msiInstallCommandLine $installCmdLine `
                         -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( Test-Null( $installCmdLine ) ) -and ( ! ( Test-Null( $uninstallCmdLine ) ) ) ) {
-                    Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                    Send-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                         -returnCodes $ReturnCodes -displayName $displayName -msiUninstallCommandLine $uninstallCmdLine `
                         -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
                 elseif ( ( Test-Null( $installCmdLine ) ) -and ( Test-Null( $uninstallCmdLine ) ) ) {
-                    Upload-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                    Send-Win32Lob -MSI -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                         -returnCodes $ReturnCodes -displayName $displayName `
                         -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
                 }
@@ -4981,7 +5347,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     requirementRules          = $additionalRequirementRules
                 }
 
-                Upload-Win32Lob -EXE -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                Send-Win32Lob -EXE -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                     -returnCodes $ReturnCodes -displayName $displayName -installCommandLine $installCmdLine -uninstallCommandLine $uninstallCmdLine `
                     -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
             }
@@ -5007,7 +5373,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     requirementRules          = $additionalRequirementRules
                 }
 
-                Upload-Win32Lob -PS1 -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
+                Send-Win32Lob -PS1 -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
                     -returnCodes $ReturnCodes -displayName $displayName -ps1InstallCommandLine $InstallCmdLine -ps1UninstallCommandLine $UninstallCmdLine `
                     -installExperience $installExperience -logo $Icon -Category $Category @extendedParams
             }
@@ -5018,7 +5384,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 #$displayName = 'Microsoft Edge Stable1'
                 #$channel = 'stable'
 
-                Upload-Win32Lob -Edge -publisher "$Publisher" -description "$Description" `
+                Send-Win32Lob -Edge -publisher "$Publisher" -description "$Description" `
                     -displayName $displayName -channel $channel
 
                 <#
@@ -5204,7 +5570,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 Write-Log -Message "Assigning groups to application..."
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
             }
 
             if ($AvailableAADGroupName) {
@@ -5242,7 +5608,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 Write-Log -Message "Assigning groups to application..."
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
             }
 
             if ($UninstallAADGroupName) {
@@ -5280,7 +5646,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 Write-Log -Message "Assigning groups to application..."
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
             }
 
 
@@ -5331,11 +5697,11 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 }
 
                 Write-Log -Message "Assigning groups to application..."
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "required" -exclude
-                $Assign_Application = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "available" -exclude
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "required" -exclude
+                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "available" -exclude
             }
 
             #}
@@ -5669,7 +6035,7 @@ function New-EntraGroupMG {
 This function creates the relevant install/uninstall Entra ID groups
 .DESCRIPTION
 This function creates the relevant install/uninstall Entra ID groups. Returns a hashtable with
-'ExitCode' and 'GroupsCreated' properties to indicate if any groups were newly created.
+'ExitCode' and 'GroupsCreated' properties to indicate if any groups were newly created. Supports -WhatIf.
 .EXAMPLE
 $result = New-EntraGroupMG -groupName "MyGroupName"
 This function creates the relevant install/uninstall Entra ID groups
@@ -5677,7 +6043,7 @@ This function creates the relevant install/uninstall Entra ID groups
 NAME: New-EntraGroupMG -groupName
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -5708,6 +6074,13 @@ NAME: New-EntraGroupMG -groupName
                     Write-Log -Message "Entra ID group $group already exists!"
                 }
                 else {
+                    # Check WhatIf before creating group
+                    if (-not $PSCmdlet.ShouldProcess("Entra ID Group '$group'", "Create")) {
+                        Write-Host "WhatIf: Would create Entra ID group '$group'" -ForegroundColor Cyan
+                        Write-Log -Message "WhatIf: Would create Entra ID group '$group'"
+                        continue
+                    }
+
                     Write-Log -Message "Creating Entra ID group $group"
                     # Create group using REST API
                     $createUri = "https://graph.microsoft.com/$graphApiVersion/groups"
@@ -5747,7 +6120,7 @@ function New-EntraGroup {
 This function creates the relevant install/uninstall Entra ID groups
 .DESCRIPTION
 This function creates the relevant install/uninstall Entra ID groups. Sets $script:groupsWereCreated
-to indicate if any groups were newly created.
+to indicate if any groups were newly created. Supports -WhatIf.
 .EXAMPLE
 New-EntraGroup -groupName "MyGroupName"
 This function creates the relevant install/uninstall Entra ID groups
@@ -5755,7 +6128,7 @@ This function creates the relevant install/uninstall Entra ID groups
 NAME: New-EntraGroup -groupName
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -5781,6 +6154,13 @@ NAME: New-EntraGroup -groupName
                 Write-Log -Message "Entra ID group $group already exists!"
             }
             else {
+                # Check WhatIf before creating group
+                if (-not $PSCmdlet.ShouldProcess("Entra ID Group '$group'", "Create")) {
+                    Write-Host "WhatIf: Would create Entra ID group '$group'" -ForegroundColor Cyan
+                    Write-Log -Message "WhatIf: Would create Entra ID group '$group'"
+                    continue
+                }
+
                 Write-Log -Message "Creating Entra ID group $group"
                 try {
                     New-AzureADGroup -DisplayName $group -Description "Group for $group" -MailEnabled $false -SecurityEnabled $true -MailNickName ($($group).Replace(" ", "") + "-Group")
@@ -6065,7 +6445,8 @@ NAME: Get-IntuneApplication
         Write-Host "Response content:`n$responseBody" -f Red
         Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
         Write-Host
-        break
+        $script:exitCode = 1
+        throw
 
     }
 
@@ -6207,7 +6588,7 @@ function Add-ApplicationAssignment() {
 .SYNOPSIS
 This function is used to add an application assignment using the Graph API REST interface
 .DESCRIPTION
-The function connects to the Graph API Interface and adds a application assignment
+The function connects to the Graph API Interface and adds a application assignment. Supports -WhatIf.
 .EXAMPLE
 Add-ApplicationAssignment -ApplicationId $ApplicationId -TargetGroupId $TargetGroupId -InstallIntent $InstallIntent
 Adds an application assignment in Intune
@@ -6215,7 +6596,7 @@ Adds an application assignment in Intune
 NAME: Add-ApplicationAssignment
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -6233,24 +6614,35 @@ NAME: Add-ApplicationAssignment
 
         if (!$ApplicationId) {
 
-            Write-Log -Message "No Application Id specified, specify a valid Application Id"
-            break
+            Write-Log -Message "No Application Id specified, specify a valid Application Id" -LogLevel 3
+            $script:exitCode = 1
+            return
 
         }
 
         if (!$TargetGroupId) {
 
-            Write-Log -Message "No Target Group Id specified, specify a valid Target Group Id"
-            break
+            Write-Log -Message "No Target Group Id specified, specify a valid Target Group Id" -LogLevel 3
+            $script:exitCode = 1
+            return
 
         }
 
 
         if (!$InstallIntent) {
 
-            Write-Log -Message "No Install Intent specified, specify a valid Install Intent - available, notApplicable, required, uninstall, availableWithoutEnrollment"
-            break
+            Write-Log -Message "No Install Intent specified, specify a valid Install Intent - available, notApplicable, required, uninstall, availableWithoutEnrollment" -LogLevel 3
+            $script:exitCode = 1
+            return
 
+        }
+
+        # Check WhatIf before performing assignment
+        $actionDescription = if ($exclude) { "Exclude from $InstallIntent" } else { "Assign as $InstallIntent" }
+        if (-not $PSCmdlet.ShouldProcess("Application '$ApplicationId' to Group '$TargetGroupId'", $actionDescription)) {
+            Write-Host "WhatIf: Would $actionDescription application to group" -ForegroundColor Cyan
+            Write-Log -Message "WhatIf: Would $actionDescription application '$ApplicationId' to group '$TargetGroupId'"
+            return
         }
 
         Write-Log -Message "ApplicationId: $ApplicationId"
@@ -6508,7 +6900,7 @@ NAME: Get-ApplicationLargeIcon
 
         if (!$ApplicationId) {
             Write-Host "No Application Id specified, specify a valid Application Id" -f Red
-            break
+            return $null
         }
         else {
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
@@ -6561,7 +6953,7 @@ NAME: Get-ApplicationAssignment
         if (!$ApplicationId) {
 
             Write-Host "No Application Id specified, specify a valid Application Id" -f Red
-            break
+            return $null
 
         }
 
@@ -6588,7 +6980,8 @@ NAME: Get-ApplicationAssignment
         Write-Host "Response content:`n$responseBody" -f Red
         Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
         Write-Host
-        break
+        $script:exitCode = 1
+        throw
 
     }
 
@@ -6602,7 +6995,7 @@ function Clear-ApplicationAssignments() {
 .SYNOPSIS
 This function removes all existing assignments from an application using the Graph API REST interface
 .DESCRIPTION
-The function connects to the Graph API Interface and clears all assignments from an application
+The function connects to the Graph API Interface and clears all assignments from an application. Supports -WhatIf.
 .EXAMPLE
 Clear-ApplicationAssignments -ApplicationId $ApplicationId
 Removes all assignments from an application in Intune
@@ -6610,7 +7003,7 @@ Removes all assignments from an application in Intune
 NAME: Clear-ApplicationAssignments
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
 
     param
     (
@@ -6624,7 +7017,15 @@ NAME: Clear-ApplicationAssignments
 
         if (!$ApplicationId) {
             Write-Log -Message "No Application Id specified, specify a valid Application Id" -LogLevel 3
-            break
+            $script:exitCode = 1
+            return
+        }
+
+        # Check WhatIf before clearing assignments
+        if (-not $PSCmdlet.ShouldProcess("Application '$ApplicationId'", "Clear all assignments")) {
+            Write-Host "WhatIf: Would clear all assignments for application ID '$ApplicationId'" -ForegroundColor Cyan
+            Write-Log -Message "WhatIf: Would clear all assignments for application ID '$ApplicationId'"
+            return
         }
 
         Write-Log -Message "Clearing all assignments for application ID: $ApplicationId"
@@ -6681,7 +7082,7 @@ function New-IntuneWin32AppIcon {
         Version history:
         1.0.0 - (2020-01-04) Function created
     #>
-    [CmdletBinding(SupportsShouldProcess = $true)]
+    [CmdletBinding()]
     param(
         [parameter(Mandatory = $true, HelpMessage = "Specify an existing local path to where the PNG/JPG/JPEG image file is located.")]
         [ValidateNotNullOrEmpty()]
@@ -6821,10 +7222,244 @@ If ($Env:PSModulePath -NotLike "*$ModulePath*") {
 }
 #>
 
+#region Delete App Mode
+# Handle -DeleteApp mode early and exit
+if ($DeleteApp) {
+    Write-Log -Message "DeleteApp mode activated" -WriteHost Cyan
+
+    # Validate that we have either PackagePath or AppNameToDelete
+    if (-not $PackagePath -and -not $AppNameToDelete) {
+        Write-Log -Message "Error - DeleteApp requires either -PackagePath or -AppNameToDelete parameter" -LogLevel 3
+        Write-Host "Error: When using -DeleteApp, you must specify either -PackagePath (to read displayName from config) or -AppNameToDelete." -ForegroundColor Red
+        return 1
+    }
+
+    # Collect all app names to delete
+    $appsToDelete = @()
+
+    # Add apps from -AppNameToDelete parameter
+    if ($AppNameToDelete) {
+        $appsToDelete += $AppNameToDelete
+        Write-Log -Message "Apps to delete from -AppNameToDelete: $($AppNameToDelete -join ', ')"
+    }
+
+    # Add apps from PackagePath config files
+    if ($PackagePath) {
+        foreach ($path in $PackagePath) {
+            $path = $path.Trim()
+            if (Test-Path $path) {
+                $jsonConfigPath = "$path\Config.json"
+                $xmlConfigPath = "$path\Config.xml"
+
+                $configDisplayName = $null
+
+                if (Test-Path $jsonConfigPath) {
+                    Write-Log -Message "Reading displayName from: $jsonConfigPath"
+                    try {
+                        $jsonConfig = Get-Content -Path $jsonConfigPath -Raw | ConvertFrom-Json
+                        $configDisplayName = $jsonConfig.displayName
+                    }
+                    catch {
+                        Write-Log -Message "Error reading Config.json: $_" -LogLevel 2
+                    }
+                }
+                elseif (Test-Path $xmlConfigPath) {
+                    Write-Log -Message "Reading displayName from: $xmlConfigPath"
+                    try {
+                        [xml]$xmlConfig = Get-Content -Path $xmlConfigPath
+                        $configDisplayName = $xmlConfig.CONFIG.IntuneWin_Settings.displayName
+                    }
+                    catch {
+                        Write-Log -Message "Error reading Config.xml: $_" -LogLevel 2
+                    }
+                }
+                else {
+                    Write-Log -Message "No config file found in: $path" -LogLevel 2
+                }
+
+                if ($configDisplayName) {
+                    $appsToDelete += $configDisplayName
+                    Write-Log -Message "Found displayName from config: $configDisplayName"
+                }
+            }
+            else {
+                Write-Log -Message "Warning - path not valid: $path" -LogLevel 2
+            }
+        }
+    }
+
+    # Remove duplicates
+    $appsToDelete = $appsToDelete | Select-Object -Unique
+
+    if ($appsToDelete.Count -eq 0) {
+        Write-Log -Message "Error - No applications to delete. Check your config files or -AppNameToDelete parameter." -LogLevel 3
+        Write-Host "Error: No applications to delete. Check your config files or -AppNameToDelete parameter." -ForegroundColor Red
+        return 1
+    }
+
+    Write-Host "`nApplications to delete:" -ForegroundColor Cyan
+    $appsToDelete | ForEach-Object { Write-Host "  - $_" -ForegroundColor White }
+    Write-Host ""
+
+    # Authenticate to Graph
+    Write-Log -Message "Authenticating for delete operation..."
+    if ($IntuneAdmin) {
+        Write-Host "Using IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
+
+        $requiredScopes = @(
+            "DeviceManagementApps.ReadWrite.All"
+        )
+
+        $context = Get-MgContext
+        if ($null -ne $context) {
+            $currentScopes = $context.Scopes
+            $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
+            if ($missingScopes.Count -gt 0) {
+                Write-Host "Current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+                Write-Host "Disconnecting and reconnecting with required scopes..." -ForegroundColor Yellow
+                Disconnect-MgGraph | Out-Null
+                Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+            }
+            else {
+                Write-Host "Already connected with required scopes" -ForegroundColor Green
+            }
+        }
+        else {
+            Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+        }
+    }
+    elseif ($ClientSecret) {
+        Write-Host "Authenticating with Client Secret..." -ForegroundColor Cyan
+        $body = @{
+            Grant_Type    = "client_credentials"
+            Scope         = "https://graph.microsoft.com/.default"
+            Client_Id     = $ClientID
+            Client_Secret = $ClientSecret
+        }
+
+        $connection = Invoke-RestMethod `
+            -Uri https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token `
+            -Method POST `
+            -Body $body
+
+        $token = $connection.access_token
+
+        $global:authToken = @{
+            'Content-Type'  = 'application/json'
+            'Authorization' = "Bearer " + $connection.access_token
+            'ExpiresOn'     = $connection.expires_in
+        }
+
+        $targetParameter = (Get-Command Connect-MgGraph).Parameters['AccessToken']
+        if ($targetParameter.ParameterType -eq [securestring]) {
+            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome
+        }
+        else {
+            Connect-MgGraph -AccessToken $token -NoWelcome
+        }
+        Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
+    }
+    elseif ($CertName) {
+        Write-Host "Using certname: $CertName" -ForegroundColor Cyan
+        if ($CertName -notmatch "CN=") {
+            $CertName = "CN=$CertName"
+        }
+        $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -EQ $CertName
+        if ($myCert) {
+            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint -NoWelcome
+        }
+        else {
+            Write-Host "Error - cert not found: $CertName" -ForegroundColor Red
+            return 1
+        }
+    }
+    else {
+        Write-Host "Error: No authentication method specified. Use -IntuneAdmin, -ClientSecret, or -CertName." -ForegroundColor Red
+        return 1
+    }
+
+    Write-Host ""
+
+    # Delete each application and collect results
+    $deleteResults = @()
+    foreach ($appName in $appsToDelete) {
+        $result = Remove-IntuneApp -DisplayName $appName
+        $deleteResults += $result
+    }
+
+    # Display summary
+    Write-Host "`n" -NoNewline
+    Write-Host "=" * 60 -ForegroundColor Cyan
+    Write-Host "DELETE OPERATION SUMMARY" -ForegroundColor Cyan
+    Write-Host "=" * 60 -ForegroundColor Cyan
+
+    $deletedApps = $deleteResults | Where-Object { $_.Status -eq "Deleted" }
+    $notFoundApps = $deleteResults | Where-Object { $_.Status -eq "NotFound" }
+    $errorApps = $deleteResults | Where-Object { $_.Status -eq "Error" }
+
+    if ($deletedApps.Count -gt 0) {
+        Write-Host "`nSuccessfully Deleted ($($deletedApps.Count)):" -ForegroundColor Green
+        $deletedApps | ForEach-Object {
+            Write-Host "  ✓ $($_.DisplayName)" -ForegroundColor Green
+            Write-Host "    App ID: $($_.AppId)" -ForegroundColor DarkGray
+        }
+    }
+
+    if ($notFoundApps.Count -gt 0) {
+        Write-Host "`nNot Found ($($notFoundApps.Count)):" -ForegroundColor Yellow
+        $notFoundApps | ForEach-Object {
+            Write-Host "  - $($_.DisplayName)" -ForegroundColor Yellow
+        }
+    }
+
+    if ($errorApps.Count -gt 0) {
+        Write-Host "`nErrors ($($errorApps.Count)):" -ForegroundColor Red
+        $errorApps | ForEach-Object {
+            Write-Host "  ✗ $($_.DisplayName)" -ForegroundColor Red
+            Write-Host "    Error: $($_.Message)" -ForegroundColor DarkRed
+        }
+    }
+
+    Write-Host "`n" -NoNewline
+    Write-Host "=" * 60 -ForegroundColor Cyan
+    Write-Host "Total: $($deleteResults.Count) | Deleted: $($deletedApps.Count) | Not Found: $($notFoundApps.Count) | Errors: $($errorApps.Count)" -ForegroundColor Cyan
+    Write-Host "=" * 60 -ForegroundColor Cyan
+
+    Write-Log -Message "Delete operation completed. Deleted: $($deletedApps.Count), Not Found: $($notFoundApps.Count), Errors: $($errorApps.Count)"
+
+    # Handle Graph disconnection
+    if ($IntuneAdmin) {
+        if ($DisconnectGraph) {
+            Write-Log -Message "Disconnecting from Microsoft Graph as requested..."
+            Invoke-Cleanup -ForceDisconnect
+        }
+        else {
+            Write-Log -Message "Preserving Microsoft Graph connection for subsequent runs."
+        }
+    }
+    else {
+        Invoke-Cleanup -ForceDisconnect
+    }
+
+    # Return appropriate exit code
+    if ($errorApps.Count -gt 0) {
+        return 1
+    }
+    return 0
+}
+#endregion Delete App Mode
+
+# Validate PackagePath is provided for non-delete operations
+if (-not $PackagePath) {
+    Write-Log -Message "Error - PackagePath is required for upload operations" -LogLevel 3
+    Write-Host "Error: -PackagePath is required. Specify the path to the package folder containing Config.json or Config.xml." -ForegroundColor Red
+    return 1
+}
+
 #Check package path is valid
 if ( ! ( Test-Path $packagePath ) ) {
-    Write-Log -Message "Error - path not valid: $packagePath"
-    break
+    Write-Log -Message "Error - path not valid: $packagePath" -LogLevel 3
+    return 1
 }
 
 #Validate IntuneWinAppUtil.exe exists and is up to date
@@ -6835,21 +7470,21 @@ try {
 }
 catch {
     Write-Log -Message "Error: Failed to validate IntuneWinAppUtil.exe - $($_.Exception.Message)" -LogLevel 3
-    break
+    return 1
 }
 
 #Validate targeting group names are different - Graph API fails to apply assignment if same group is used for multiple assignments!
 if (-not(Test-Null($RequiredAADGroupName)) -and ($RequiredAADGroupName -eq $AvailableAADGroupName)) {
-    Write-Log -Message "Error - RequiredAADGroupName must be different from AvailableAADGroupName!"
-    break
+    Write-Log -Message "Error - RequiredAADGroupName must be different from AvailableAADGroupName!" -LogLevel 3
+    return 1
 }
 if (-not(Test-Null($RequiredAADGroupName)) -and ($RequiredAADGroupName -eq $UninstallAADGroupName)) {
-    Write-Log -Message "Error - RequiredAADGroupName must be different from UninstallAADGroupName!"
-    break
+    Write-Log -Message "Error - RequiredAADGroupName must be different from UninstallAADGroupName!" -LogLevel 3
+    return 1
 }
 if (-not(Test-Null($UninstallAADGroupName)) -and ($UninstallAADGroupName -eq $AvailableAADGroupName)) {
-    Write-Log -Message "Error - UninstallAADGroupName must be different from AvailableAADGroupName!"
-    break
+    Write-Log -Message "Error - UninstallAADGroupName must be different from AvailableAADGroupName!" -LogLevel 3
+    return 1
 }
 
 #Read Config File (JSON takes precedence over XML)
@@ -6866,7 +7501,7 @@ elseif (Test-Path $xmlConfigPath) {
 }
 else {
     Write-Log -Message "Error - No Config.json or Config.xml file found in: $packagePath" -LogLevel 3
-    break
+    return 1
 }
 
 if ($Username) {
@@ -7145,7 +7780,7 @@ if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
 
     if ($IntuneWinPackageOnly) {
         Write-Log -Message "IntuneWinPackageOnly param used, exiting. Package path located at: `n$packagePath\IntuneWin"
-        break
+        return 0
     }
 }
 

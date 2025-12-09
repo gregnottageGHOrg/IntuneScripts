@@ -1,0 +1,32 @@
+{
+  "sleep": 30,
+  "displayVersion": "1.0.0",
+  "RuleType": "TAGFILE",
+  "logRequestUris": false,
+  "logHeaders": false,
+  "baseUrl": "https://graph.microsoft.com",
+  "installCmdLine": "setup.exe /S",
+  "ReturnCodeType": "default",
+  "Description": "Test package for unit testing",
+  "uninstallCmdLine": "uninstall.exe /S",
+  "InstallExperience": "system",
+  "logContent": false,
+  "AppType": "EXE",
+  "Publisher": "Test Publisher",
+  "CustomReturnCodes": [
+    {
+      "type": "softReboot",
+      "returnCode": 1641
+    },
+    {
+      "type": "softReboot",
+      "returnCode": 3010
+    },
+    {
+      "type": "retry",
+      "returnCode": 1618
+    }
+  ],
+  "PackageName": "Test-ReturnCodes",
+  "displayName": "Custom Return Codes Test"
+}

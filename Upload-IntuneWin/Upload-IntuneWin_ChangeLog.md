@@ -6,6 +6,46 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
 
 ---
 
+## Version 1.9 (December 2025)
+
+### Graph API Retry Logic
+
+- Added `Invoke-GraphRequestWithRetry` helper function for resilient API calls
+- Automatic handling of HTTP 429 throttling responses with Retry-After header support
+- Exponential backoff retry logic for server errors (5xx status codes)
+- Network error detection and automatic retry for transient failures
+- Configurable maximum retries (default: 3) and initial delay (default: 2 seconds)
+
+### Configuration Validation
+
+- Added `Test-ConfigurationValidity` helper function for centralized validation
+- Validates AppType against allowed values (MSI, EXE, PS1, Edge)
+- Validates package path existence before processing
+- Checks for duplicate group names across Required, Available, and Uninstall assignments
+- Verifies Config.json or Config.xml presence in package folder
+
+### WhatIf Support
+
+- Full `-WhatIf` parameter support for previewing operations
+- Shows what applications would be uploaded, updated, or deleted
+- Shows what Entra ID groups would be created
+- Shows what assignments would be applied or cleared
+
+### Error Handling Improvements
+
+- Replaced improper `break` statements with appropriate `return` or `throw` throughout the script
+- Standardized error handling patterns across all functions
+- Improved error messages for better troubleshooting
+- Proper control flow management in nested loops and switch statements
+
+### Internal Optimizations
+
+- Centralized Graph API request handling for consistency
+- Reduced code duplication in error handling paths
+- Better separation of concerns in helper functions
+
+---
+
 ## Version 1.7 (December 2025)
 
 ### Automatic Tool Download and Update
@@ -204,3 +244,11 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
    - Notifications shown for Uninstall assignments (new behavior)
    - Delivery optimization set to foreground for all assignment types
 5. **No breaking changes** - All existing config files and parameters remain compatible
+
+### Upgrading from v1.7 to v1.9
+
+1. **No breaking changes** - All existing config files and parameters remain compatible
+2. **Automatic retry logic** - Graph API calls now automatically retry on transient failures
+3. **WhatIf support** - Use `-WhatIf` to preview operations before execution
+4. **Improved reliability** - Better error handling throughout the script
+5. **No action required** - All optimizations are internal improvements

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com</baseUrl>
+        <logRequestUris>False</logRequestUris>
+        <logHeaders>False</logHeaders>
+        <logContent>False</logContent>
+        <sleep>30</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>PS1</AppType>
+        <RuleType>TAGFILE</RuleType>
+        <ReturnCodeType>default</ReturnCodeType>
+        <InstallExperience>system</InstallExperience>
+        <PackageName>Test-Extended</PackageName>
+        <displayName>Extended Settings Test</displayName>
+        <displayVersion>1.0.0</displayVersion>
+        <Description>Test package</Description>
+        <Publisher>Test Publisher</Publisher>
+        <IsFeatured>true</IsFeatured>
+        <InformationUrl>https://example.com/info</InformationUrl>
+        <PrivacyInformationUrl>https://example.com/privacy</PrivacyInformationUrl>
+        <Developer>Test Developer</Developer>
+        <Owner>Test Owner</Owner>
+        <Notes>Test notes for the application</Notes>
+        <MinimumSupportedOS>22H2</MinimumSupportedOS>
+        <AllowedArchitectures>x64</AllowedArchitectures>
+    </IntuneWin_Settings>
+</CONFIG>

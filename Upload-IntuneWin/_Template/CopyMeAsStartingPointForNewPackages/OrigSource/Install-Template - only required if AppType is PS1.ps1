@@ -28,10 +28,10 @@ $script:ScriptName = $myInvocation.MyCommand.Name
 $script:ScriptName = $scriptName.Substring(0, $scriptName.Length - 4)
 $script:LogName = $scriptName + "_" + (Get-Date -UFormat "%d-%m-%Y")
 #$script:LogName = $scriptName + "_" + $(Get-Date).ToFileTimeUtc()
-If ( $userInstall ) {
+if ( $userInstall ) {
     $script:logPath = "$($env:LOCALAPPDATA)\Microsoft\IntuneApps\$scriptName"
 }
-Else {
+else {
     #$script:logPath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName"
     $script:logPath = "$($env:ProgramData)\Microsoft\IntuneManagementExtension\Logs"
 }
@@ -40,13 +40,13 @@ $script:logFile = "$logPath\$LogName.log"
 $script:EventLogName = "Application"
 $script:EventLogSource = "EventSystem"
 $script:transcriptLog = "$logPath\$LogName" + "_Transcript.log"
-If ($VerbosePreference -eq 'Continue') { Start-Transcript -Path "$transcriptLog" -Append }
+if ($VerbosePreference -eq 'Continue') { Start-Transcript -Path "$transcriptLog" -Append }
 ####################################################
 ####################################################
 #Build Functions
 ####################################################
 
-Function Start-Log {
+function Start-Log {
     param (
         [string]$FilePath,
 
@@ -63,13 +63,13 @@ Function Start-Log {
     }
     #If (!([system.diagnostics.eventlog]::SourceExists($EventLogSource))) { New-EventLog -LogName $EventLogName -Source $EventLogSource }
 
-    Try {
-        If (!(Test-Path $FilePath)) {
+    try {
+        if (!(Test-Path $FilePath)) {
             ## Create the log file
             New-Item $FilePath -Type File -Force | Out-Null
         }
 
-        If ($DeleteExistingFile) {
+        if ($DeleteExistingFile) {
             Remove-Item $FilePath -Force
         }
 
@@ -77,14 +77,14 @@ Function Start-Log {
         ## calls in this session
         $script:ScriptLogFilePath = $FilePath
     }
-    Catch {
+    catch {
         Write-Error $_.Exception.Message
     }
 }
 
 ####################################################
 
-Function Write-Log {
+function Write-Log {
     #Write-Log -Message 'warning' -LogLevel 2
     #Write-Log -Message 'Error' -LogLevel 3
     param (
@@ -121,12 +121,12 @@ Function Write-Log {
     $stream.WriteLine("$Line")
     $stream.close()
 
-    If ($WriteEventLog) { Write-EventLog -LogName $EventLogName -Source $EventLogSource -Message $Message  -Id 100 -Category 0 -EntryType Information }
+    if ($WriteEventLog) { Write-EventLog -LogName $EventLogName -Source $EventLogSource -Message $Message  -Id 100 -Category 0 -EntryType Information }
 }
 
 ####################################################
 
-Function New-IntuneTag {
+function New-IntuneTag {
     <#
     .SYNOPSIS
     .DESCRIPTION
@@ -137,30 +137,30 @@ Function New-IntuneTag {
     .NOTES
     .LINK
 #>
-    Param (
+    param (
         [string]$TagFilePath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName\",
         [string]$tagName
     )
 
-    Begin {
+    begin {
         Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
     }
 
-    Process {
+    process {
         # Create a tag file just so Intune knows this was installed
         Write-Log "Creating Intune Tag file path: [$TagFilePath]"
 
-        If (-not (Test-Path $TagFilePath) ) {
+        if (-not (Test-Path $TagFilePath) ) {
 
-            New-Item -Path $TagFilePath -ItemType "directory" -Force | out-null
+            New-Item -Path $TagFilePath -ItemType "directory" -Force | Out-Null
         }
 
         # Check if tagName already has .tag at the end
-        If ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
+        if ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
             Write-Log -Message "Using passed in tagName: $tagName"
             $tagFileName = "$TagFilePath\$tagName"
         }
-        Else {
+        else {
             Write-Log -Message "Using default of scriptname: $tagName and appending .tag"
             $tagFileName = "$TagFilePath\$tagName.tag"
         }
@@ -176,7 +176,7 @@ Function New-IntuneTag {
 
 ####################################################
 
-Function Remove-IntuneTag {
+function Remove-IntuneTag {
     <#
     .SYNOPSIS
     .DESCRIPTION
@@ -187,30 +187,30 @@ Function Remove-IntuneTag {
     .NOTES
     .LINK
 #>
-    Param (
+    param (
         [string]$TagFilePath = "$($env:ProgramData)\Microsoft\IntuneApps\$scriptName\",
         [string]$tagName
     )
 
-    Begin {
+    begin {
         Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
     }
 
-    Process {
+    process {
         # Remove the tag file so Intune knows this was uninstalled
         # Check if tagName already has .tag at the end
-        If ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
+        if ($tagName.Substring(($tagName.Length - 4), 4) -eq ".tag") {
             Write-Log -Message "Using passed in tagName: $tagName"
             $tagFileName = "$TagFilePath\$tagName"
         }
-        Else {
+        else {
             Write-Log -Message "Using default of scriptname: $tagName and appending .tag"
             $tagFileName = "$TagFilePath\$tagName.tag"
         }
 
         Write-Log "Removing Intune Tag file: [$tagFileName]"
 
-        If (Test-Path $tagFileName) {
+        if (Test-Path $tagFileName) {
             Remove-Item -Path $tagFileName -Force
         }
 
@@ -219,7 +219,7 @@ Function Remove-IntuneTag {
 
 ####################################################
 
-Function New-IntuneRegTag {
+function New-IntuneRegTag {
     <#
     .SYNOPSIS
     .DESCRIPTION
@@ -230,16 +230,16 @@ Function New-IntuneRegTag {
     .NOTES
     .LINK
 #>
-    Param (
+    param (
         [string]$TagRegPath = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\",
         [string]$tagName
     )
 
-    Begin {
+    begin {
         Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
     }
 
-    Process {
+    process {
         # Create a registry tag just so Intune knows this was installed
         Write-Log "Creating Intune Tag file path: [$TagRegPath\$tagName]"
 
@@ -254,7 +254,7 @@ Function New-IntuneRegTag {
 
 ####################################################
 
-Function Remove-IntuneRegTag {
+function Remove-IntuneRegTag {
     <#
     .SYNOPSIS
     .DESCRIPTION
@@ -265,16 +265,16 @@ Function Remove-IntuneRegTag {
     .NOTES
     .LINK
 #>
-    Param (
+    param (
         [string]$TagRegPath = "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\",
         [string]$tagName
     )
 
-    Begin {
+    begin {
         Write-Log -Message "Starting $($MyInvocation.InvocationName) function..."
     }
 
-    Process {
+    process {
         # Remove registry tag just so Intune knows this was uninstalled
         Write-Log "Removing Intune Tag file path: [$TagRegPath\$tagName]"
 
@@ -299,6 +299,40 @@ function Test-Null($objectToCheck) {
     }
 
     return $false
+}
+
+####################################################
+
+function Test-OOBE {
+    $TypeDef = @"
+
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace Api
+{
+ public class Kernel32
+ {
+   [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+   public static extern int OOBEComplete(ref int bIsOOBEComplete);
+ }
+}
+"@
+
+    Add-Type -TypeDefinition $TypeDef -Language CSharp
+
+    $IsOOBEComplete = $false
+    $hr = [Api.Kernel32]::OOBEComplete([ref] $IsOOBEComplete)
+
+    #$IsOOBEComplete
+    if ($IsOOBEComplete -eq '1') {
+        return $true
+    }
+    else {
+        return $false
+    }
 }
 
 ####################################################
@@ -330,165 +364,173 @@ $psadtLoaded = $false
 
 # Method 1: Try PSADT v4.x module import (module manifest at script root)
 $modulePath = "$PSScriptRoot\PSAppDeployToolkit.psd1"
-If (Test-Path $modulePath -PathType Leaf) {
+if (Test-Path $modulePath -PathType Leaf) {
     Write-Log -Message "Found PSAppDeployToolkit module at [$modulePath] - attempting module import"
-    Try {
+    try {
         Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
         Import-Module -Name $modulePath -Force -ErrorAction Stop
         $psadtLoaded = $true
         Write-Log -Message "Successfully imported PSAppDeployToolkit module v4.x"
     }
-    Catch {
+    catch {
         Write-Log -Message "Failed to import PSAppDeployToolkit module: $($_.Exception.Message)" -Severity 2
     }
 }
 
 # Method 2: Try legacy dot-source from same folder
-If (-not $psadtLoaded) {
+if (-not $psadtLoaded) {
     $toolkitPath = "$PSScriptRoot\Invoke-AppDeployToolkit.ps1"
-    If (Test-Path $toolkitPath -PathType Leaf) {
+    if (Test-Path $toolkitPath -PathType Leaf) {
         Write-Log -Message "Found AppDeployToolkit at [$toolkitPath] - attempting dot-source"
-        Try {
+        try {
             . $toolkitPath
             $psadtLoaded = $true
             Write-Log -Message "Successfully dot-sourced AppDeployToolkit"
         }
-        Catch {
+        catch {
             Write-Log -Message "Failed to dot-source AppDeployToolkit: $($_.Exception.Message)" -Severity 2
         }
     }
 }
 
 # Method 3: Try PSADT v4.x Frontend folder structure
-If (-not $psadtLoaded) {
+if (-not $psadtLoaded) {
     $frontendPath = "$PSScriptRoot\Frontend\v4\Invoke-AppDeployToolkit.ps1"
-    If (Test-Path $frontendPath -PathType Leaf) {
+    if (Test-Path $frontendPath -PathType Leaf) {
         Write-Log -Message "Found AppDeployToolkit at [$frontendPath] - attempting dot-source"
-        Try {
+        try {
             . $frontendPath
             $psadtLoaded = $true
             Write-Log -Message "Successfully dot-sourced AppDeployToolkit from Frontend\v4"
         }
-        Catch {
+        catch {
             Write-Log -Message "Failed to dot-source AppDeployToolkit from Frontend: $($_.Exception.Message)" -Severity 2
         }
     }
 }
 
 # Restore our CMTrace-compatible Write-Log function (toolkit may have overwritten it)
-If ($savedWriteLog) {
+if ($savedWriteLog) {
     ${function:Write-Log} = $savedWriteLog
-    If ($psadtLoaded) {
+    if ($psadtLoaded) {
         Write-Log -Message "Restored custom CMTrace-compatible Write-Log function"
     }
 }
 
-If (-not $psadtLoaded) {
+if (-not $psadtLoaded) {
     Write-Log -Message "PSAppDeployToolkit not found - continuing without toolkit functions" -Severity 2
 }
 #endregion PSAppDeployToolkit Loading
 
-If ($([System.Environment]::Is64BitProcess)) {
+if ($([System.Environment]::Is64BitProcess)) {
     Write-Log -Message "Running in 64-bit mode, so use normal ProgramFiles path"
     $programFiles = "$($env:ProgramFiles)"
     Write-Log -Message "Running in 64-bit mode, so use normal systemroot path"
     $systemRoot = "$($env:SystemRoot)\System32"
 }
-Else {
+else {
     Write-Log -Message "Running in 32-bit mode, adjust to ProgramW6432 path"
     $programFiles = "$($env:ProgramW6432)"
     Write-Log -Message "Running in 32-bit mode, adjust to sysnative path"
     $systemRoot = "$($env:SystemRoot)\sysnative"
 }
 
-If ($Install) {
+if ($Install) {
     Write-Log -Message "Performing Install steps..."
 
     #Your code goes here
 
+    <#
+    If ($OOBEComplete -eq $false) {
+        Write-Log -Message "Running during OOBE"
+        Write-Log -Message "Will force reboot!" -WriteHost Cyan
+        $rebootNow = $true
+    }
+    #>
+
     #Handle Intune detection method
-    If (! ($userInstall) ) {
+    if (! ($userInstall) ) {
         Write-Log -Message "Creating detection rule for System install"
 
-        If ( $regTag ) {
+        if ( $regTag ) {
             Write-Log -Message "Using RegTag: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
             New-IntuneRegTag -TagRegPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
         }
-        Else {
+        else {
             Write-Log -Message "Using FileTag"
 
-            If ( ! ( Test-Null ( $tagFile ) ) ) {
+            if ( ! ( Test-Null ( $tagFile ) ) ) {
                 Write-Log -Message "Using tagFile name: $tagFile"
                 New-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
             }
-            Else {
+            else {
                 Write-Log -Message "Using default tagFile name: $scriptName"
                 New-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
             }
         }
     }
-    ElseIf ( $userInstall ) {
+    elseif ( $userInstall ) {
         Write-Log -Message "Creating detection rule for User install"
 
-        If ( $regTag ) {
+        if ( $regTag ) {
             Write-Log -Message "Using RegTag: HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
             New-IntuneRegTag -TagRegPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
         }
-        Else {
+        else {
             Write-Log -Message "Using FileTag: "
 
-            If ( ! ( Test-Null ( $tagFile ) ) ) {
+            if ( ! ( Test-Null ( $tagFile ) ) ) {
                 Write-Log -Message "Using tagFile name: $tagFile"
                 New-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
             }
-            Else {
+            else {
                 Write-Log -Message "Using default tagFile name: $scriptName"
                 New-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
             }
         }
     }
 }
-ElseIf ( $UnInstall ) {
+elseif ( $UnInstall ) {
     Write-Log -Message "Performing Uninstall steps..."
 
     #Your code goes here
 
     #Handle Intune detection method
-    If (! ($userInstall) ) {
+    if (! ($userInstall) ) {
         Write-Log -Message "Removing detection for System install"
 
-        If ( $regTag ) {
+        if ( $regTag ) {
             Write-Log -Message "Removing RegTag: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
             Remove-IntuneRegTag -TagRegPath "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
         }
-        Else {
+        else {
             Write-Log -Message "Removing FileTag"
 
-            If ( ! ( Test-Null ( $tagFile ) ) ) {
+            if ( ! ( Test-Null ( $tagFile ) ) ) {
                 Write-Log -Message "Removing tagFile name: $tagFile"
                 Remove-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
             }
-            Else {
+            else {
                 Write-Log -Message "Removing default tagFile name: $scriptName"
                 Remove-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
             }
         }
     }
-    ElseIf ( $userInstall ) {
+    elseif ( $userInstall ) {
         Write-Log -Message "Removing detection for User install"
 
-        If ( $regTag ) {
+        if ( $regTag ) {
             Write-Log -Message "Removing RegTag: HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps\$ScriptName"
             Remove-IntuneRegTag -TagRegPath "HKEY_CURRENT_USER\SOFTWARE\Microsoft\IntuneApps" -tagName $ScriptName
         }
-        Else {
+        else {
             Write-Log -Message "Removing FileTag: "
 
-            If ( ! ( Test-Null ( $tagFile ) ) ) {
+            if ( ! ( Test-Null ( $tagFile ) ) ) {
                 Write-Log -Message "Removing tagFile name: $tagFile"
                 Remove-IntuneTag -TagFilePath "$logPath" -tagName $tagFile
             }
-            Else {
+            else {
                 Write-Log -Message "Removing default tagFile name: $scriptName"
                 Remove-IntuneTag -TagFilePath "$logPath" -tagName $scriptName
             }
@@ -497,10 +539,18 @@ ElseIf ( $UnInstall ) {
 }
 
 
-Write-Log "$ScriptName completed." -WriteEventLog
-If ($VerbosePreference -eq 'Continue') { Stop-Transcript }
-exit $exitCode
-
+#Final
+if ($rebootNow -eq $true) {
+    Write-Log -Message "Rebooting..." -WriteHost Yellow
+    Write-Log "$ScriptName completed." -WriteEventLog
+    if ($VerbosePreference -eq 'Continue') { $null = Stop-Transcript }
+    [Environment]::Exit(1641)# Hard Reboot - i.e. reboot now!
+}
+else {
+    Write-Log "$ScriptName completed." -WriteEventLog
+    if ($VerbosePreference -eq 'Continue') { $null = Stop-Transcript }
+    exit $exitCode
+}
 ##########################################################################################################
 ##########################################################################################################
 #endregion Main Script work section

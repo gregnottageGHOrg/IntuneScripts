@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<CONFIG>
+    <Azure_Settings>
+        <baseUrl>https://graph.microsoft.com</baseUrl>
+        <logRequestUris>False</logRequestUris>
+        <logHeaders>False</logHeaders>
+        <logContent>False</logContent>
+        <sleep>30</sleep>
+    </Azure_Settings>
+    <IntuneWin_Settings>
+        <AppType>EXE</AppType>
+        <RuleType>REGISTRY</RuleType>
+        <ReturnCodeType>default</ReturnCodeType>
+        <InstallExperience>system</InstallExperience>
+        <PackageName>Test-Registry</PackageName>
+        <displayName>Registry Detection Test</displayName>
+        <displayVersion>1.0.0</displayVersion>
+        <Description>Test package</Description>
+        <Publisher>Test Publisher</Publisher>
+        <RegistryKeyPath>HKLM\SOFTWARE\Test\App</RegistryKeyPath>
+        <RegistryValue>Version</RegistryValue>
+        <RegistryDetectionType>string</RegistryDetectionType>
+        <RegistryDetectionOperator>equal</RegistryDetectionOperator>
+        <RegistryDetectionValue>1.0.0</RegistryDetectionValue>
+    </IntuneWin_Settings>
+</CONFIG>

@@ -1,0 +1,26 @@
+{
+  "displayName": "Dependencies Test",
+  "AppType": "PS1",
+  "Publisher": "Test Publisher",
+  "ReturnCodeType": "default",
+  "logRequestUris": false,
+  "Description": "Test package for unit testing",
+  "logHeaders": false,
+  "RuleType": "TAGFILE",
+  "Dependencies": [
+    {
+      "AppName": "Dependency-App-1",
+      "AutoInstall": true
+    },
+    {
+      "AppName": "Dependency-App-2",
+      "AutoInstall": false
+    }
+  ],
+  "sleep": 30,
+  "PackageName": "Test-Dependencies",
+  "baseUrl": "https://graph.microsoft.com",
+  "logContent": false,
+  "displayVersion": "1.0.0",
+  "InstallExperience": "system"
+}

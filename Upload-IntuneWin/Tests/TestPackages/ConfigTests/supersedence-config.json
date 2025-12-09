@@ -1,0 +1,26 @@
+{
+  "displayName": "Supersedence Test",
+  "AppType": "PS1",
+  "Publisher": "Test Publisher",
+  "ReturnCodeType": "default",
+  "logRequestUris": false,
+  "Description": "Test package for unit testing",
+  "logHeaders": false,
+  "Supersedence": [
+    {
+      "AppName": "Old-App-1",
+      "UpdateBehavior": "Replace"
+    },
+    {
+      "AppName": "Old-App-2",
+      "UpdateBehavior": "Update"
+    }
+  ],
+  "RuleType": "TAGFILE",
+  "sleep": 30,
+  "PackageName": "Test-Supersedence",
+  "baseUrl": "https://graph.microsoft.com",
+  "logContent": false,
+  "displayVersion": "1.0.0",
+  "InstallExperience": "system"
+}

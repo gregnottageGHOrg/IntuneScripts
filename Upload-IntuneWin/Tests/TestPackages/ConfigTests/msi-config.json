@@ -1,0 +1,17 @@
+{
+  "displayName": "MSI Test Package JSON",
+  "AppType": "MSI",
+  "Publisher": "Test Publisher",
+  "ReturnCodeType": "default",
+  "logRequestUris": false,
+  "Description": "Test package for unit testing",
+  "logHeaders": false,
+  "RuleType": "MSI",
+  "sleep": 30,
+  "MSIProductCode": "{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}",
+  "PackageName": "Test-MSI-JSON",
+  "baseUrl": "https://graph.microsoft.com",
+  "logContent": false,
+  "displayVersion": "1.0.0",
+  "InstallExperience": "system"
+}
