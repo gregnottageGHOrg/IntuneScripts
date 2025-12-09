@@ -1,4 +1,5 @@
-﻿#Requires -Module Microsoft.Graph.Authentication
+﻿# Module requirement handled in script initialization - checks PSScriptRoot if not installed
+# #Requires -Module Microsoft.Graph.Authentication
 #region Initialisation...
 <#
 
@@ -460,6 +461,59 @@ else {
     if ($lastChar -eq "\") { $script:intuneWinAppUtilPath = $intuneWinAppUtilPath.Substring(0, $intuneWinAppUtilPath.Length - 1) }
     Write-Host "script:intuneWinAppUtilPath: $script:intuneWinAppUtilPath"
     $IntuneWinAppUtil = "$intuneWinAppUtilPath\IntuneWinAppUtil.exe"
+}
+
+####################################################
+# Check for Microsoft.Graph.Authentication module
+####################################################
+$graphModuleName = "Microsoft.Graph.Authentication"
+$graphModule = Get-Module -Name $graphModuleName -ListAvailable -ErrorAction SilentlyContinue
+
+if ($null -eq $graphModule) {
+    # Module not installed - check if it exists in PSScriptRoot
+    $localModulePath = Join-Path -Path $PSScriptRoot -ChildPath $graphModuleName
+
+    if (Test-Path $localModulePath) {
+        Write-Host "Microsoft.Graph.Authentication module not installed. Loading from script directory..." -ForegroundColor Yellow
+        try {
+            Import-Module $localModulePath -Force -ErrorAction Stop
+            Write-Host "Microsoft.Graph.Authentication module loaded successfully from: $localModulePath" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Failed to import Microsoft.Graph.Authentication module from script directory: $_" -ForegroundColor Red
+            Write-Host "Please install the module using: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+    else {
+        # Also check for module in a 'Modules' subfolder
+        $modulesSubfolderPath = Join-Path -Path $PSScriptRoot -ChildPath "Modules\$graphModuleName"
+
+        if (Test-Path $modulesSubfolderPath) {
+            Write-Host "Microsoft.Graph.Authentication module not installed. Loading from Modules subfolder..." -ForegroundColor Yellow
+            try {
+                Import-Module $modulesSubfolderPath -Force -ErrorAction Stop
+                Write-Host "Microsoft.Graph.Authentication module loaded successfully from: $modulesSubfolderPath" -ForegroundColor Green
+            }
+            catch {
+                Write-Host "Failed to import Microsoft.Graph.Authentication module: $_" -ForegroundColor Red
+                Write-Host "Please install the module using: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser" -ForegroundColor Yellow
+                exit 1
+            }
+        }
+        else {
+            Write-Host "Microsoft.Graph.Authentication module not found." -ForegroundColor Red
+            Write-Host "The module is not installed and was not found in:" -ForegroundColor Red
+            Write-Host "  - $localModulePath" -ForegroundColor Red
+            Write-Host "  - $modulesSubfolderPath" -ForegroundColor Red
+            Write-Host "Please install the module using: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser" -ForegroundColor Yellow
+            exit 1
+        }
+    }
+}
+else {
+    # Module is installed - import it
+    Import-Module $graphModuleName -ErrorAction SilentlyContinue
 }
 
 ####################################################
