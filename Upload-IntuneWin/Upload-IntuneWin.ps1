@@ -2484,11 +2484,11 @@ function Write-AuthHeaders($authToken) {
 function Invoke-GetRequest($collectionPath) {
 
     Write-Host "Running Invoke-GetRequest: $collectionPath" -ForegroundColor Green
-    Write-Host "Running Invoke-GetRequest baseURL: $baseUrl" -ForegroundColor Green
+    Write-Host "Running Invoke-GetRequest baseURL: $script:baseUrl" -ForegroundColor Green
     Write-Host
 
 
-    $uri = "$baseUrl$collectionPath";
+    $uri = "$script:baseUrl$collectionPath";
     $request = "GET $uri";
 
     if ($userName) {
@@ -2522,7 +2522,7 @@ function Invoke-GetRequest($collectionPath) {
 
 function Invoke-PatchRequest($collectionPath, $body) {
 
-    Invoke-GraphRequest "PATCH" $collectionPath $body;
+    Invoke-IntuneGraphRequest "PATCH" $collectionPath $body;
 
 }
 
@@ -2530,17 +2530,15 @@ function Invoke-PatchRequest($collectionPath, $body) {
 
 function Invoke-PostRequest($collectionPath, $body) {
 
-    Invoke-GraphRequest "POST" $collectionPath $body;
+    Invoke-IntuneGraphRequest "POST" $collectionPath $body;
 
 }
 
 ####################################################
 
-function Invoke-GraphRequest($verb, $collectionPath, $body) {
+function Invoke-IntuneGraphRequest($verb, $collectionPath, $body) {
 
-    Write-Host "Running Invoke-GraphRequest" -ForegroundColor Green
-
-    $uri = "$baseUrl$collectionPath";
+    $uri = "$script:baseUrl$collectionPath";
     $request = "$verb $uri";
 
     <#
@@ -7715,7 +7713,9 @@ if (-not($AssignGroupsOnly)) {
     if (Test-Path -Path "$packagePath\IntuneWin") {
         Write-Log -Message "Removing folder: $packagePath\IntuneWin"
         Move-Item -Path "$packagePath\IntuneWin" -Destination "$env:Temp" -Force
-        Remove-Item -Path "$env:Temp\IntuneWin" -Recurse -Force
+        if (Test-Path -Path "$env:Temp\IntuneWin") {
+            Remove-Item -Path "$env:Temp\IntuneWin" -Recurse -Force
+        }
     }
 }
 
@@ -7797,11 +7797,28 @@ if (-not($SkipPackageRemoval -or $AssignGroupsOnly)) {
     if (Test-Path -Path "$packagePath\IntuneWin") {
         Write-Log -Message "Removing folder: $packagePath\IntuneWin"
         Move-Item -Path "$packagePath\IntuneWin" -Destination "$env:Temp" -Force
-        Remove-Item -Path "$env:Temp\IntuneWin" -Recurse -Force
+        if (Test-Path -Path "$env:Temp\IntuneWin") {
+            Remove-Item -Path "$env:Temp\IntuneWin" -Recurse -Force
+        }
     }
 }
 
-Write-Log "$ScriptName completed." -WriteEventLog
+# Display completion summary with app name
+if ($script:displayName) {
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    if ($script:exitCode -eq 0) {
+        Write-Host "UPLOAD COMPLETE" -ForegroundColor Green
+    }
+    else {
+        Write-Host "UPLOAD COMPLETED WITH WARNINGS" -ForegroundColor Yellow
+    }
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "Application: $($script:displayName)" -ForegroundColor White
+    Write-Host "Exit Code: $($script:exitCode)" -ForegroundColor $(if ($script:exitCode -eq 0) { 'Green' } else { 'Yellow' })
+    Write-Host "========================================`n" -ForegroundColor Cyan
+}
+
+Write-Log "$ScriptName completed. Application: $($script:displayName)" -WriteEventLog
 
 # Handle Graph disconnection based on authentication method and -DisconnectGraph switch
 if ($IntuneAdmin) {
