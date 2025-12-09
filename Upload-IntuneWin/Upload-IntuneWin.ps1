@@ -1,4 +1,4 @@
-#Requires -Module Microsoft.Graph.Authentication
+﻿#Requires -Module Microsoft.Graph.Authentication
 #region Initialisation...
 <#
 
@@ -7823,3 +7823,4 @@ return $script:exitCode
 ##########################################################################################################
 ##########################################################################################################
 #endregion Main Script work section
+
