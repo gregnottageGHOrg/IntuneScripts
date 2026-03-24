@@ -44,6 +44,9 @@
 .PARAMETER ClientID
     Specifies the Azure App Registration (Service Principal) Application (client) ID.
     Required when using certificate or client secret authentication.
+    Can also be used with -IntuneAdmin for delegated authentication using a custom app registration
+    instead of the default Microsoft Graph PowerShell SDK app. This is useful when the default app
+    is not consented in the tenant or when specific API permissions are required.
     Alias: AppID
 
 .PARAMETER TenantID
@@ -76,18 +79,21 @@
     Useful for keeping local copies of packages.
 
 .PARAMETER RequiredAADGroupName
-    Specifies an Entra ID group name for required assignment targeting.
-    If the group doesn't exist, it will be created.
+    Specifies one or more Entra ID group names for required assignment targeting.
+    Supports multiple groups: -RequiredAADGroupName "Group1","Group2"
+    If a group doesn't exist, it will be created.
     Alias: RequiredEntraGroupName
 
 .PARAMETER AvailableAADGroupName
-    Specifies an Entra ID group name for available assignment targeting.
-    If the group doesn't exist, it will be created.
+    Specifies one or more Entra ID group names for available assignment targeting.
+    Supports multiple groups: -AvailableAADGroupName "Group1","Group2"
+    If a group doesn't exist, it will be created.
     Alias: AvailableEntraGroupName
 
 .PARAMETER UninstallAADGroupName
-    Specifies an Entra ID group name for uninstall assignment targeting.
-    If the group doesn't exist, it will be created.
+    Specifies one or more Entra ID group names for uninstall assignment targeting.
+    Supports multiple groups: -UninstallAADGroupName "Group1","Group2"
+    If a group doesn't exist, it will be created.
     Alias: UninstallEntraGroupName
 
 .PARAMETER NewTagPath
@@ -95,15 +101,18 @@
     This ensures logs are captured during an Intune diagnostic log capture.
 
 .PARAMETER ScopeTagName
-    Specifies the Intune scope tag name to apply to the uploaded application.
-    This parameter takes precedence over the ScopeTag attribute in Config.xml.
-    If the scope tag doesn't exist in the tenant, it will be created automatically.
-    The scope tag replaces any existing scope tags on the application (including the Default scope tag).
+    Specifies one or more Intune scope tag names to apply to the uploaded application.
+    Supports multiple scope tags: -ScopeTagName "Tag1","Tag2"
+    This parameter takes precedence over the ScopeTag attribute in Config.xml/Config.json.
+    If a scope tag doesn't exist in the tenant, it will be created automatically.
+    The specified scope tags replace any existing scope tags on the application (including the Default scope tag).
+    Config files also support multiple scope tags as comma-separated values (e.g., "Tag1,Tag2").
 
 .PARAMETER ReplaceExistingContent
     Switch parameter that replaces only the IntuneWin content of an existing application.
-    The application must already exist in Intune. All other configuration (assignments, detection rules,
-    requirements, scope tags, etc.) will be preserved. Only the package content is updated.
+    If the application exists in Intune, all other configuration (assignments, detection rules,
+    requirements, scope tags, etc.) will be preserved and only the package content is updated.
+    If the application does not exist, it will be created as a new application.
     Useful for updating an application's installer without recreating the entire app configuration.
 
 .PARAMETER ReplaceExistingAssignments
@@ -171,6 +180,18 @@
     Uploads a package and applies the "CloudPC-Apps" scope tag. If the scope tag doesn't exist, it will be created.
 
 .EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ClientID "12345678-1234-1234-1234-123456789012"
+
+    Uploads a package using delegated (interactive) authentication with a custom app registration.
+    The user signs in interactively, but authentication flows through the specified app registration
+    instead of the default Microsoft Graph PowerShell SDK app.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -ClientID "12345678-1234-1234-1234-123456789012" -TenantID "87654321-4321-4321-4321-210987654321"
+
+    Uploads a package using delegated authentication with a custom app registration and explicit tenant.
+
+.EXAMPLE
     .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com" -SkipGroupAssignment -ScopeTagName "Production"
 
     Uploads a package without group assignments but applies the "Production" scope tag.
@@ -225,9 +246,20 @@
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.9
+    Version        : 1.92
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
+
+    Upload Resilience & Feature Parity (v1.92):
+    Backported improvements from the CI/CD pipeline solution for parity:
+    - SAS readiness probing: Pre-checks Azure Storage SAS token propagation (403/404) before upload
+    - Per-chunk upload retry: 3 retries per chunk with automatic SAS URI renewal on 403 failures
+    - File commit retry loop: 6 attempts for file commit when SAS state hasn't transitioned yet
+    - Upload attempt retry: Up to 3 full upload attempts with fresh content versions on failure
+    - 412 Precondition Failed: Now retryable in Invoke-GraphRequestWithRetry (content version conflicts)
+    - Logo auto-detection: Auto-scans package folder for PNG/JPG/JPEG if not specified in config
+    - Logo JPEG MIME type: Correctly sets image/jpeg for .jpg/.jpeg files (was hardcoded to image/png)
+    - Logo persistence PATCH: Applies logo via dedicated PATCH after content commit to prevent loss
 
     WhatIf Support (v1.9):
     The script supports -WhatIf to preview operations without making changes:
@@ -265,11 +297,12 @@
     - displayVersion: Version string to display
     - description: App description
     - publisher: Publisher name
-    - category: App category (e.g., Business)
+    - category: App category or comma-separated categories (e.g., "Business" or "Communication,Productivity,Computer Management")
     - logoFile: Path to logo file (PNG/JPG)
     - scopetag: Name of the Intune scope tag (optional, overridden by -ScopeTagName parameter)
     - entraGroupName: Entra ID group name for assignments (preferred)
     - aadGroupName: Entra ID group name for assignments (legacy, still supported)
+    - allowAvailableUninstall: Enable/disable available uninstall - accepts yes/no or true/false (default: yes if not specified)
     - coreApp: Boolean for core app designation
     - espApp: Boolean for ESP app designation
 
@@ -287,7 +320,8 @@
     - minimumNumberOfProcessors: Minimum CPU count requirement
     - minimumCpuSpeedInMHz: Minimum CPU speed requirement
     - allowedArchitectures: x64, x86, arm, arm64 (comma-separated)
-    - minimumSupportedOS: v10_1903, v10_21H2, v11_23H2, etc.
+    - minimumSupportedOS: Accepts short names (v10_1903, v11_23H2) or full names (Windows 10 1903, Windows 11 23H2).
+                          Falls back to latest confirmed version if the specified version isn't yet in the Graph API schema.
     - customReturnCodes: Custom return code handling (array or comma-separated code:type)
     - dependencies: Apps this app depends on (array or comma-separated names)
     - dependencyType: autoInstall or detect
@@ -379,33 +413,33 @@ param(
     [Parameter(HelpMessage = 'Skips the deletion of the .IntuneWin file')]
     [switch] $SkipPackageRemoval,
 
-    [Parameter(HelpMessage = 'Applies an Entra ID group with required assignment targeting'
+    [Parameter(HelpMessage = 'Applies one or more Entra ID groups with required assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
     [Alias("RequiredEntraGroupName")]
-    [string] $RequiredAADGroupName,
+    [string[]] $RequiredAADGroupName,
 
-    [Parameter(HelpMessage = 'Applies an Entra ID group with available assignment targeting'
+    [Parameter(HelpMessage = 'Applies one or more Entra ID groups with available assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
     [Alias("AvailableEntraGroupName")]
-    [string] $AvailableAADGroupName,
+    [string[]] $AvailableAADGroupName,
 
-    [Parameter(HelpMessage = 'Applies an Entra ID group with uninstall assignment targeting'
+    [Parameter(HelpMessage = 'Applies one or more Entra ID groups with uninstall assignment targeting'
     )]
     [ValidateNotNullOrEmpty()]
     [Alias("UninstallEntraGroupName")]
-    [string] $UninstallAADGroupName,
+    [string[]] $UninstallAADGroupName,
 
     [Parameter(HelpMessage = 'Changes the tagfile path to %PROGRAMDATA%\IntuneManagementExtension\Logs - this is so that the logs are captured during an Intune diagnostic log capture'
     )]
     [switch] $NewTagPath,
 
-    [Parameter(HelpMessage = 'Specifies the Intune scope tag name to apply to the uploaded application. Takes precedence over ScopeTag in Config.xml. If the scope tag does not exist, it will be created.'
+    [Parameter(HelpMessage = 'Specifies one or more Intune scope tag names to apply to the uploaded application. Takes precedence over ScopeTag in Config.xml. If a scope tag does not exist, it will be created.'
     )]
-    [string] $ScopeTagName,
+    [string[]] $ScopeTagName,
 
-    [Parameter(HelpMessage = 'Replaces only the IntuneWin content of an existing application while keeping all other configuration intact. The app must already exist in Intune.'
+    [Parameter(HelpMessage = 'Replaces the IntuneWin content of an existing application while keeping all other configuration intact. If the app does not exist, creates it as a new application.'
     )]
     [switch] $ReplaceExistingContent,
 
@@ -432,7 +466,7 @@ $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.9"
+$BuildVer = "1.92"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -701,6 +735,12 @@ NAME: Invoke-GraphRequestWithRetry
                 }
                 Write-Log -Message "Request throttled (429). Waiting $retryAfter seconds..." -LogLevel 2
             }
+            elseif ($statusCode -eq 412) {
+                # Precondition failed — content version state conflict, retry after delay
+                $isRetryable = $true
+                $retryAfter = 10
+                Write-Log -Message "Precondition failed (412) — content version state conflict. Waiting $retryAfter seconds..." -LogLevel 2
+            }
             elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
                 # Server error - retry with exponential backoff
                 $isRetryable = $true
@@ -759,13 +799,13 @@ NAME: Test-ConfigurationValidity
         [string]$PackagePath,
 
         [Parameter(Mandatory = $false)]
-        [string]$RequiredAADGroupName,
+        [string[]]$RequiredAADGroupName,
 
         [Parameter(Mandatory = $false)]
-        [string]$AvailableAADGroupName,
+        [string[]]$AvailableAADGroupName,
 
         [Parameter(Mandatory = $false)]
-        [string]$UninstallAADGroupName
+        [string[]]$UninstallAADGroupName
     )
 
     $errors = [System.Collections.ArrayList]::new()
@@ -782,11 +822,14 @@ NAME: Test-ConfigurationValidity
         [void]$errors.Add("Package path does not exist: $PackagePath")
     }
 
-    # Validate group name uniqueness
-    $groupNames = @($RequiredAADGroupName, $AvailableAADGroupName, $UninstallAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $uniqueGroups = $groupNames | Select-Object -Unique
-    if ($groupNames.Count -ne $uniqueGroups.Count) {
-        [void]$errors.Add("Group names must be unique. RequiredAADGroupName, AvailableAADGroupName, and UninstallAADGroupName cannot be the same.")
+    # Validate group name uniqueness - no group name should appear in more than one intent
+    $requiredNames = @($RequiredAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $availableNames = @($AvailableAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $uninstallNames = @($UninstallAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $allNames = @($requiredNames) + @($availableNames) + @($uninstallNames)
+    $uniqueNames = $allNames | Select-Object -Unique
+    if ($allNames.Count -ne $uniqueNames.Count) {
+        [void]$errors.Add("Group names must be unique across assignment intents. The same group cannot appear in RequiredAADGroupName, AvailableAADGroupName, and UninstallAADGroupName.")
     }
 
     # Check for config file if PackagePath is specified
@@ -1793,13 +1836,26 @@ NAME: New-RequirementRule
 function Get-MinimumOperatingSystemObject {
     <#
 .SYNOPSIS
-Creates a minimum operating system object for Win32 app requirements
+Creates the minimum operating system properties for Win32 app requirements
 .DESCRIPTION
-This function creates a windowsMinimumOperatingSystem object based on the specified Windows version.
+This function resolves the specified Windows version to the correct Graph API properties.
+The Graph API uses two different mechanisms:
+  - minimumSupportedOperatingSystem: A complex type with boolean properties (supports up to v10_21H1)
+  - minimumSupportedWindowsRelease: A string property for newer versions (Windows10_21H2, Windows11_23H2, etc.)
+This function returns a hashtable with 'osObject' and 'windowsRelease' keys so callers can set
+both properties appropriately.
+Accepts both short names (e.g., "v10_1903", "v11_23H2") and full display names
+(e.g., "Windows 10 1903", "Windows 11 23H2") from config files.
 .PARAMETER MinimumOS
-The minimum Windows version: v10_1607, v10_1703, v10_1709, v10_1803, v10_1809, v10_1903, v10_1909, v10_2004, v10_2H20, v10_21H1
+The minimum Windows version. Accepts either:
+  - Short names: v10_1607, v10_1903, v10_21H2, v11_23H2, etc.
+  - Full display names: "Windows 10 1607", "Windows 10 1903", "Windows 11 23H2", etc.
 .EXAMPLE
-$minOS = Get-MinimumOperatingSystemObject -MinimumOS "v10_1903"
+$result = Get-MinimumOperatingSystemObject -MinimumOS "v10_1903"
+# Returns: @{ osObject = @{...v10_1903=$true}; windowsRelease = $null }
+.EXAMPLE
+$result = Get-MinimumOperatingSystemObject -MinimumOS "Windows 11 23H2"
+# Returns: @{ osObject = @{...v10_21H1=$true}; windowsRelease = "Windows11_23H2" }
 .NOTES
 NAME: Get-MinimumOperatingSystemObject
 #>
@@ -1807,19 +1863,109 @@ NAME: Get-MinimumOperatingSystemObject
     [cmdletbinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('v10_1507', 'v10_1511', 'v10_1607', 'v10_1703', 'v10_1709', 'v10_1803', 'v10_1809', 'v10_1903', 'v10_1909', 'v10_2004', 'v10_2H20', 'v10_21H1', 'v10_21H2', 'v10_22H2', 'v11_21H2', 'v11_22H2', 'v11_23H2', 'v11_24H2')]
         [string]$MinimumOS
     )
 
-    # Create object with the selected version set to true
-    $minOSObject = @{
-        "@odata.type" = "#microsoft.graph.windowsMinimumOperatingSystem"
+    # Map of accepted input values to internal version key
+    # Key: user-facing input (case-insensitive), Value: internal key
+    $versionMap = [ordered]@{
+        # Windows 10 versions (supported by minimumSupportedOperatingSystem boolean properties)
+        'v10_1507' = 'v10_1507'; 'Windows 10 1507' = 'v10_1507'
+        'v10_1511' = 'v10_1511'; 'Windows 10 1511' = 'v10_1511'
+        'v10_1607' = 'v10_1607'; 'Windows 10 1607' = 'v10_1607'
+        'v10_1703' = 'v10_1703'; 'Windows 10 1703' = 'v10_1703'
+        'v10_1709' = 'v10_1709'; 'Windows 10 1709' = 'v10_1709'
+        'v10_1803' = 'v10_1803'; 'Windows 10 1803' = 'v10_1803'
+        'v10_1809' = 'v10_1809'; 'Windows 10 1809' = 'v10_1809'
+        'v10_1903' = 'v10_1903'; 'Windows 10 1903' = 'v10_1903'
+        'v10_1909' = 'v10_1909'; 'Windows 10 1909' = 'v10_1909'
+        'v10_2004' = 'v10_2004'; 'Windows 10 2004' = 'v10_2004'
+        'v10_2H20' = 'v10_2H20'; 'Windows 10 20H2' = 'v10_2H20'; 'v10_20H2' = 'v10_2H20'
+        'v10_21H1' = 'v10_21H1'; 'Windows 10 21H1' = 'v10_21H1'
+        # Windows 10 newer versions (require minimumSupportedWindowsRelease string)
+        'v10_21H2' = 'v10_21H2'; 'Windows 10 21H2' = 'v10_21H2'
+        'v10_22H2' = 'v10_22H2'; 'Windows 10 22H2' = 'v10_22H2'
+        # Windows 11 versions (require minimumSupportedWindowsRelease string)
+        'v11_21H2' = 'v11_21H2'; 'Windows 11 21H2' = 'v11_21H2'
+        'v11_22H2' = 'v11_22H2'; 'Windows 11 22H2' = 'v11_22H2'
+        'v11_23H2' = 'v11_23H2'; 'Windows 11 23H2' = 'v11_23H2'
+        'v11_24H2' = 'v11_24H2'; 'Windows 11 24H2' = 'v11_24H2'
+        'v11_25H2' = 'v11_25H2'; 'Windows 11 25H2' = 'v11_25H2'
+        'v11_26H2' = 'v11_26H2'; 'Windows 11 26H2' = 'v11_26H2'
     }
 
-    # Set the specified version to true
-    $minOSObject[$MinimumOS] = $true
+    # Versions that exist as boolean properties on windowsMinimumOperatingSystem (Graph API beta)
+    $osBooleanProperties = @(
+        'v10_1507', 'v10_1511', 'v10_1607', 'v10_1703', 'v10_1709', 'v10_1803', 'v10_1809',
+        'v10_1903', 'v10_1909', 'v10_2004', 'v10_2H20', 'v10_21H1'
+    )
 
-    return $minOSObject
+    # Map internal version keys to minimumSupportedWindowsRelease string values
+    # These are the string values accepted by the Graph API for the minimumSupportedWindowsRelease property
+    $windowsReleaseMap = @{
+        'v10_21H2' = 'Windows10_21H2'
+        'v10_22H2' = 'Windows10_22H2'
+        'v11_21H2' = 'Windows11_21H2'
+        'v11_22H2' = 'Windows11_22H2'
+        'v11_23H2' = 'Windows11_23H2'
+        'v11_24H2' = 'Windows11_24H2'
+        'v11_25H2' = 'Windows11_25H2'
+        'v11_26H2' = 'Windows11_26H2'
+    }
+
+    # Resolve the input to an internal version key (case-insensitive)
+    $versionKey = $null
+    foreach ($key in $versionMap.Keys) {
+        if ($key -eq $MinimumOS) {
+            $versionKey = $versionMap[$key]
+            break
+        }
+    }
+
+    if ($null -eq $versionKey) {
+        Write-Log -Message "Error: Unrecognized minimumSupportedOS value: '$MinimumOS'" -LogLevel 3
+        Write-Host "Error: '$MinimumOS' is not a recognized OS version." -ForegroundColor Red
+        Write-Host "Valid values: v10_1607, v10_1903, v11_23H2, 'Windows 10 1903', 'Windows 11 23H2', etc." -ForegroundColor Yellow
+        $versionKey = 'v10_1607'
+        Write-Log -Message "Falling back to default: $versionKey" -LogLevel 2
+    }
+
+    # Build the friendly display name for logging
+    $displayName = $versionKey -replace '^v10_', 'Windows 10 ' -replace '^v11_', 'Windows 11 '
+
+    # Determine which API mechanism to use
+    if ($versionKey -in $osBooleanProperties) {
+        # Use the old boolean property on minimumSupportedOperatingSystem
+        Write-Log -Message "Using minimum OS: $displayName (via minimumSupportedOperatingSystem.$versionKey)"
+        return @{
+            osObject       = @{
+                "@odata.type" = "#microsoft.graph.windowsMinimumOperatingSystem"
+                $versionKey   = $true
+            }
+            windowsRelease = $null
+        }
+    }
+    elseif ($windowsReleaseMap.ContainsKey($versionKey)) {
+        # Use the minimumSupportedWindowsRelease string property (do NOT set minimumSupportedOperatingSystem - they conflict)
+        $releaseString = $windowsReleaseMap[$versionKey]
+        Write-Log -Message "Using minimum OS: $displayName (via minimumSupportedWindowsRelease = '$releaseString')"
+        return @{
+            osObject       = $null
+            windowsRelease = $releaseString
+        }
+    }
+    else {
+        # Version not yet in either mechanism - fall back to latest boolean + warn
+        Write-Log -Message "Warning: OS version '$displayName' ($versionKey) is not yet available in the Graph API. Falling back to Windows 10 21H1." -LogLevel 2
+        Write-Host "Warning: OS version '$displayName' not yet available in Graph API. Using 'Windows 10 21H1' instead." -ForegroundColor Yellow
+        return @{
+            osObject       = @{
+                "@odata.type" = "#microsoft.graph.windowsMinimumOperatingSystem"
+                "v10_21H1"    = $true
+            }
+            windowsRelease = $null
+        }
+    }
 }
 
 ####################################################
@@ -2513,11 +2659,16 @@ NAME: Invoke-ExeValidation
 
 function Copy-Object($object) {
 
-    $stream = New-Object IO.MemoryStream;
-    $formatter = New-Object Runtime.Serialization.Formatters.Binary.BinaryFormatter;
-    $formatter.Serialize($stream, $object);
-    $stream.Position = 0;
-    $formatter.Deserialize($stream);
+    # Deep clone via hashtable copy (replaces deprecated BinaryFormatter)
+    if ($object -is [hashtable]) {
+        $clone = @{}
+        foreach ($key in $object.Keys) {
+            $clone[$key] = $object[$key]
+        }
+        return $clone
+    }
+    # Fallback for other types via JSON round-trip
+    $object | ConvertTo-Json -Depth 10 | ConvertFrom-Json
 }
 
 ####################################################
@@ -2751,6 +2902,39 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
         # Start the timer for SAS URI renewal.
         $sasRenewalTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
+        # ── SAS readiness probe ──
+        # Azure Storage stored-access-policy SAS tokens can take up to 30s to propagate.
+        # A GET ?comp=blocklist on a non-existent blob returns 404 (BlobNotFound) when the
+        # SAS is valid. Only a 403 indicates the SAS token hasn't propagated yet.
+        $sasProbeRetries = 6
+        $sasProbeWait = 10
+        for ($probe = 1; $probe -le $sasProbeRetries; $probe++) {
+            try {
+                Invoke-WebRequest -Uri "$sasUri&comp=blocklist" -Method Get -UseBasicParsing | Out-Null
+                break
+            }
+            catch {
+                $probeStatus = $null
+                if ($_.Exception.Response) { $probeStatus = [int]$_.Exception.Response.StatusCode }
+                if (-not $probeStatus -and $_.Exception.Message -match '\b(403|404)\b') { $probeStatus = [int]$Matches[1] }
+                if ($probeStatus -eq 404) {
+                    # 404 = SAS authenticated successfully, blob just doesn't exist yet — proceed
+                    break
+                }
+                if ($probeStatus -eq 403 -and $probe -lt $sasProbeRetries) {
+                    Write-Host "    SAS URI not ready yet (HTTP 403). Waiting ${sasProbeWait}s before retry ($probe/$sasProbeRetries)..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $sasProbeWait
+                }
+                elseif ($probe -eq $sasProbeRetries) {
+                    Write-Host "    SAS URI failed readiness check after $sasProbeRetries probes — attempting upload anyway" -ForegroundColor Yellow
+                }
+                else {
+                    # Non-auth error (e.g. 409) — SAS is valid, proceed
+                    break
+                }
+            }
+        }
+
         # Find the file size and open the file.
         $fileSize = (Get-Item $filepath).length;
         $chunks = [Math]::Ceiling($fileSize / $chunkSizeInBytes);
@@ -2774,7 +2958,33 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
             Write-Progress -Activity "Uploading File to Azure Storage" -Status "Uploading chunk $currentChunk of $chunks" `
                 -PercentComplete ($currentChunk / $chunks * 100)
 
-            $null = Send-AzureStorageChunk $sasUri $id $bytes
+            # Retry chunk upload with SAS renewal on auth failures
+            $chunkRetries = 3
+            for ($attempt = 1; $attempt -le $chunkRetries; $attempt++) {
+                try {
+                    $null = Send-AzureStorageChunk $sasUri $id $bytes
+                    break
+                }
+                catch {
+                    $httpStatus = $null
+                    if ($_.Exception.Response) {
+                        $httpStatus = [int]$_.Exception.Response.StatusCode
+                    }
+                    if (-not $httpStatus -and $_.Exception.Message -match 'status code[^\d]*(\d{3})') {
+                        $httpStatus = [int]$Matches[1]
+                    }
+                    if ($httpStatus -eq 403 -and $attempt -lt $chunkRetries) {
+                        Write-Host "    Storage auth failed (403) on chunk $currentChunk. Renewing SAS URI (attempt $attempt/$chunkRetries)..." -ForegroundColor Yellow
+                        Start-Sleep -Seconds 10
+                        $null = Update-AzureStorageUpload $fileUri
+                        $sasRenewalTimer.Restart()
+                        Start-Sleep -Seconds 5
+                    }
+                    else {
+                        throw
+                    }
+                }
+            }
 
             # Renew the SAS URI if 7 minutes have elapsed since the upload started or was renewed last.
             if ($currentChunk -lt $chunks -and $sasRenewalTimer.ElapsedMilliseconds -ge 450000) {
@@ -2794,7 +3004,7 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
 
     finally {
 
-        if ($null -eq $reader) { $reader.Dispose(); }
+        if ($null -ne $reader) { $reader.Dispose(); }
 
     }
 
@@ -3050,7 +3260,13 @@ function Get-Win32AppBody() {
 
         # Handle minimum OS - use provided or default
         if ($minimumSupportedOS) {
-            $body.minimumSupportedOperatingSystem = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+            $osResult = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+            if ($null -ne $osResult.osObject) {
+                $body.minimumSupportedOperatingSystem = $osResult.osObject
+            }
+            if ($osResult.windowsRelease) {
+                $body.minimumSupportedWindowsRelease = $osResult.windowsRelease
+            }
         }
         else {
             $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
@@ -3072,14 +3288,20 @@ function Get-Win32AppBody() {
         $body.runAs32bit = $false;
         $body.setupFilePath = $SetupFileName;
         if ( ! ( Test-Null ( $msiUninstallCommandLine ) ) ) {
-            $body.uninstallCommandLine = "msiexec /x `"$MsiProductCode`""
-        }
-        else {
             $body.uninstallCommandLine = "msiexec /x `"$MsiProductCode`" $msiUninstallCommandLine"
         }
-        $body.allowAvailableUninstall = $true
+        else {
+            $body.uninstallCommandLine = "msiexec /x `"$MsiProductCode`""
+        }
+        $body.allowAvailableUninstall = $script:AllowAvailableUninstall
         if (-not [string]::IsNullOrWhiteSpace($logo)) {
-            $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+            # Determine image MIME type from logo file extension
+            $logoImageType = "image/png"
+            if (-not [string]::IsNullOrWhiteSpace($script:LogoFile)) {
+                $logoExt = [System.IO.Path]::GetExtension($script:LogoFile).ToLower()
+                if ($logoExt -in @('.jpg', '.jpeg')) { $logoImageType = "image/jpeg" }
+            }
+            $body.largeIcon = @{"type" = $logoImageType; "value" = $logo }
         }
 
         # Add optional system requirement properties if specified
@@ -3127,7 +3349,13 @@ function Get-Win32AppBody() {
 
         # Handle minimum OS - use provided or default
         if ($minimumSupportedOS) {
-            $body.minimumSupportedOperatingSystem = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+            $osResult = Get-MinimumOperatingSystemObject -MinimumOS $minimumSupportedOS
+            if ($null -ne $osResult.osObject) {
+                $body.minimumSupportedOperatingSystem = $osResult.osObject
+            }
+            if ($osResult.windowsRelease) {
+                $body.minimumSupportedWindowsRelease = $osResult.windowsRelease
+            }
         }
         else {
             $body.minimumSupportedOperatingSystem = @{"v10_1607" = $true };
@@ -3141,9 +3369,15 @@ function Get-Win32AppBody() {
         $body.runAs32bit = $false;
         $body.setupFilePath = $SetupFileName;
         $body.uninstallCommandLine = "$uninstallCommandLine";
-        $body.allowAvailableUninstall = $true
+        $body.allowAvailableUninstall = $script:AllowAvailableUninstall
         if (-not [string]::IsNullOrWhiteSpace($logo)) {
-            $body.largeIcon = @{"type" = "image/png"; "value" = $logo }
+            # Determine image MIME type from logo file extension
+            $logoImageType = "image/png"
+            if (-not [string]::IsNullOrWhiteSpace($script:LogoFile)) {
+                $logoExt = [System.IO.Path]::GetExtension($script:LogoFile).ToLower()
+                if ($logoExt -in @('.jpg', '.jpeg')) { $logoImageType = "image/jpeg" }
+            }
+            $body.largeIcon = @{"type" = $logoImageType; "value" = $logo }
         }
 
         # Add optional system requirement properties if specified
@@ -3356,8 +3590,8 @@ function New-DetectionRule() {
         $ScriptContent = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$ScriptFile"));
 
         $DR = @{ "@odata.type" = "#microsoft.graph.win32LobAppPowerShellScriptDetection" }
-        $DR.enforceSignatureCheck = $false;
-        $DR.runAs32Bit = $false;
+        $DR.enforceSignatureCheck = $enforceSignatureCheck;
+        $DR.runAs32Bit = $runAs32Bit;
         $DR.scriptContent = "$ScriptContent";
 
     }
@@ -3462,9 +3696,9 @@ function Get-IntuneWinXML() {
 
     [xml]$IntuneWinXML = Get-Content "$Directory\$filename"
 
-    return $IntuneWinXML
-
     if ($removeitem -eq "true") { Remove-Item "$Directory\$filename" }
+
+    return $IntuneWinXML
 
 }
 
@@ -3503,9 +3737,9 @@ function Get-IntuneWinFile() {
 
     $zip.Dispose()
 
-    return "$Directory\$folder\$filename"
+    if ($removeitem -eq "true") { Remove-Item "$Directory\$filename" -ErrorAction SilentlyContinue }
 
-    if ($removeitem -eq "true") { Remove-Item "$Directory\$filename" }
+    return "$Directory\$folder\$filename"
 
 }
 
@@ -3691,7 +3925,7 @@ NAME: Send-Win32Lob
         [parameter(ParameterSetName = "MSI")]
         [parameter(ParameterSetName = "EXE")]
         [parameter(ParameterSetName = "PS1")]
-        [hashtable] $minimumSupportedOS = $null,
+        [string] $minimumSupportedOS = "",
 
         # Extended Settings - Requirement Rules
         [parameter(ParameterSetName = "MSI")]
@@ -3915,12 +4149,7 @@ NAME: Send-Win32Lob
         Write-Host "Creating application in Intune..." -ForegroundColor Yellow
         $mobileApp = Invoke-PostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json);
 
-        # Get the content version for the new app (this will always be 1 until the new app is committed).
-        Write-Host
-        Write-Host "Creating Content Version in the service for the application..." -ForegroundColor Yellow
         $appId = $mobileApp.id;
-        $contentVersionUri = "mobileApps/$appId/$LOBType/contentVersions";
-        $contentVersion = Invoke-PostRequest $contentVersionUri "{}";
 
         # Encrypt file and Get File Information
         Write-Host
@@ -3944,59 +4173,111 @@ NAME: Send-Win32Lob
         [int64]$Size = $DetectionXML.ApplicationInfo.UnencryptedContentSize
         $EncrySize = (Get-Item "$IntuneWinFile").Length
 
-        # Create a new file for the app.
-        Write-Host
-        Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
-        $contentVersionId = $contentVersion.id;
-        $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null;
-        $filesUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files";
-        $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json);
+        # Upload with retry — create fresh content version per attempt
+        $maxUploadAttempts = 3
+        $uploadSucceeded = $false
 
-        # Wait for the service to process the new file request.
-        Write-Host
-        Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
-        $fileId = $file.id;
-        $fileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId";
-        $file = Wait-FileProcessing $fileUri "azureStorageUriRequest";
+        for ($uploadAttempt = 1; $uploadAttempt -le $maxUploadAttempts; $uploadAttempt++) {
+            if ($uploadAttempt -gt 1) {
+                Write-Host
+                Write-Host "Starting replacement upload (attempt $uploadAttempt/$maxUploadAttempts)..." -ForegroundColor Yellow
+            }
 
-        # Upload the content to Azure Storage.
-        Write-Host
-        Write-Host "Uploading file to Azure Storage..." -f Yellow
+            try {
+                # Get the content version for the new app.
+                Write-Host
+                Write-Host "Creating Content Version in the service for the application..." -ForegroundColor Yellow
+                $contentVersionUri = "mobileApps/$appId/$LOBType/contentVersions";
+                $contentVersion = Invoke-PostRequest $contentVersionUri "{}";
 
-        #$sasUri = $file.azureStorageUri;
-        Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
+                # Create a new file for the app.
+                Write-Host
+                Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
+                $contentVersionId = $contentVersion.id;
+                $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null;
+                $filesUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files";
+                $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json);
 
-        # Wait a few seconds for Azure Storage to fully commit and replicate
-        Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
-        Start-Sleep -Seconds 5
+                # Wait for the service to process the new file request.
+                Write-Host
+                Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
+                $fileId = $file.id;
+                $fileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId";
+                $file = Wait-FileProcessing $fileUri "azureStorageUriRequest";
 
-        # Need to Add removal of IntuneWin file
-        #$IntuneWinFolder = [System.IO.Path]::GetDirectoryName("$IntuneWinFile")
-        Remove-Item "$IntuneWinFile" -Force
+                # Upload the content to Azure Storage.
+                Write-Host
+                Write-Host "Uploading file to Azure Storage..." -f Yellow
 
-        # Commit the file.
-        Write-Host
-        Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
-        Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
-        Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
-        $commitFileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit";
-        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json);
+                Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
 
-        # Wait for the service to process the commit file request.
-        Write-Host
-        Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
-        $file = Wait-FileProcessing $fileUri "CommitFile";
+                # Wait a few seconds for Azure Storage to fully commit and replicate
+                Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
+                Start-Sleep -Seconds 5
 
-        # Commit the app.
-        Write-Host
-        Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
-        $commitAppUri = "mobileApps/$appId";
-        $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType;
-        Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json);
+                # Commit the file — retry if SAS upload state hasn't transitioned yet
+                Write-Host
+                Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
+                Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
+                Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
+                $commitFileUri = "mobileApps/$appId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit";
 
-        Write-Host "Sleeping for $sleep seconds to allow package upload completion..." -f Magenta
-        Start-Sleep $sleep
-        Write-Host
+                $commitRetries = 6
+                $commitOk = $false
+                for ($commitAttempt = 1; $commitAttempt -le $commitRetries; $commitAttempt++) {
+                    try {
+                        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json);
+                        $commitOk = $true
+                        break
+                    }
+                    catch {
+                        if ($commitAttempt -lt $commitRetries -and $_.Exception.Message -match '400|SAS request') {
+                            Write-Host "    Commit not ready, waiting for SAS state transition (attempt $commitAttempt/$commitRetries)..." -ForegroundColor Yellow
+                            Start-Sleep -Seconds 15
+                        }
+                        else {
+                            throw
+                        }
+                    }
+                }
+                if (-not $commitOk) {
+                    throw "File commit did not succeed after $commitRetries attempts"
+                }
+
+                # Wait for the service to process the commit file request.
+                Write-Host
+                Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
+                $file = Wait-FileProcessing $fileUri "CommitFile";
+
+                # Commit the app.
+                Write-Host
+                Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
+                $commitAppUri = "mobileApps/$appId";
+                $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType;
+                Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json);
+
+                Write-Host "Sleeping for $sleep seconds to allow package upload completion..." -f Magenta
+                Start-Sleep $sleep
+                Write-Host
+
+                $uploadSucceeded = $true
+                break
+            }
+            catch {
+                Write-Host "Upload attempt $uploadAttempt/$maxUploadAttempts failed: $($_.Exception.Message)" -ForegroundColor Red
+                if ($uploadAttempt -lt $maxUploadAttempts) {
+                    Write-Host "Abandoning this upload — will create a fresh content version and retry..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 10
+                }
+            }
+        }
+
+        Remove-Item "$IntuneWinFile" -Force -ErrorAction SilentlyContinue
+
+        if (-not $uploadSucceeded) {
+            $script:exitCode = 1
+            throw "Content upload failed for '$displayName' after $maxUploadAttempts attempts"
+        }
 
     }
 
@@ -4056,12 +4337,6 @@ NAME: Update-Win32LobContent
         $DetectionXML = Get-IntuneWinXML "$SourceFile" -fileName "detection.xml"
         $FileName = $DetectionXML.ApplicationInfo.FileName
 
-        # Create a new content version for the existing app
-        Write-Host
-        Write-Host "Creating new Content Version for the existing application..." -ForegroundColor Yellow
-        $contentVersionUri = "mobileApps/$AppId/$LOBType/contentVersions"
-        $contentVersion = Invoke-PostRequest $contentVersionUri "{}"
-
         # Get encryption information from the new package
         Write-Host
         Write-Host "Getting Encryption Information for '$SourceFile'..." -ForegroundColor Yellow
@@ -4084,56 +4359,110 @@ NAME: Update-Win32LobContent
         [int64]$Size = $DetectionXML.ApplicationInfo.UnencryptedContentSize
         $EncrySize = (Get-Item "$IntuneWinFile").Length
 
-        # Create a new file entry for the content version
-        Write-Host
-        Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
-        $contentVersionId = $contentVersion.id
-        $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null
-        $filesUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files"
-        $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json)
+        # Upload with retry — create fresh content version per attempt
+        $maxUploadAttempts = 3
+        $uploadSucceeded = $false
 
-        # Wait for the file entry to be ready
-        Write-Host
-        Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
-        $fileId = $file.id
-        $fileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId"
-        $file = Wait-FileProcessing $fileUri "azureStorageUriRequest"
+        for ($uploadAttempt = 1; $uploadAttempt -le $maxUploadAttempts; $uploadAttempt++) {
+            if ($uploadAttempt -gt 1) {
+                Write-Host
+                Write-Host "Starting replacement upload (attempt $uploadAttempt/$maxUploadAttempts)..." -ForegroundColor Yellow
+            }
 
-        # Upload the content to Azure Storage
-        Write-Host
-        Write-Host "Uploading file to Azure Storage..." -ForegroundColor Yellow
-        Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri
+            try {
+                # Create a new content version for each attempt
+                Write-Host
+                Write-Host "Creating new Content Version for the existing application..." -ForegroundColor Yellow
+                $contentVersionUri = "mobileApps/$AppId/$LOBType/contentVersions"
+                $contentVersion = Invoke-PostRequest $contentVersionUri "{}"
 
-        # Wait for Azure Storage to finalize
-        Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
-        Start-Sleep -Seconds 5
+                # Create a new file entry for the content version
+                Write-Host
+                Write-Host "Creating a new file entry in Azure for the upload..." -ForegroundColor Yellow
+                $contentVersionId = $contentVersion.id
+                $fileBody = Get-AppFileBody "$FileName" $Size $EncrySize $null
+                $filesUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files"
+                $file = Invoke-PostRequest $filesUri ($fileBody | ConvertTo-Json)
+
+                # Wait for the file entry to be ready
+                Write-Host
+                Write-Host "Waiting for the file entry URI to be created..." -ForegroundColor Yellow
+                $fileId = $file.id
+                $fileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId"
+                $file = Wait-FileProcessing $fileUri "azureStorageUriRequest"
+
+                # Upload the content to Azure Storage
+                Write-Host
+                Write-Host "Uploading file to Azure Storage..." -ForegroundColor Yellow
+                Send-FileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri
+
+                # Wait for Azure Storage to finalize
+                Write-Host "Waiting 5 seconds for Azure Storage to finalize..." -ForegroundColor Cyan
+                Start-Sleep -Seconds 5
+
+                # Commit the file — retry if SAS upload state hasn't transitioned yet
+                Write-Host
+                Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
+                Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
+                Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
+                $commitFileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit"
+
+                $commitRetries = 6
+                $commitOk = $false
+                for ($commitAttempt = 1; $commitAttempt -le $commitRetries; $commitAttempt++) {
+                    try {
+                        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json)
+                        $commitOk = $true
+                        break
+                    }
+                    catch {
+                        if ($commitAttempt -lt $commitRetries -and $_.Exception.Message -match '400|SAS request') {
+                            Write-Host "    Commit not ready, waiting for SAS state transition (attempt $commitAttempt/$commitRetries)..." -ForegroundColor Yellow
+                            Start-Sleep -Seconds 15
+                        }
+                        else {
+                            throw
+                        }
+                    }
+                }
+                if (-not $commitOk) {
+                    throw "File commit did not succeed after $commitRetries attempts"
+                }
+
+                # Wait for the commit to complete
+                Write-Host
+                Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
+                $file = Wait-FileProcessing $fileUri "CommitFile"
+
+                # Commit the new content version to the app
+                Write-Host
+                Write-Host "Committing the new content version to the application..." -ForegroundColor Yellow
+                $commitAppUri = "mobileApps/$AppId"
+                $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType
+                Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json)
+
+                Write-Host "Sleeping for $sleep seconds to allow package update completion..." -ForegroundColor Magenta
+                Start-Sleep $sleep
+                Write-Host
+
+                $uploadSucceeded = $true
+                break
+            }
+            catch {
+                Write-Host "Upload attempt $uploadAttempt/$maxUploadAttempts failed: $($_.Exception.Message)" -ForegroundColor Red
+                if ($uploadAttempt -lt $maxUploadAttempts) {
+                    Write-Host "Abandoning this upload — will create a fresh content version and retry..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 10
+                }
+            }
+        }
 
         # Clean up the extracted IntuneWin file
-        Remove-Item "$IntuneWinFile" -Force
+        Remove-Item "$IntuneWinFile" -Force -ErrorAction SilentlyContinue
 
-        # Commit the file
-        Write-Host
-        Write-Host "Committing the file into Azure Storage..." -ForegroundColor Yellow
-        Write-Host "File Encryption Info being sent:" -ForegroundColor Cyan
-        Write-Host ($fileEncryptionInfo | ConvertTo-Json -Depth 10) -ForegroundColor Gray
-        $commitFileUri = "mobileApps/$AppId/$LOBType/contentVersions/$contentVersionId/files/$fileId/commit"
-        Invoke-PostRequest $commitFileUri ($fileEncryptionInfo | ConvertTo-Json)
-
-        # Wait for the commit to complete
-        Write-Host
-        Write-Host "Waiting for the service to process the commit file request..." -ForegroundColor Yellow
-        $file = Wait-FileProcessing $fileUri "CommitFile"
-
-        # Commit the new content version to the app
-        Write-Host
-        Write-Host "Committing the new content version to the application..." -ForegroundColor Yellow
-        $commitAppUri = "mobileApps/$AppId"
-        $commitAppBody = Get-AppCommitBody $contentVersionId $LOBType
-        Invoke-PatchRequest $commitAppUri ($commitAppBody | ConvertTo-Json)
-
-        Write-Host "Sleeping for $sleep seconds to allow package update completion..." -ForegroundColor Magenta
-        Start-Sleep $sleep
-        Write-Host
+        if (-not $uploadSucceeded) {
+            throw "Content upload failed for application ID '$AppId' after $maxUploadAttempts attempts"
+        }
 
         Write-Host "Successfully updated content for application ID: $AppId" -ForegroundColor Green
         Write-Host
@@ -4225,7 +4554,7 @@ NAME: Get-XMLConfig
                 Write-Log -Message "Reading detection for RuleType: $RuleType"
                 $script:FilePath = [string]$XMLEntity.FilePath
                 $script:FileDetectionType = [string]$XMLEntity.FileDetectionType
-                if (($FileDetectionType -ne "exists") -or ($FileDetectionType -ne "doesNotExist")) {
+                if (($FileDetectionType -ne "exists") -and ($FileDetectionType -ne "doesNotExist")) {
                     $script:FileDetectionOperator = [string]$XMLEntity.FileDetectionOperator
                     $script:FileDetectionValue = [string]$XMLEntity.FileDetectionValue
                 }
@@ -4236,7 +4565,7 @@ NAME: Get-XMLConfig
                 $script:RegistryKeyPath = [string]$XMLEntity.RegistryKeyPath
                 $script:RegistryValue = [string]$XMLEntity.RegistryValue
                 $script:RegistryDetectionType = [string]$XMLEntity.RegistryDetectionType
-                if (($RegistryDetectionType -ne "exists") -or ($RegistryDetectionType -ne "doesNotExist")) {
+                if (($RegistryDetectionType -ne "exists") -and ($RegistryDetectionType -ne "doesNotExist")) {
                     $script:RegistryDetectionOperator = [string]$XMLEntity.RegistryDetectionOperator
                     $script:RegistryDetectionValue = [string]$XMLEntity.RegistryDetectionValue
                 }
@@ -4260,16 +4589,40 @@ NAME: Get-XMLConfig
             $script:BaseDescription = [string]$XMLEntity.Description
             $script:Description = $script:BaseDescription
             $script:Publisher = [string]$XMLEntity.Publisher
-            $script:Category = [string]$XMLEntity.Category
+            # Read category from Config.xml (supports comma-separated for multiple categories)
+            $rawCategory = [string]$XMLEntity.Category
+            if (-not [string]::IsNullOrWhiteSpace($rawCategory)) {
+                $script:Categories = @($rawCategory -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                $script:Category = $script:Categories[0]
+                Write-Log -Message "Found categories in Config.xml: $($script:Categories -join ', ')"
+            }
+            else {
+                $script:Categories = @()
+                $script:Category = ''
+            }
             $script:LogoFile = [string]$XMLEntity.LogoFile
             # Support both EntraGroupName (preferred) and AADGroupName (legacy)
             $script:EntraGroupName = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.EntraGroupName)) { [string]$XMLEntity.EntraGroupName } else { [string]$XMLEntity.AADGroupName }
 
-            # Read optional ScopeTag from Config.xml
-            $script:ConfigScopeTag = [string]$XMLEntity.ScopeTag
-            if (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag)) {
-                Write-Log -Message "Found ScopeTag in Config.xml: $($script:ConfigScopeTag)"
+            # Read optional ScopeTag from Config.xml (supports comma-separated for multiple tags)
+            $rawScopeTag = [string]$XMLEntity.ScopeTag
+            if (-not [string]::IsNullOrWhiteSpace($rawScopeTag)) {
+                $script:ConfigScopeTag = @($rawScopeTag -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                Write-Log -Message "Found ScopeTag in Config.xml: $($script:ConfigScopeTag -join ', ')"
             }
+            else {
+                $script:ConfigScopeTag = @()
+            }
+
+            # Read optional allowAvailableUninstall from Config.xml (accepts yes/no or true/false, default is yes if not specified)
+            $rawAllowUninstall = [string]$XMLEntity.AllowAvailableUninstall
+            if (-not [string]::IsNullOrWhiteSpace($rawAllowUninstall)) {
+                $script:AllowAvailableUninstall = $rawAllowUninstall.Trim() -in @('yes', 'true')
+            }
+            else {
+                $script:AllowAvailableUninstall = $true
+            }
+            Write-Log -Message "AllowAvailableUninstall: $($script:AllowAvailableUninstall)"
 
             # Read optional extended settings from Config.xml
             # App Information
@@ -4307,6 +4660,70 @@ NAME: Get-XMLConfig
             $script:DetectionScriptFile = [string]$XMLEntity.DetectionScriptFile
             $script:DetectionScriptEnforceSignatureCheck = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptEnforceSignatureCheck)) { [bool]::Parse([string]$XMLEntity.DetectionScriptEnforceSignatureCheck) } else { $false }
             $script:DetectionScriptRunAs32Bit = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptRunAs32Bit)) { [bool]::Parse([string]$XMLEntity.DetectionScriptRunAs32Bit) } else { $false }
+
+            # Read optional upload parameters from Config.xml
+            # NewTagPath (boolean, default true)
+            $rawNewTagPath = [string]$XMLEntity.NewTagPath
+            if (-not [string]::IsNullOrWhiteSpace($rawNewTagPath)) {
+                $script:ConfigNewTagPath = $rawNewTagPath.Trim() -in @('yes', 'true')
+            }
+            else {
+                $script:ConfigNewTagPath = $null
+            }
+
+            # RequiredGroupName - supports RequiredEntraGroupName, RequiredAADGroupName (comma-separated for multiple)
+            $rawRequiredGroup = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.RequiredEntraGroupName)) { [string]$XMLEntity.RequiredEntraGroupName } `
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.RequiredAADGroupName)) { [string]$XMLEntity.RequiredAADGroupName } `
+                else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($rawRequiredGroup)) {
+                $script:ConfigRequiredGroupName = @($rawRequiredGroup -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                Write-Log -Message "Found RequiredGroupName in Config.xml: $($script:ConfigRequiredGroupName -join ', ')"
+            }
+            else {
+                $script:ConfigRequiredGroupName = @()
+            }
+
+            # AvailableGroupName - supports AvailableEntraGroupName, AvailableAADGroupName (comma-separated for multiple)
+            $rawAvailableGroup = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.AvailableEntraGroupName)) { [string]$XMLEntity.AvailableEntraGroupName } `
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.AvailableAADGroupName)) { [string]$XMLEntity.AvailableAADGroupName } `
+                else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($rawAvailableGroup)) {
+                $script:ConfigAvailableGroupName = @($rawAvailableGroup -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                Write-Log -Message "Found AvailableGroupName in Config.xml: $($script:ConfigAvailableGroupName -join ', ')"
+            }
+            else {
+                $script:ConfigAvailableGroupName = @()
+            }
+
+            # ReplaceExistingContent (boolean)
+            $rawReplaceContent = [string]$XMLEntity.ReplaceExistingContent
+            if (-not [string]::IsNullOrWhiteSpace($rawReplaceContent)) {
+                $script:ConfigReplaceExistingContent = $rawReplaceContent.Trim() -in @('yes', 'true')
+            }
+            else {
+                $script:ConfigReplaceExistingContent = $null
+            }
+
+            # UninstallGroupName - supports UninstallEntraGroupName, UninstallAADGroupName (comma-separated for multiple)
+            $rawUninstallGroup = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.UninstallEntraGroupName)) { [string]$XMLEntity.UninstallEntraGroupName } `
+                elseif (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.UninstallAADGroupName)) { [string]$XMLEntity.UninstallAADGroupName } `
+                else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($rawUninstallGroup)) {
+                $script:ConfigUninstallGroupName = @($rawUninstallGroup -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                Write-Log -Message "Found UninstallGroupName in Config.xml: $($script:ConfigUninstallGroupName -join ', ')"
+            }
+            else {
+                $script:ConfigUninstallGroupName = @()
+            }
+
+            # SkipPackageRemoval (boolean)
+            $rawSkipRemoval = [string]$XMLEntity.SkipPackageRemoval
+            if (-not [string]::IsNullOrWhiteSpace($rawSkipRemoval)) {
+                $script:ConfigSkipPackageRemoval = $rawSkipRemoval.Trim() -in @('yes', 'true')
+            }
+            else {
+                $script:ConfigSkipPackageRemoval = $null
+            }
 
             #Strip .ps1 extension, if entered into XML file...
             $lastFourChars = $PackageName.Substring($PackageName.Length - 4)
@@ -4372,7 +4789,7 @@ NAME: Get-JSONConfig
         $script:logRequestUris = '$true'
         $script:logHeaders = '$false'
         $script:logContent = '$true'
-        $script:azureStorageUploadChunkSizeInMb = "6l"
+        $script:azureStorageUploadChunkSizeInMb = 6
         $script:sleep = 5
 
         # Override Azure settings if present in JSON
@@ -4414,7 +4831,7 @@ NAME: Get-JSONConfig
             Write-Log -Message "Reading detection for RuleType: $RuleType"
             $script:FilePath = if ($JSON_Content.filePath) { [string]$JSON_Content.filePath } else { [string]$JSON_Content.FilePath }
             $script:FileDetectionType = if ($JSON_Content.fileDetectionType) { [string]$JSON_Content.fileDetectionType } else { [string]$JSON_Content.FileDetectionType }
-            if (($FileDetectionType -ne "exists") -or ($FileDetectionType -ne "doesNotExist")) {
+            if (($FileDetectionType -ne "exists") -and ($FileDetectionType -ne "doesNotExist")) {
                 $script:FileDetectionOperator = if ($JSON_Content.fileDetectionOperator) { [string]$JSON_Content.fileDetectionOperator } else { [string]$JSON_Content.FileDetectionOperator }
                 $script:FileDetectionValue = if ($JSON_Content.fileDetectionValue) { [string]$JSON_Content.fileDetectionValue } else { [string]$JSON_Content.FileDetectionValue }
             }
@@ -4425,7 +4842,7 @@ NAME: Get-JSONConfig
             $script:RegistryKeyPath = if ($JSON_Content.registryKeyPath) { [string]$JSON_Content.registryKeyPath } else { [string]$JSON_Content.RegistryKeyPath }
             $script:RegistryValue = if ($JSON_Content.registryValue) { [string]$JSON_Content.registryValue } else { [string]$JSON_Content.RegistryValue }
             $script:RegistryDetectionType = if ($JSON_Content.registryDetectionType) { [string]$JSON_Content.registryDetectionType } else { [string]$JSON_Content.RegistryDetectionType }
-            if (($RegistryDetectionType -ne "exists") -or ($RegistryDetectionType -ne "doesNotExist")) {
+            if (($RegistryDetectionType -ne "exists") -and ($RegistryDetectionType -ne "doesNotExist")) {
                 $script:RegistryDetectionOperator = if ($JSON_Content.registryDetectionOperator) { [string]$JSON_Content.registryDetectionOperator } else { [string]$JSON_Content.RegistryDetectionOperator }
                 $script:RegistryDetectionValue = if ($JSON_Content.registryDetectionValue) { [string]$JSON_Content.registryDetectionValue } else { [string]$JSON_Content.RegistryDetectionValue }
             }
@@ -4449,7 +4866,17 @@ NAME: Get-JSONConfig
         $script:BaseDescription = if ($JSON_Content.description) { [string]$JSON_Content.description } else { [string]$JSON_Content.Description }
         $script:Description = $script:BaseDescription
         $script:Publisher = if ($JSON_Content.publisher) { [string]$JSON_Content.publisher } else { [string]$JSON_Content.Publisher }
-        $script:Category = if ($JSON_Content.category) { [string]$JSON_Content.category } else { [string]$JSON_Content.Category }
+        # Read category from Config.json (supports comma-separated for multiple categories)
+        $rawCategory = if ($JSON_Content.category) { [string]$JSON_Content.category } else { [string]$JSON_Content.Category }
+        if (-not [string]::IsNullOrWhiteSpace($rawCategory)) {
+            $script:Categories = @($rawCategory -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            $script:Category = $script:Categories[0]
+            Write-Log -Message "Found categories in Config.json: $($script:Categories -join ', ')"
+        }
+        else {
+            $script:Categories = @()
+            $script:Category = ''
+        }
         $script:LogoFile = if ($JSON_Content.logoFile) { [string]$JSON_Content.logoFile } else { [string]$JSON_Content.LogoFile }
         # Support both entraGroupName (preferred) and aadGroupName (legacy)
         $script:EntraGroupName = if ($JSON_Content.entraGroupName) { [string]$JSON_Content.entraGroupName } `
@@ -4457,14 +4884,35 @@ NAME: Get-JSONConfig
             elseif ($JSON_Content.aadGroupName) { [string]$JSON_Content.aadGroupName } `
             else { [string]$JSON_Content.AADGroupName }
 
-        # Read optional ScopeTag from Config.json (supports both scopetag and scopeTag)
-        $script:ConfigScopeTag = if ($JSON_Content.scopetag) { [string]$JSON_Content.scopetag } `
+        # Read optional ScopeTag from Config.json (supports both scopetag and scopeTag, and comma-separated for multiple tags)
+        $rawScopeTag = if ($JSON_Content.scopetag) { [string]$JSON_Content.scopetag } `
             elseif ($JSON_Content.scopeTag) { [string]$JSON_Content.scopeTag } `
             elseif ($JSON_Content.ScopeTag) { [string]$JSON_Content.ScopeTag } `
             else { "" }
-        if (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag)) {
-            Write-Log -Message "Found ScopeTag in Config.json: $($script:ConfigScopeTag)"
+        if (-not [string]::IsNullOrWhiteSpace($rawScopeTag)) {
+            $script:ConfigScopeTag = @($rawScopeTag -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            Write-Log -Message "Found ScopeTag in Config.json: $($script:ConfigScopeTag -join ', ')"
         }
+        else {
+            $script:ConfigScopeTag = @()
+        }
+
+        # Read optional allowAvailableUninstall from Config.json (accepts yes/no or true/false, default is yes if not specified)
+        $rawAllowUninstall = if ($null -ne $JSON_Content.allowAvailableUninstall) { $JSON_Content.allowAvailableUninstall } `
+            elseif ($null -ne $JSON_Content.AllowAvailableUninstall) { $JSON_Content.AllowAvailableUninstall } `
+            else { $null }
+        if ($null -ne $rawAllowUninstall) {
+            if ($rawAllowUninstall -is [bool]) {
+                $script:AllowAvailableUninstall = $rawAllowUninstall
+            }
+            else {
+                $script:AllowAvailableUninstall = ([string]$rawAllowUninstall).Trim() -in @('yes', 'true')
+            }
+        }
+        else {
+            $script:AllowAvailableUninstall = $true
+        }
+        Write-Log -Message "AllowAvailableUninstall: $($script:AllowAvailableUninstall)"
 
         # Read optional coreApp and espApp from Config.json
         $script:CoreApp = if ($null -ne $JSON_Content.coreApp) { [bool]$JSON_Content.coreApp } else { $false }
@@ -4511,6 +4959,112 @@ NAME: Get-JSONConfig
 
         # Additional Requirement Rules (array of requirement rule objects)
         $script:RequirementRules = $JSON_Content.requirementRules
+
+        # Read optional upload parameters from Config.json
+        # NewTagPath (boolean, default true)
+        $rawNewTagPath = if ($null -ne $JSON_Content.newTagPath) { $JSON_Content.newTagPath } `
+            elseif ($null -ne $JSON_Content.NewTagPath) { $JSON_Content.NewTagPath } `
+            else { $null }
+        if ($null -ne $rawNewTagPath) {
+            if ($rawNewTagPath -is [bool]) {
+                $script:ConfigNewTagPath = $rawNewTagPath
+            }
+            else {
+                $script:ConfigNewTagPath = ([string]$rawNewTagPath).Trim() -in @('yes', 'true')
+            }
+        }
+        else {
+            $script:ConfigNewTagPath = $null
+        }
+
+        # RequiredGroupName - supports requiredEntraGroupName, requiredAADGroupName (string or array)
+        $rawRequiredGroup = if ($JSON_Content.requiredEntraGroupName) { $JSON_Content.requiredEntraGroupName } `
+            elseif ($JSON_Content.RequiredEntraGroupName) { $JSON_Content.RequiredEntraGroupName } `
+            elseif ($JSON_Content.requiredAADGroupName) { $JSON_Content.requiredAADGroupName } `
+            elseif ($JSON_Content.RequiredAADGroupName) { $JSON_Content.RequiredAADGroupName } `
+            else { $null }
+        if ($null -ne $rawRequiredGroup) {
+            if ($rawRequiredGroup -is [array]) {
+                $script:ConfigRequiredGroupName = @($rawRequiredGroup | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+            }
+            else {
+                $script:ConfigRequiredGroupName = @(([string]$rawRequiredGroup) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            Write-Log -Message "Found RequiredGroupName in Config.json: $($script:ConfigRequiredGroupName -join ', ')"
+        }
+        else {
+            $script:ConfigRequiredGroupName = @()
+        }
+
+        # AvailableGroupName - supports availableEntraGroupName, availableAADGroupName (string or array)
+        $rawAvailableGroup = if ($JSON_Content.availableEntraGroupName) { $JSON_Content.availableEntraGroupName } `
+            elseif ($JSON_Content.AvailableEntraGroupName) { $JSON_Content.AvailableEntraGroupName } `
+            elseif ($JSON_Content.availableAADGroupName) { $JSON_Content.availableAADGroupName } `
+            elseif ($JSON_Content.AvailableAADGroupName) { $JSON_Content.AvailableAADGroupName } `
+            else { $null }
+        if ($null -ne $rawAvailableGroup) {
+            if ($rawAvailableGroup -is [array]) {
+                $script:ConfigAvailableGroupName = @($rawAvailableGroup | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+            }
+            else {
+                $script:ConfigAvailableGroupName = @(([string]$rawAvailableGroup) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            Write-Log -Message "Found AvailableGroupName in Config.json: $($script:ConfigAvailableGroupName -join ', ')"
+        }
+        else {
+            $script:ConfigAvailableGroupName = @()
+        }
+
+        # ReplaceExistingContent (boolean)
+        $rawReplaceContent = if ($null -ne $JSON_Content.replaceExistingContent) { $JSON_Content.replaceExistingContent } `
+            elseif ($null -ne $JSON_Content.ReplaceExistingContent) { $JSON_Content.ReplaceExistingContent } `
+            else { $null }
+        if ($null -ne $rawReplaceContent) {
+            if ($rawReplaceContent -is [bool]) {
+                $script:ConfigReplaceExistingContent = $rawReplaceContent
+            }
+            else {
+                $script:ConfigReplaceExistingContent = ([string]$rawReplaceContent).Trim() -in @('yes', 'true')
+            }
+        }
+        else {
+            $script:ConfigReplaceExistingContent = $null
+        }
+
+        # UninstallGroupName - supports uninstallEntraGroupName, uninstallAADGroupName (string or array)
+        $rawUninstallGroup = if ($JSON_Content.uninstallEntraGroupName) { $JSON_Content.uninstallEntraGroupName } `
+            elseif ($JSON_Content.UninstallEntraGroupName) { $JSON_Content.UninstallEntraGroupName } `
+            elseif ($JSON_Content.uninstallAADGroupName) { $JSON_Content.uninstallAADGroupName } `
+            elseif ($JSON_Content.UninstallAADGroupName) { $JSON_Content.UninstallAADGroupName } `
+            else { $null }
+        if ($null -ne $rawUninstallGroup) {
+            if ($rawUninstallGroup -is [array]) {
+                $script:ConfigUninstallGroupName = @($rawUninstallGroup | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+            }
+            else {
+                $script:ConfigUninstallGroupName = @(([string]$rawUninstallGroup) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            }
+            Write-Log -Message "Found UninstallGroupName in Config.json: $($script:ConfigUninstallGroupName -join ', ')"
+        }
+        else {
+            $script:ConfigUninstallGroupName = @()
+        }
+
+        # SkipPackageRemoval (boolean)
+        $rawSkipRemoval = if ($null -ne $JSON_Content.skipPackageRemoval) { $JSON_Content.skipPackageRemoval } `
+            elseif ($null -ne $JSON_Content.SkipPackageRemoval) { $JSON_Content.SkipPackageRemoval } `
+            else { $null }
+        if ($null -ne $rawSkipRemoval) {
+            if ($rawSkipRemoval -is [bool]) {
+                $script:ConfigSkipPackageRemoval = $rawSkipRemoval
+            }
+            else {
+                $script:ConfigSkipPackageRemoval = ([string]$rawSkipRemoval).Trim() -in @('yes', 'true')
+            }
+        }
+        else {
+            $script:ConfigSkipPackageRemoval = $null
+        }
 
         # Validate group name length
         if ($script:EntraGroupName.Length -gt 50) {
@@ -4888,7 +5442,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 #$installExperience = "System"
 
-                # Load logo icon from config file if specified
+                # Load logo icon from config file if specified, or auto-detect
                 $Icon = $null
                 if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
                     $logoFullPath = "$packagePath\$LogoFile"
@@ -4908,7 +5462,22 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     }
                 }
                 else {
-                    Write-Log -Message "No logo file specified in config"
+                    # Auto-detect a PNG/JPG/JPEG in the package folder
+                    $autoLogo = Get-ChildItem -Path $packagePath -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Extension -match '^\.(png|jpg|jpeg)$' } |
+                        Select-Object -First 1
+                    if ($autoLogo) {
+                        $LogoFile = $autoLogo.Name
+                        $script:LogoFile = $LogoFile
+                        Write-Log -Message "Auto-detected logo file: $LogoFile"
+                        $Icon = New-IntuneWin32AppIcon -FilePath $autoLogo.FullName
+                        if (-not [string]::IsNullOrWhiteSpace($Icon)) {
+                            Write-Log -Message "Auto-detected logo icon loaded successfully (Base64 length: $($Icon.Length))"
+                        }
+                    }
+                    else {
+                        Write-Log -Message "No logo file specified in config and none auto-detected in package folder"
+                    }
                 }
 
             }
@@ -4916,11 +5485,9 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             # Process extended settings from config
             Write-Log -Message "Processing extended settings from config..."
 
-            # Build minimum supported OS object from string
-            $minOSObject = $null
+            # Log minimum supported OS if specified (conversion happens in Get-Win32AppBody)
             if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
                 Write-Log -Message "MinimumSupportedOS from config: $($script:MinimumSupportedOS)"
-                $minOSObject = Get-MinimumOperatingSystemObject -OSVersionString $script:MinimumSupportedOS
             }
 
             # Process custom return codes
@@ -5128,11 +5695,13 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                     Write-Log -Message "Content replacement completed for: $displayName"
 
-                    # Ensure allowAvailableUninstall is set to true
-                    Write-Log -Message "Ensuring allowAvailableUninstall is set to true..."
+                    # Set allowAvailableUninstall based on config (defaults to true)
+                    $allowUninstallValue = $script:AllowAvailableUninstall
+                    $allowUninstallLabel = if ($allowUninstallValue) { "Enabled" } else { "Disabled" }
+                    Write-Log -Message "Setting allowAvailableUninstall to $allowUninstallValue..."
                     $uninstallBody = @{
                         "@odata.type"             = "#microsoft.graph.win32LobApp"
-                        "allowAvailableUninstall" = $true
+                        "allowAvailableUninstall" = $allowUninstallValue
                     }
                     $appUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
                     try {
@@ -5148,8 +5717,8 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                             # Using Invoke-MgGraphRequest with hashtable
                             $null = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $uninstallBody
                         }
-                        Write-Log -Message "allowAvailableUninstall set to true successfully"
-                        Write-Host "Allow available uninstall: Enabled" -ForegroundColor Green
+                        Write-Log -Message "allowAvailableUninstall set to $allowUninstallValue successfully"
+                        Write-Host "Allow available uninstall: $allowUninstallLabel" -ForegroundColor Green
                     }
                     catch {
                         Write-Log -Message "Warning: Failed to set allowAvailableUninstall - $_" -LogLevel 2
@@ -5160,10 +5729,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Log -Message "Re-applying settings from config file..."
                     Write-Host "Updating application properties from config..." -ForegroundColor Cyan
 
-                    # Build minimum supported OS object from string for ReplaceExistingContent
-                    $minOSObjectForReplace = $null
+                    # Build minimum supported OS properties for ReplaceExistingContent
+                    $minOSResultForReplace = $null
                     if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
-                        $minOSObjectForReplace = Get-MinimumOperatingSystemObject -OSVersionString $script:MinimumSupportedOS
+                        $minOSResultForReplace = Get-MinimumOperatingSystemObject -MinimumOS $script:MinimumSupportedOS
                     }
 
                     $settingsBody = @{
@@ -5240,8 +5809,13 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     if (-not [string]::IsNullOrWhiteSpace($script:AllowedArchitectures)) {
                         $settingsBody["applicableArchitectures"] = $script:AllowedArchitectures
                     }
-                    if ($null -ne $minOSObjectForReplace) {
-                        $settingsBody["minimumSupportedOperatingSystem"] = $minOSObjectForReplace
+                    if ($null -ne $minOSResultForReplace) {
+                        if ($null -ne $minOSResultForReplace.osObject) {
+                            $settingsBody["minimumSupportedOperatingSystem"] = $minOSResultForReplace.osObject
+                        }
+                        if ($minOSResultForReplace.windowsRelease) {
+                            $settingsBody["minimumSupportedWindowsRelease"] = $minOSResultForReplace.windowsRelease
+                        }
                     }
 
                     try {
@@ -5274,10 +5848,15 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Host "Warning: Failed to update settings - $_" -ForegroundColor Yellow
                     }
 
-                    # Apply category from config file
-                    if (-not [string]::IsNullOrWhiteSpace($script:Category)) {
-                        Write-Log -Message "Applying category from config: $($script:Category)"
-                        $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $script:Category
+                    # Apply categories from config file (supports multiple comma-separated categories)
+                    if ($script:Categories -and $script:Categories.Count -gt 0) {
+                        Write-Log -Message "Applying categories from config: $($script:Categories -join ', ')"
+                        foreach ($cat in $script:Categories) {
+                            $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $cat
+                            if (-not $categoryResult) {
+                                Write-Log -Message "Warning: Category assignment may have failed for '$cat'" -LogLevel 2
+                            }
+                        }
                     }
 
                     # Skip the normal upload process and group assignment when just replacing content
@@ -5311,12 +5890,11 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
             else {
                 if ($ReplaceExistingContent) {
-                    Write-Log -Message "Error: -ReplaceExistingContent specified but application not found: $displayName" -LogLevel 3
+                    Write-Log -Message "Application not found in Intune: $displayName - will create new application instead of replacing" -LogLevel 2
                     Write-Host
-                    Write-Host "Error: Cannot replace content - application '$displayName' not found in Intune." -ForegroundColor Red
-                    Write-Host "The application must already exist to use -ReplaceExistingContent." -ForegroundColor Yellow
+                    Write-Host "Application '$displayName' not found in Intune." -ForegroundColor Yellow
+                    Write-Host "Creating new application instead of replacing existing content..." -ForegroundColor Cyan
                     Write-Host
-                    exit
                 }
                 if ($ReplaceExistingAssignments) {
                     Write-Log -Message "Error: -ReplaceExistingAssignments specified but application not found: $displayName" -LogLevel 3
@@ -5352,7 +5930,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
                     minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
                     allowedArchitectures      = $script:AllowedArchitectures
-                    minimumSupportedOS        = $minOSObject
+                    minimumSupportedOS        = $script:MinimumSupportedOS
                     requirementRules          = $additionalRequirementRules
                 }
 
@@ -5395,7 +5973,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
                     minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
                     allowedArchitectures      = $script:AllowedArchitectures
-                    minimumSupportedOS        = $minOSObject
+                    minimumSupportedOS        = $script:MinimumSupportedOS
                     requirementRules          = $additionalRequirementRules
                 }
 
@@ -5421,7 +5999,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     minimumNumberOfProcessors = $script:MinimumNumberOfProcessors
                     minimumCpuSpeedInMHz      = $script:MinimumCpuSpeedInMHz
                     allowedArchitectures      = $script:AllowedArchitectures
-                    minimumSupportedOS        = $minOSObject
+                    minimumSupportedOS        = $script:MinimumSupportedOS
                     requirementRules          = $additionalRequirementRules
                 }
 
@@ -5454,6 +6032,34 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             $body.publishingState = "published";
             $body.channel = "stable";
             #>
+            }
+        }
+
+        # Apply logo as a dedicated PATCH after content commit to ensure persistence
+        # The logo in the initial POST body can be lost during content commit processing
+        if (-not $script:contentReplaced -and $AppType -ne "Edge" -and -not [string]::IsNullOrWhiteSpace($Icon)) {
+            $logoAppID = Get-ApplicationID -AppName $displayName
+            if (-not (Test-Null($logoAppID))) {
+                # Determine image MIME type from logo file extension
+                $logoImageType = "image/png"
+                if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                    $logoExt = [System.IO.Path]::GetExtension($LogoFile).ToLower()
+                    if ($logoExt -in @('.jpg', '.jpeg')) { $logoImageType = "image/jpeg" }
+                }
+                $logoBody = @{
+                    "@odata.type" = "#microsoft.graph.win32LobApp"
+                    "largeIcon"   = @{ "type" = $logoImageType; "value" = $Icon }
+                }
+                Write-Log -Message "Applying logo to app via dedicated PATCH..."
+                try {
+                    $logoUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$logoAppID"
+                    Invoke-MgGraphRequest -Method PATCH -Uri $logoUri -Body ($logoBody | ConvertTo-Json -Depth 5) -ContentType 'application/json' | Out-Null
+                    Write-Host "Logo applied successfully via dedicated PATCH" -ForegroundColor Green
+                }
+                catch {
+                    Write-Log -Message "Warning: Failed to apply logo via PATCH: $($_.Exception.Message)" -LogLevel 2
+                    Write-Host "Warning: Logo may not have been applied — $($_.Exception.Message)" -ForegroundColor Yellow
+                }
             }
         }
 
@@ -5588,117 +6194,123 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             }
 
             if ($RequiredAADGroupName) {
-                Write-Log -Message "Prepare Entra ID group for required assignment targeting: $RequiredAADGroupName"
-                $script:groupsWereCreated = $false
-                if ($userName) {
-                    $script:exitCode = New-EntraGroup -groupName $RequiredAADGroupName
-                }
-                else {
-                    $script:exitCode = New-EntraGroupMG -groupName $RequiredAADGroupName
-                }
+                foreach ($reqGroupName in @($RequiredAADGroupName)) {
+                    Write-Log -Message "Prepare Entra ID group for required assignment targeting: $reqGroupName"
+                    $script:groupsWereCreated = $false
+                    if ($userName) {
+                        $script:exitCode = New-EntraGroup -groupName $reqGroupName
+                    }
+                    else {
+                        $script:exitCode = New-EntraGroupMG -groupName $reqGroupName
+                    }
 
-                if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
-                    Start-Sleep $sleep
-                    Write-Host
+                    if ($script:groupsWereCreated) {
+                        Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
+                        Start-Sleep $sleep
+                        Write-Host
+                    }
+                    else {
+                        Write-Host "Group already exists, skipping wait..." -f Green
+                    }
+
+                    #If ($script:exitCode -eq 0) {
+                    Write-Log -Message "Apply Entra ID group for required assignment targeting: $reqGroupName"
+
+                    Write-Log -Message "Find application ID"
+                    $appID = Get-ApplicationID -AppName $displayName
+
+                    Write-Log -Message "Reading group IDs"
+
+                    if ($userName) {
+                        $installReqGroup = Get-GroupID -GroupName $reqGroupName
+                    }
+                    else {
+                        $installReqGroup = Get-GroupIDMG -GroupName $reqGroupName
+                    }
+
+                    Write-Log -Message "Assigning groups to application..."
+                    $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
                 }
-                else {
-                    Write-Host "Group already exists, skipping wait..." -f Green
-                }
-
-                #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply Entra ID group for required assignment targeting: $RequiredAADGroupName"
-
-                Write-Log -Message "Find application ID"
-                $appID = Get-ApplicationID -AppName $displayName
-
-                Write-Log -Message "Reading group IDs"
-
-                if ($userName) {
-                    $installReqGroup = Get-GroupID -GroupName $RequiredAADGroupName
-                }
-                else {
-                    $installReqGroup = Get-GroupIDMG -GroupName $RequiredAADGroupName
-                }
-
-                Write-Log -Message "Assigning groups to application..."
-                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
             }
 
             if ($AvailableAADGroupName) {
-                Write-Log -Message "Prepare Entra ID group for available assignment targeting: $AvailableAADGroupName"
-                $script:groupsWereCreated = $false
-                if ($userName) {
-                    $script:exitCode = New-EntraGroup -groupName $AvailableAADGroupName
-                }
-                else {
-                    $script:exitCode = New-EntraGroupMG -groupName $AvailableAADGroupName
-                }
+                foreach ($availGroupName in @($AvailableAADGroupName)) {
+                    Write-Log -Message "Prepare Entra ID group for available assignment targeting: $availGroupName"
+                    $script:groupsWereCreated = $false
+                    if ($userName) {
+                        $script:exitCode = New-EntraGroup -groupName $availGroupName
+                    }
+                    else {
+                        $script:exitCode = New-EntraGroupMG -groupName $availGroupName
+                    }
 
-                if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
-                    Start-Sleep $sleep
-                    Write-Host
+                    if ($script:groupsWereCreated) {
+                        Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
+                        Start-Sleep $sleep
+                        Write-Host
+                    }
+                    else {
+                        Write-Host "Group already exists, skipping wait..." -f Green
+                    }
+
+                    #If ($script:exitCode -eq 0) {
+                    Write-Log -Message "Apply Entra ID group for available assignment targeting: $availGroupName"
+
+                    Write-Log -Message "Find application ID"
+                    $appID = Get-ApplicationID -AppName $displayName
+
+                    Write-Log -Message "Reading group IDs"
+
+                    if ($userName) {
+                        $installAvailGroup = Get-GroupID -GroupName $availGroupName
+                    }
+                    else {
+                        $installAvailGroup = Get-GroupIDMG -GroupName $availGroupName
+                    }
+
+                    Write-Log -Message "Assigning groups to application..."
+                    $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
                 }
-                else {
-                    Write-Host "Group already exists, skipping wait..." -f Green
-                }
-
-                #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply Entra ID group for available assignment targeting: $AvailableAADGroupName"
-
-                Write-Log -Message "Find application ID"
-                $appID = Get-ApplicationID -AppName $displayName
-
-                Write-Log -Message "Reading group IDs"
-
-                if ($userName) {
-                    $installAvailGroup = Get-GroupID -GroupName $AvailableAADGroupName
-                }
-                else {
-                    $installAvailGroup = Get-GroupIDMG -GroupName $AvailableAADGroupName
-                }
-
-                Write-Log -Message "Assigning groups to application..."
-                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
             }
 
             if ($UninstallAADGroupName) {
-                Write-Log -Message "Prepare Entra ID group for uninstall assignment targeting: $UninstallAADGroupName"
-                $script:groupsWereCreated = $false
-                if ($userName) {
-                    $script:exitCode = New-EntraGroup -groupName $UninstallAADGroupName
-                }
-                else {
-                    $script:exitCode = New-EntraGroupMG -groupName $UninstallAADGroupName
-                }
+                foreach ($uninstGroupName in @($UninstallAADGroupName)) {
+                    Write-Log -Message "Prepare Entra ID group for uninstall assignment targeting: $uninstGroupName"
+                    $script:groupsWereCreated = $false
+                    if ($userName) {
+                        $script:exitCode = New-EntraGroup -groupName $uninstGroupName
+                    }
+                    else {
+                        $script:exitCode = New-EntraGroupMG -groupName $uninstGroupName
+                    }
 
-                if ($script:groupsWereCreated) {
-                    Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
-                    Start-Sleep $sleep
-                    Write-Host
+                    if ($script:groupsWereCreated) {
+                        Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
+                        Start-Sleep $sleep
+                        Write-Host
+                    }
+                    else {
+                        Write-Host "Group already exists, skipping wait..." -f Green
+                    }
+
+                    #If ($script:exitCode -eq 0) {
+                    Write-Log -Message "Apply Entra ID group for uninstall assignment targeting: $uninstGroupName"
+
+                    Write-Log -Message "Find application ID"
+                    $appID = Get-ApplicationID -AppName $displayName
+
+                    Write-Log -Message "Reading group IDs"
+
+                    if ($userName) {
+                        $uninstallGroup = Get-GroupID -GroupName $uninstGroupName
+                    }
+                    else {
+                        $uninstallGroup = Get-GroupIDMG -GroupName $uninstGroupName
+                    }
+
+                    Write-Log -Message "Assigning groups to application..."
+                    $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
                 }
-                else {
-                    Write-Host "Group already exists, skipping wait..." -f Green
-                }
-
-                #If ($script:exitCode -eq 0) {
-                Write-Log -Message "Apply Entra ID group for uninstall assignment targeting: $UninstallAADGroupName"
-
-                Write-Log -Message "Find application ID"
-                $appID = Get-ApplicationID -AppName $displayName
-
-                Write-Log -Message "Reading group IDs"
-
-                if ($userName) {
-                    $uninstallGroup = Get-GroupID -GroupName $UninstallAADGroupName
-                }
-                else {
-                    $uninstallGroup = Get-GroupIDMG -GroupName $UninstallAADGroupName
-                }
-
-                Write-Log -Message "Assigning groups to application..."
-                $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
             }
 
 
@@ -5762,17 +6374,20 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             Write-Log -Message "Skipping assignment groups"
         }
 
-        # Apply category to the application (for new uploads - not when content was replaced as that's handled separately)
-        if ((-not($AssignGroupsOnly)) -and (-not($script:contentReplaced)) -and (-not [string]::IsNullOrWhiteSpace($script:Category))) {
+        # Apply categories to the application (for new uploads - not when content was replaced as that's handled separately)
+        # Supports multiple comma-separated categories from config
+        if ((-not($AssignGroupsOnly)) -and (-not($script:contentReplaced)) -and ($script:Categories -and $script:Categories.Count -gt 0)) {
             Write-Log -Message "Checking for category assignment..."
             if ($null -eq $appID) {
                 Write-Log -Message "Getting application ID for category assignment..."
                 $appID = Get-ApplicationID -AppName $displayName
             }
             if ($null -ne $appID) {
-                $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $script:Category
-                if (-not $categoryResult) {
-                    Write-Log -Message "Warning: Category assignment may have failed" -LogLevel 2
+                foreach ($cat in $script:Categories) {
+                    $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $cat
+                    if (-not $categoryResult) {
+                        Write-Log -Message "Warning: Category assignment may have failed for '$cat'" -LogLevel 2
+                    }
                 }
             }
             else {
@@ -5784,7 +6399,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
         # Apply scope tag if:
         # 1. Not in AssignGroupsOnly mode, AND
         # 2. Either content wasn't replaced, OR a scope tag was explicitly specified (config or parameter)
-        $hasScopeTagSpecified = (-not [string]::IsNullOrWhiteSpace($ScopeTagName)) -or (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag))
+        $hasScopeTagSpecified = ($ScopeTagName -and $ScopeTagName.Count -gt 0) -or ($script:ConfigScopeTag -and $script:ConfigScopeTag.Count -gt 0)
         $shouldApplyScopeTag = (-not($AssignGroupsOnly)) -and ((-not($script:contentReplaced)) -or $hasScopeTagSpecified)
         if ($shouldApplyScopeTag) {
             Write-Log -Message "Checking for scope tag assignment..."
@@ -5880,6 +6495,32 @@ NAME: Get-IntuneScopeTag
             }
         }
         catch {
+            # Check for 403 Forbidden - likely missing DeviceManagementRBAC.ReadWrite.All permission
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -eq 403 -or $_.Exception.Message -match 'Forbidden') {
+                Write-Log -Message "Access denied (403 Forbidden) for scope tag operation. The account/app registration requires the 'DeviceManagementRBAC.ReadWrite.All' Graph API permission." -LogLevel 3
+                Write-Host ""
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "ACCESS DENIED: Scope tag operation failed (403 Forbidden)" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "The authenticated account lacks permission to manage scope tags." -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "Required Graph API permission: DeviceManagementRBAC.ReadWrite.All" -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "To fix this:" -ForegroundColor Yellow
+                Write-Host "  - App registration: Add 'DeviceManagementRBAC.ReadWrite.All' permission" -ForegroundColor Yellow
+                Write-Host "    in Azure Portal > App registrations > API permissions, then grant" -ForegroundColor Yellow
+                Write-Host "    admin consent." -ForegroundColor Yellow
+                Write-Host "  - Interactive login: Ensure the user has an Intune role with scope tag" -ForegroundColor Yellow
+                Write-Host "    management permissions." -ForegroundColor Yellow
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host ""
+                return $null
+            }
+
             Write-Log -Message "Error with scope tag operation: $($_.Exception.Message)" -LogLevel 3
             Write-Host "Error with scope tag operation: $($_.Exception.Message)" -ForegroundColor Red
             throw
@@ -5896,13 +6537,13 @@ NAME: Get-IntuneScopeTag
 function Set-IntuneAppScopeTag {
     <#
 .SYNOPSIS
-This function sets the scope tag on an Intune Win32 application
+This function sets the scope tags on an Intune Win32 application
 .DESCRIPTION
-This function sets the scope tag on an Intune Win32 application. It replaces any existing
-scope tags with the specified scope tag (including removing the Default scope tag).
+This function sets the scope tags on an Intune Win32 application. It replaces any existing
+scope tags with the specified scope tags (including removing the Default scope tag).
 .EXAMPLE
-Set-IntuneAppScopeTag -ApplicationId "12345678-1234-1234-1234-123456789012" -ScopeTagId "1"
-Sets the scope tag with ID 1 on the specified application.
+Set-IntuneAppScopeTag -ApplicationId "12345678-1234-1234-1234-123456789012" -ScopeTagIds @("1", "2")
+Sets scope tags with IDs 1 and 2 on the specified application.
 .NOTES
 NAME: Set-IntuneAppScopeTag
 #>
@@ -5915,10 +6556,10 @@ NAME: Set-IntuneAppScopeTag
         [string]$ApplicationId,
 
         [Parameter(Mandatory = $true)]
-        [string]$ScopeTagId,
+        [string[]]$ScopeTagIds,
 
         [Parameter(Mandatory = $false)]
-        [string]$ScopeTagName
+        [string[]]$ScopeTagNames
     )
 
     begin {
@@ -5926,47 +6567,49 @@ NAME: Set-IntuneAppScopeTag
     }
 
     process {
-        Write-Log -Message "Setting scope tag on application ID: [$ApplicationId]"
-        Write-Log -Message "Scope Tag ID: [$ScopeTagId]"
+        Write-Log -Message "Setting scope tags on application ID: [$ApplicationId]"
+        Write-Log -Message "Scope Tag IDs: [$($ScopeTagIds -join ', ')]"
 
         $graphApiVersion = "beta"
         $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId"
 
+        $displayNames = if ($ScopeTagNames) { $ScopeTagNames -join ', ' } else { $ScopeTagIds -join ', ' }
+
         try {
             # The roleScopeTagIds property accepts an array of scope tag IDs as strings
-            # Setting it to only our scope tag ID will replace all existing scope tags
+            # Setting it replaces all existing scope tags
             $body = @{
                 '@odata.type'     = '#microsoft.graph.win32LobApp'
-                'roleScopeTagIds' = @($ScopeTagId)
+                'roleScopeTagIds' = @($ScopeTagIds)
             }
 
-            Write-Host "Applying scope tag '$ScopeTagName' (ID: $ScopeTagId) to application..." -ForegroundColor Cyan
+            Write-Host "Applying scope tags '$displayNames' to application..." -ForegroundColor Cyan
             $null = Invoke-MgGraphRequest -Method Patch -Uri $uri -Body ($body | ConvertTo-Json -Depth 10)
 
-            Write-Log -Message "Successfully applied scope tag to application"
-            Write-Host "Successfully applied scope tag '$ScopeTagName' to application" -ForegroundColor Green
+            Write-Log -Message "Successfully applied scope tags to application"
+            Write-Host "Successfully applied scope tags '$displayNames' to application" -ForegroundColor Green
 
             return $true
         }
         catch {
-            Write-Log -Message "Error setting scope tag on application: $($_.Exception.Message)" -LogLevel 3
-            Write-Host "Error setting scope tag on application: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log -Message "Error setting scope tags on application: $($_.Exception.Message)" -LogLevel 3
+            Write-Host "Error setting scope tags on application: $($_.Exception.Message)" -ForegroundColor Red
 
             # Check if it's a different app type (e.g., Edge)
             if ($_.Exception.Message -like "*does not match*" -or $_.Exception.Message -like "*invalid*") {
-                Write-Host "Attempting to set scope tag without specifying app type..." -ForegroundColor Yellow
+                Write-Host "Attempting to set scope tags without specifying app type..." -ForegroundColor Yellow
                 try {
                     $body = @{
-                        'roleScopeTagIds' = @($ScopeTagId)
+                        'roleScopeTagIds' = @($ScopeTagIds)
                     }
                     $null = Invoke-MgGraphRequest -Method Patch -Uri $uri -Body ($body | ConvertTo-Json -Depth 10)
-                    Write-Log -Message "Successfully applied scope tag to application (alternate method)"
-                    Write-Host "Successfully applied scope tag '$ScopeTagName' to application" -ForegroundColor Green
+                    Write-Log -Message "Successfully applied scope tags to application (alternate method)"
+                    Write-Host "Successfully applied scope tags '$displayNames' to application" -ForegroundColor Green
                     return $true
                 }
                 catch {
-                    Write-Log -Message "Error setting scope tag (alternate method): $($_.Exception.Message)" -LogLevel 3
-                    Write-Host "Error setting scope tag (alternate method): $($_.Exception.Message)" -ForegroundColor Red
+                    Write-Log -Message "Error setting scope tags (alternate method): $($_.Exception.Message)" -LogLevel 3
+                    Write-Host "Error setting scope tags (alternate method): $($_.Exception.Message)" -ForegroundColor Red
                     return $false
                 }
             }
@@ -5986,11 +6629,11 @@ function Invoke-ScopeTagAssignment {
 .SYNOPSIS
 This function handles the scope tag assignment logic including parameter precedence
 .DESCRIPTION
-This function determines which scope tag to use (parameter vs config.xml), validates/creates
-the scope tag, and applies it to the specified application.
+This function determines which scope tags to use (parameter vs config), validates/creates
+each scope tag, and applies all of them to the specified application.
 .EXAMPLE
 Invoke-ScopeTagAssignment -ApplicationId "12345678-1234-1234-1234-123456789012"
-Applies the appropriate scope tag to the application based on parameter or config.xml.
+Applies the appropriate scope tags to the application based on parameter or config.
 .NOTES
 NAME: Invoke-ScopeTagAssignment
 #>
@@ -6008,60 +6651,78 @@ NAME: Invoke-ScopeTagAssignment
     }
 
     process {
-        # Determine which scope tag to use
-        $effectiveScopeTag = $null
+        # Determine which scope tags to use
+        $effectiveScopeTags = @()
+        $paramScopeTags = @($ScopeTagName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        $configScopeTags = @($script:ConfigScopeTag) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-        if (-not [string]::IsNullOrWhiteSpace($ScopeTagName)) {
+        if ($paramScopeTags.Count -gt 0) {
             # Script parameter takes precedence
-            $effectiveScopeTag = $ScopeTagName
+            $effectiveScopeTags = $paramScopeTags
 
-            # Check if there's a different scope tag in config.xml and warn the user
-            if (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag) -and $script:ConfigScopeTag -ne $ScopeTagName) {
-                Write-Host ""
-                Write-Host "==========================================================================" -ForegroundColor Yellow
-                Write-Host "NOTICE: Scope tag parameter precedence" -ForegroundColor Yellow
-                Write-Host "==========================================================================" -ForegroundColor Yellow
-                Write-Host "Config.xml defines scope tag: '$($script:ConfigScopeTag)'" -ForegroundColor Yellow
-                Write-Host "Script parameter specifies:   '$ScopeTagName'" -ForegroundColor Yellow
-                Write-Host "Using script parameter value: '$ScopeTagName' (parameter takes precedence)" -ForegroundColor Cyan
-                Write-Host "==========================================================================" -ForegroundColor Yellow
-                Write-Host ""
-                Write-Log -Message "Scope tag from Config.xml ($($script:ConfigScopeTag)) is being overridden by script parameter ($ScopeTagName)"
+            # Check if there are different scope tags in config and warn the user
+            if ($configScopeTags.Count -gt 0) {
+                $configDisplay = $configScopeTags -join ', '
+                $paramDisplay = $paramScopeTags -join ', '
+                if ($configDisplay -ne $paramDisplay) {
+                    Write-Host "" -ForegroundColor Yellow
+                    Write-Host "==========================================================================" -ForegroundColor Yellow
+                    Write-Host "NOTICE: Scope tag parameter precedence" -ForegroundColor Yellow
+                    Write-Host "==========================================================================" -ForegroundColor Yellow
+                    Write-Host "Config defines scope tag(s): '$configDisplay'" -ForegroundColor Yellow
+                    Write-Host "Script parameter specifies:  '$paramDisplay'" -ForegroundColor Yellow
+                    Write-Host "Using script parameter value(s) (parameter takes precedence)" -ForegroundColor Cyan
+                    Write-Host "==========================================================================" -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Log -Message "Scope tag(s) from config ($configDisplay) being overridden by script parameter ($paramDisplay)"
+                }
+                else {
+                    Write-Host "Using scope tag(s) from script parameter: '$paramDisplay'" -ForegroundColor Cyan
+                }
             }
             else {
-                Write-Host "Using scope tag from script parameter: '$ScopeTagName'" -ForegroundColor Cyan
+                Write-Host "Using scope tag(s) from script parameter: '$($paramScopeTags -join ', ')'" -ForegroundColor Cyan
             }
         }
-        elseif (-not [string]::IsNullOrWhiteSpace($script:ConfigScopeTag)) {
-            # Use config.xml scope tag
-            $effectiveScopeTag = $script:ConfigScopeTag
-            Write-Host "Using scope tag from Config.xml: '$effectiveScopeTag'" -ForegroundColor Cyan
+        elseif ($configScopeTags.Count -gt 0) {
+            # Use config scope tags
+            $effectiveScopeTags = $configScopeTags
+            Write-Host "Using scope tag(s) from config: '$($configScopeTags -join ', ')'" -ForegroundColor Cyan
         }
         else {
             # No scope tag specified
-            Write-Log -Message "No scope tag specified (neither parameter nor Config.xml). Skipping scope tag assignment."
+            Write-Log -Message "No scope tag specified (neither parameter nor config). Skipping scope tag assignment."
             Write-Host "No scope tag specified. Application will retain default scope tag." -ForegroundColor Gray
             return $true
         }
 
-        Write-Log -Message "Effective scope tag to apply: $effectiveScopeTag"
+        Write-Log -Message "Effective scope tag(s) to apply: $($effectiveScopeTags -join ', ')"
 
         try {
-            # Get or create the scope tag
-            $scopeTag = Get-IntuneScopeTag -ScopeTagName $effectiveScopeTag
+            # Get or create each scope tag and collect IDs
+            $scopeTagIds = @()
+            $scopeTagDisplayNames = @()
+            foreach ($tagName in $effectiveScopeTags) {
+                $scopeTag = Get-IntuneScopeTag -ScopeTagName $tagName
 
-            if ($null -eq $scopeTag -or [string]::IsNullOrWhiteSpace($scopeTag.id)) {
-                Write-Log -Message "Failed to get or create scope tag: $effectiveScopeTag" -LogLevel 3
-                Write-Host "Failed to get or create scope tag: $effectiveScopeTag" -ForegroundColor Red
-                return $false
+                if ($null -eq $scopeTag -or [string]::IsNullOrWhiteSpace($scopeTag.id)) {
+                    Write-Log -Message "Failed to get or create scope tag: $tagName" -LogLevel 3
+                    Write-Host "Failed to get or create scope tag: $tagName" -ForegroundColor Red
+                    return $false
+                }
+
+                $scopeTagIds += $scopeTag.id
+                $scopeTagDisplayNames += $scopeTag.displayName
             }
 
-            # Apply the scope tag to the application
-            $result = Set-IntuneAppScopeTag -ApplicationId $ApplicationId -ScopeTagId $scopeTag.id -ScopeTagName $effectiveScopeTag
+            Write-Log -Message "Resolved scope tag IDs: $($scopeTagIds -join ', ')"
+
+            # Apply all scope tags to the application in a single PATCH
+            $result = Set-IntuneAppScopeTag -ApplicationId $ApplicationId -ScopeTagIds $scopeTagIds -ScopeTagNames $scopeTagDisplayNames
 
             if ($result) {
                 Write-Host ""
-                Write-Host "Scope tag '$effectiveScopeTag' successfully applied to application" -ForegroundColor Green
+                Write-Host "Scope tag(s) '$($scopeTagDisplayNames -join ', ')' successfully applied to application" -ForegroundColor Green
                 Write-Host ""
             }
 
@@ -6136,10 +6797,13 @@ NAME: New-EntraGroupMG -groupName
                     Write-Log -Message "Creating Entra ID group $group"
                     # Create group using REST API
                     $createUri = "https://graph.microsoft.com/$graphApiVersion/groups"
+                    # mailNickname: remove spaces and invalid chars, append '-Group', truncate to 64 chars max
+                    $mailNick = ($group -replace '[^a-zA-Z0-9_\-\.]', '') + "-Group"
+                    if ($mailNick.Length -gt 64) { $mailNick = $mailNick.Substring(0, 64) }
                     $groupBody = @{
                         'displayName'        = $group
                         'description'        = "Group for $group"
-                        'mailNickname'       = ($($group).Replace(" ", "") + "-Group")
+                        'mailNickname'       = $mailNick
                         'mailEnabled'        = $false
                         'securityEnabled'    = $true
                         'isAssignableToRole' = $false
@@ -6215,7 +6879,10 @@ NAME: New-EntraGroup -groupName
 
                 Write-Log -Message "Creating Entra ID group $group"
                 try {
-                    New-AzureADGroup -DisplayName $group -Description "Group for $group" -MailEnabled $false -SecurityEnabled $true -MailNickName ($($group).Replace(" ", "") + "-Group")
+                    # mailNickname: remove spaces and invalid chars, append '-Group', truncate to 64 chars max
+                    $mailNick = ($group -replace '[^a-zA-Z0-9_\-\.]', '') + "-Group"
+                    if ($mailNick.Length -gt 64) { $mailNick = $mailNick.Substring(0, 64) }
+                    New-AzureADGroup -DisplayName $group -Description "Group for $group" -MailEnabled $false -SecurityEnabled $true -MailNickName $mailNick
                     $script:groupsWereCreated = $true
                 }
                 catch {
@@ -6781,7 +7448,12 @@ NAME: Add-ApplicationAssignment
                 Write-Log -Message "ExistingTargetGroupId: $ExistingTargetGroupId"
                 Write-Log -Message "ExistingInstallIntent: $ExistingInstallIntent"
 
-                $JSON += @"
+                # Determine if this is an exclusion assignment (exclusions don't get settings)
+                $isExclusion = $existingODataType -like '*exclusion*'
+
+                if ($isExclusion) {
+                    # Exclusion assignments have no settings block
+                    $JSON += @"
 
     {
       "@odata.type": "#microsoft.graph.mobileAppAssignment",
@@ -6791,6 +7463,44 @@ NAME: Add-ApplicationAssignment
       },
       "intent": "$ExistingInstallIntent"
 "@
+                }
+                else {
+                    # Include assignments: preserve existing settings or apply defaults
+                    # Determine notification setting for this existing assignment
+                    $existingNotification = "hideAll"
+                    if ($Assignment.settings -and $Assignment.settings.notifications) {
+                        $existingNotification = $Assignment.settings.notifications
+                    }
+                    elseif ($ExistingInstallIntent -eq "uninstall") {
+                        $existingNotification = "showAll"
+                    }
+
+                    # Determine delivery optimization priority
+                    $existingDeliveryPriority = "foreground"
+                    if ($Assignment.settings -and $Assignment.settings.deliveryOptimizationPriority) {
+                        $existingDeliveryPriority = $Assignment.settings.deliveryOptimizationPriority
+                    }
+
+                    $JSON += @"
+
+    {
+      "@odata.type": "#microsoft.graph.mobileAppAssignment",
+      "target": {
+        "@odata.type": "$existingODataType",
+        "groupId": "$ExistingTargetGroupId"
+      },
+      "intent": "$ExistingInstallIntent",
+      "settings": {
+        "@odata.type": "#microsoft.graph.win32LobAppAssignmentSettings",
+        "notifications": "$existingNotification",
+        "installTimeSettings": {
+          "useLocalTime": false,
+          "deadlineDateTime": null
+        },
+        "deliveryOptimizationPriority": "$existingDeliveryPriority"
+      }
+"@
+                }
 
                 if ($i -ne $App_Count) {
 
@@ -7236,6 +7946,213 @@ function Test-AuthToken() {
 
 ####################################################
 
+function Invoke-MgGraphConnect {
+    <#
+.SYNOPSIS
+Connects to Microsoft Graph with MSAL system browser auth for custom app registrations
+.DESCRIPTION
+When a custom ClientID is provided, uses MSAL.NET directly to perform interactive authentication
+via the system browser with http://localhost redirect URI. This bypasses WAM (Web Account Manager)
+which can cause authentication failures with custom app registrations.
+When no custom ClientID is provided, uses standard Connect-MgGraph interactive auth.
+.PARAMETER ConnectParams
+Hashtable of parameters to splat to Connect-MgGraph (Scopes, ClientId, TenantId, NoWelcome)
+.PARAMETER IsDeleteOperation
+If true, uses simplified error messages for the delete auth path
+.EXAMPLE
+Invoke-MgGraphConnect -ConnectParams $connectParams
+.NOTES
+NAME: Invoke-MgGraphConnect
+Requires: Microsoft.Graph.Authentication module (bundles MSAL.NET)
+App registration must have http://localhost redirect URI configured under Mobile and desktop applications
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$ConnectParams,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IsDeleteOperation
+    )
+
+    $operationLabel = if ($IsDeleteOperation) { "delete operation" } else { "Microsoft Graph" }
+    $hasCustomClientId = $ConnectParams.ContainsKey('ClientId') -and $ConnectParams['ClientId']
+
+    if ($hasCustomClientId) {
+        # Use MSAL.NET directly to bypass WAM - same approach as Manage-IntuneResources.ps1
+        $clientId = $ConnectParams['ClientId']
+        $tenantId = if ($ConnectParams.ContainsKey('TenantId') -and $ConnectParams['TenantId']) { $ConnectParams['TenantId'] } else { 'organizations' }
+        $scopes = if ($ConnectParams.ContainsKey('Scopes')) { $ConnectParams['Scopes'] } else { @() }
+        $noWelcome = $ConnectParams.ContainsKey('NoWelcome') -and $ConnectParams['NoWelcome']
+
+        try {
+            Write-Log -Message "Using MSAL system browser auth for custom app registration: $clientId"
+
+            # Check if MSAL types are already loaded
+            $msalTypeLoaded = $null -ne ([System.Management.Automation.PSTypeName]'Microsoft.Identity.Client.PublicClientApplicationBuilder').Type
+
+            if (-not $msalTypeLoaded) {
+                Write-Log -Message "Loading MSAL from Microsoft.Graph.Authentication module..."
+
+                $graphAuthModule = Get-Module Microsoft.Graph.Authentication -ErrorAction SilentlyContinue
+                if (-not $graphAuthModule) {
+                    $graphAuthModule = Import-Module Microsoft.Graph.Authentication -PassThru -ErrorAction Stop
+                }
+
+                # Check again after module import
+                $msalTypeLoaded = $null -ne ([System.Management.Automation.PSTypeName]'Microsoft.Identity.Client.PublicClientApplicationBuilder').Type
+
+                if (-not $msalTypeLoaded) {
+                    $modulePath = $graphAuthModule.ModuleBase
+
+                    $possiblePaths = @(
+                        (Join-Path $modulePath "Dependencies\Desktop\Microsoft.Identity.Client.dll"),
+                        (Join-Path $modulePath "Dependencies\Core\Microsoft.Identity.Client.dll"),
+                        (Join-Path $modulePath "Dependencies\Microsoft.Identity.Client.dll"),
+                        (Join-Path $modulePath "Microsoft.Identity.Client.dll")
+                    )
+
+                    $msalDllPath = $null
+                    foreach ($path in $possiblePaths) {
+                        if (Test-Path $path) {
+                            $msalDllPath = $path
+                            Write-Log -Message "Found MSAL at: $path"
+                            break
+                        }
+                    }
+
+                    if (-not $msalDllPath) {
+                        throw "Could not find Microsoft.Identity.Client.dll in the Microsoft.Graph.Authentication module."
+                    }
+
+                    Add-Type -Path $msalDllPath -ErrorAction Stop
+                }
+            }
+
+            Write-Host "Authenticating with custom app registration via system browser..." -ForegroundColor Cyan
+
+            # Build MSAL public client application with http://localhost redirect
+            $redirectUri = "http://localhost"
+            $authority = "https://login.microsoftonline.com/$tenantId"
+
+            $pcaBuilder = [Microsoft.Identity.Client.PublicClientApplicationBuilder]::Create($clientId)
+            $pcaBuilder = $pcaBuilder.WithAuthority($authority)
+            $pcaBuilder = $pcaBuilder.WithRedirectUri($redirectUri)
+            $pca = $pcaBuilder.Build()
+
+            # Prepare scopes as .NET List<string> for MSAL
+            $scopesList = [System.Collections.Generic.List[string]]::new()
+            foreach ($scope in $scopes) {
+                if ($scope -notlike "https://graph.microsoft.com/*") {
+                    $scopesList.Add("https://graph.microsoft.com/$scope")
+                }
+                else {
+                    $scopesList.Add($scope)
+                }
+            }
+
+            Write-Log -Message "Requesting scopes: $($scopesList -join ', ')"
+
+            # Try silent auth first (cached credentials)
+            $accounts = $pca.GetAccountsAsync().GetAwaiter().GetResult()
+            $result = $null
+
+            if ($accounts -and $accounts.Count -gt 0) {
+                try {
+                    Write-Log -Message "Found cached account, attempting silent authentication..."
+                    $result = $pca.AcquireTokenSilent($scopesList, $accounts[0]).ExecuteAsync().GetAwaiter().GetResult()
+                    Write-Host "Authenticated silently using cached credentials" -ForegroundColor Green
+                }
+                catch {
+                    Write-Log -Message "Silent auth failed, will use interactive browser: $($_.Exception.Message)" -LogLevel 2
+                }
+            }
+
+            # If silent auth failed, do interactive via system browser
+            if (-not $result) {
+                Write-Host "Opening browser for authentication..." -ForegroundColor Yellow
+
+                $interactiveBuilder = $pca.AcquireTokenInteractive($scopesList)
+                $interactiveBuilder = $interactiveBuilder.WithUseEmbeddedWebView($false)
+
+                $result = $interactiveBuilder.ExecuteAsync().GetAwaiter().GetResult()
+
+                Write-Host "Authentication successful" -ForegroundColor Green
+            }
+
+            # Connect to Graph with the acquired access token
+            $secureToken = ConvertTo-SecureString -String $result.AccessToken -AsPlainText -Force
+            $mgConnectParams = @{
+                AccessToken = $secureToken
+                ErrorAction = 'Stop'
+            }
+            if ($noWelcome) {
+                $mgConnectParams['NoWelcome'] = $true
+            }
+
+            Connect-MgGraph @mgConnectParams
+            return
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            Write-Log -Message "Failed to authenticate to ${operationLabel}: $errorMessage" -LogLevel 3
+
+            if ($IsDeleteOperation) {
+                Write-Host "Authentication failed: $errorMessage" -ForegroundColor Red
+                Write-Host "Ensure the app registration has the required API permissions and http://localhost redirect URI." -ForegroundColor Yellow
+                Write-Host "See: Azure Portal > App registrations > Authentication > Mobile and desktop" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "AUTHENTICATION FAILED" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "Error: $errorMessage" -ForegroundColor Red
+                Write-Host "" -ForegroundColor Yellow
+                Write-Host "When using -ClientID with -IntuneAdmin (delegated auth), ensure the app" -ForegroundColor Yellow
+                Write-Host "registration is correctly configured:" -ForegroundColor Yellow
+                Write-Host "" -ForegroundColor Yellow
+                Write-Host "  1. Go to Azure Portal > App registrations > $clientId" -ForegroundColor Yellow
+                Write-Host "  2. API permissions: Add DeviceManagementApps.ReadWrite.All, Group.ReadWrite.All," -ForegroundColor Yellow
+                Write-Host "     GroupMember.ReadWrite.All, DeviceManagementRBAC.ReadWrite.All (Delegated)" -ForegroundColor Yellow
+                Write-Host "  3. Grant admin consent for the above permissions" -ForegroundColor Yellow
+                Write-Host "  4. Authentication > Add platform > Mobile and desktop applications" -ForegroundColor Yellow
+                Write-Host "  5. Add redirect URI: http://localhost" -ForegroundColor Yellow
+                Write-Host "  6. Enable 'Allow public client flows' at the bottom" -ForegroundColor Yellow
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Invoke-Cleanup -ForceDisconnect
+            }
+            throw "Authentication failed. Cannot continue."
+        }
+    }
+    else {
+        # No custom ClientID - use standard Connect-MgGraph interactive auth
+        try {
+            Connect-MgGraph @ConnectParams -ErrorAction Stop
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            Write-Log -Message "Failed to authenticate to ${operationLabel}: $errorMessage" -LogLevel 3
+
+            if ($IsDeleteOperation) {
+                Write-Host "Authentication failed: $errorMessage" -ForegroundColor Red
+            }
+            else {
+                Write-Host "" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "AUTHENTICATION FAILED" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Write-Host "Error: $errorMessage" -ForegroundColor Red
+                Write-Host "==========================================================================" -ForegroundColor Red
+                Invoke-Cleanup -ForceDisconnect
+            }
+            throw "Authentication failed. Cannot continue."
+        }
+    }
+}
+
+####################################################
+
 function Invoke-Cleanup {
     param(
         [switch]$ForceDisconnect
@@ -7362,22 +8279,34 @@ if ($DeleteApp) {
             "DeviceManagementApps.ReadWrite.All"
         )
 
+        # Build Connect-MgGraph parameters for delegated auth
+        $connectParams = @{
+            Scopes    = $requiredScopes
+            NoWelcome = $true
+        }
+        if ($ClientID) {
+            $connectParams['ClientId'] = $ClientID
+        }
+        if ($TenantID) {
+            $connectParams['TenantId'] = $TenantID
+        }
+
         $context = Get-MgContext
         if ($null -ne $context) {
             $currentScopes = $context.Scopes
             $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
-            if ($missingScopes.Count -gt 0) {
-                Write-Host "Current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            $clientIdChanged = $ClientID -and ($context.ClientId -ne $ClientID)
+            if ($missingScopes.Count -gt 0 -or $clientIdChanged) {
                 Write-Host "Disconnecting and reconnecting with required scopes..." -ForegroundColor Yellow
                 Disconnect-MgGraph | Out-Null
-                Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+                Invoke-MgGraphConnect -ConnectParams $connectParams -IsDeleteOperation
             }
             else {
                 Write-Host "Already connected with required scopes" -ForegroundColor Green
             }
         }
         else {
-            Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+            Invoke-MgGraphConnect -ConnectParams $connectParams -IsDeleteOperation
         }
     }
     elseif ($ClientSecret) {
@@ -7404,10 +8333,10 @@ if ($DeleteApp) {
 
         $targetParameter = (Get-Command Connect-MgGraph).Parameters['AccessToken']
         if ($targetParameter.ParameterType -eq [securestring]) {
-            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome
+            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome -ErrorAction Stop
         }
         else {
-            Connect-MgGraph -AccessToken $token -NoWelcome
+            Connect-MgGraph -AccessToken $token -NoWelcome -ErrorAction Stop
         }
         Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
     }
@@ -7418,7 +8347,7 @@ if ($DeleteApp) {
         }
         $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -EQ $CertName
         if ($myCert) {
-            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint -NoWelcome
+            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint -NoWelcome -ErrorAction Stop
         }
         else {
             Write-Host "Error - cert not found: $CertName" -ForegroundColor Red
@@ -7525,19 +8454,7 @@ catch {
     return 1
 }
 
-#Validate targeting group names are different - Graph API fails to apply assignment if same group is used for multiple assignments!
-if (-not(Test-Null($RequiredAADGroupName)) -and ($RequiredAADGroupName -eq $AvailableAADGroupName)) {
-    Write-Log -Message "Error - RequiredAADGroupName must be different from AvailableAADGroupName!" -LogLevel 3
-    return 1
-}
-if (-not(Test-Null($RequiredAADGroupName)) -and ($RequiredAADGroupName -eq $UninstallAADGroupName)) {
-    Write-Log -Message "Error - RequiredAADGroupName must be different from UninstallAADGroupName!" -LogLevel 3
-    return 1
-}
-if (-not(Test-Null($UninstallAADGroupName)) -and ($UninstallAADGroupName -eq $AvailableAADGroupName)) {
-    Write-Log -Message "Error - UninstallAADGroupName must be different from AvailableAADGroupName!" -LogLevel 3
-    return 1
-}
+#Note: targeting group overlap validation is performed after config file loading (below) so that config-sourced groups are also validated.
 
 #Read Config File (JSON takes precedence over XML)
 $jsonConfigPath = "$packagePath\Config.json"
@@ -7553,6 +8470,70 @@ elseif (Test-Path $xmlConfigPath) {
 }
 else {
     Write-Log -Message "Error - No Config.json or Config.xml file found in: $packagePath" -LogLevel 3
+    return 1
+}
+
+# Apply config file settings for parameters not explicitly specified on the command line
+# NewTagPath defaults to $true; config can override, and command-line takes highest precedence
+if ($PSBoundParameters.ContainsKey('NewTagPath')) {
+    Write-Log -Message "NewTagPath explicitly set on command line: $NewTagPath"
+}
+elseif ($null -ne $script:ConfigNewTagPath) {
+    $NewTagPath = $script:ConfigNewTagPath
+    Write-Log -Message "NewTagPath set from config file: $NewTagPath"
+}
+else {
+    $NewTagPath = $true
+    Write-Log -Message "NewTagPath enabled by default"
+}
+
+# RequiredAADGroupName: command-line takes precedence, then config
+if (-not $PSBoundParameters.ContainsKey('RequiredAADGroupName') -and $script:ConfigRequiredGroupName.Count -gt 0) {
+    $RequiredAADGroupName = $script:ConfigRequiredGroupName
+    Write-Log -Message "RequiredAADGroupName set from config file: $($RequiredAADGroupName -join ', ')"
+}
+
+# AvailableAADGroupName: command-line takes precedence, then config
+if (-not $PSBoundParameters.ContainsKey('AvailableAADGroupName') -and $script:ConfigAvailableGroupName.Count -gt 0) {
+    $AvailableAADGroupName = $script:ConfigAvailableGroupName
+    Write-Log -Message "AvailableAADGroupName set from config file: $($AvailableAADGroupName -join ', ')"
+}
+
+# UninstallAADGroupName: command-line takes precedence, then config
+if (-not $PSBoundParameters.ContainsKey('UninstallAADGroupName') -and $script:ConfigUninstallGroupName.Count -gt 0) {
+    $UninstallAADGroupName = $script:ConfigUninstallGroupName
+    Write-Log -Message "UninstallAADGroupName set from config file: $($UninstallAADGroupName -join ', ')"
+}
+
+# ReplaceExistingContent: command-line takes precedence, then config
+if (-not $PSBoundParameters.ContainsKey('ReplaceExistingContent') -and $null -ne $script:ConfigReplaceExistingContent) {
+    $ReplaceExistingContent = $script:ConfigReplaceExistingContent
+    Write-Log -Message "ReplaceExistingContent set from config file: $ReplaceExistingContent"
+}
+
+# SkipPackageRemoval: command-line takes precedence, then config
+if (-not $PSBoundParameters.ContainsKey('SkipPackageRemoval') -and $null -ne $script:ConfigSkipPackageRemoval) {
+    $SkipPackageRemoval = $script:ConfigSkipPackageRemoval
+    Write-Log -Message "SkipPackageRemoval set from config file: $SkipPackageRemoval"
+}
+
+# Validate targeting group names are different (re-check after config application)
+$reqNames = @($RequiredAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$availNames = @($AvailableAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$uninNames = @($UninstallAADGroupName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+$overlapReqAvail = $reqNames | Where-Object { $_ -in $availNames }
+$overlapReqUninst = $reqNames | Where-Object { $_ -in $uninNames }
+$overlapAvailUninst = $availNames | Where-Object { $_ -in $uninNames }
+if ($overlapReqAvail) {
+    Write-Log -Message "Error - These group names appear in both Required and Available: $($overlapReqAvail -join ', ')" -LogLevel 3
+    return 1
+}
+if ($overlapReqUninst) {
+    Write-Log -Message "Error - These group names appear in both Required and Uninstall: $($overlapReqUninst -join ', ')" -LogLevel 3
+    return 1
+}
+if ($overlapAvailUninst) {
+    Write-Log -Message "Error - These group names appear in both Available and Uninstall: $($overlapAvailUninst -join ', ')" -LogLevel 3
     return 1
 }
 
@@ -7646,27 +8627,60 @@ else {
             "DeviceManagementApps.ReadWrite.All",    # For creating/updating Intune apps
             "Group.ReadWrite.All",                    # For creating Entra ID groups
             "GroupMember.ReadWrite.All",              # For managing group memberships
-            "DeviceManagementConfiguration.Read.All"  # For reading scope tags
+            "DeviceManagementRBAC.ReadWrite.All"      # For managing scope tags (roleScopeTags)
         )
+
+        # Build Connect-MgGraph parameters
+        # If -ClientID is also specified, use it as a custom app registration for delegated auth
+        $connectParams = @{
+            Scopes    = $requiredScopes
+            NoWelcome = $true
+        }
+        if ($ClientID) {
+            $connectParams['ClientId'] = $ClientID
+            Write-Host "Using custom app registration (ClientID: $ClientID) for delegated authentication" -ForegroundColor Cyan
+        }
+        if ($TenantID) {
+            $connectParams['TenantId'] = $TenantID
+            Write-Host "Using Tenant ID: $TenantID" -ForegroundColor Cyan
+        }
 
         # Check if already connected and if current scopes are sufficient
         $context = Get-MgContext
         if ($null -ne $context) {
             $currentScopes = $context.Scopes
             $missingScopes = $requiredScopes | Where-Object { $_ -notin $currentScopes }
-            if ($missingScopes.Count -gt 0) {
-                Write-Host "Current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+            # Also check if ClientId changed
+            $clientIdChanged = $ClientID -and ($context.ClientId -ne $ClientID)
+            if ($missingScopes.Count -gt 0 -or $clientIdChanged) {
+                if ($clientIdChanged) {
+                    Write-Host "Current session uses different app registration. Reconnecting with ClientID: $ClientID" -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host "Current session is missing required scopes: $($missingScopes -join ', ')" -ForegroundColor Yellow
+                }
                 Write-Host "Disconnecting and reconnecting with required scopes..." -ForegroundColor Yellow
                 Disconnect-MgGraph | Out-Null
-                Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+                Invoke-MgGraphConnect -ConnectParams $connectParams
             }
             else {
                 Write-Host "Already connected with required scopes" -ForegroundColor Green
             }
         }
         else {
-            Connect-MgGraph -Scopes $requiredScopes -NoWelcome
+            Invoke-MgGraphConnect -ConnectParams $connectParams
         }
+
+        # Verify connection succeeded
+        $postContext = Get-MgContext
+        if ($null -eq $postContext) {
+            Write-Log -Message "Connect-MgGraph completed but no context found - authentication did not succeed" -LogLevel 3
+            Write-Host "Authentication did not succeed. Please check your credentials and try again." -ForegroundColor Red
+            Invoke-Cleanup -ForceDisconnect
+            throw "Authentication failed. No MgContext available."
+        }
+        Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
+        Write-Log -Message "Authenticated to Graph. ClientId: $($postContext.ClientId), AuthType: $($postContext.AuthType), Scopes: $($postContext.Scopes -join ', ')"
     }
     elseif ($userName) {
         Write-Log -Message "Authenticate to AzureAD..."
@@ -7685,7 +8699,7 @@ else {
         $myCert = Get-ChildItem -Path "cert:\CurrentUser\My" | Where-Object Subject -EQ $CertName
         if ($myCert) {
             Write-Host "Found cert, using it to authenticate to Graph..." -ForegroundColor Yellow
-            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint ## Or -CertificateThumbprint instead of -CertificateName
+            Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateThumbprint $myCert.Thumbprint -ErrorAction Stop ## Or -CertificateThumbprint instead of -CertificateName
         }
         else {
             Invoke-Cleanup -ForceDisconnect
@@ -7723,10 +8737,10 @@ else {
         $targetParameter = (Get-Command Connect-MgGraph).Parameters['AccessToken']
 
         if ($targetParameter.ParameterType -eq [securestring]) {
-            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome
+            Connect-MgGraph -AccessToken ($token | ConvertTo-SecureString -AsPlainText -Force) -NoWelcome -ErrorAction Stop
         }
         else {
-            Connect-MgGraph -AccessToken $token -NoWelcome
+            Connect-MgGraph -AccessToken $token -NoWelcome -ErrorAction Stop
         }
 
         Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
