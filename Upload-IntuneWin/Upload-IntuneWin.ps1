@@ -246,7 +246,7 @@
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.92
+    Version        : 1.93
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
 
@@ -260,6 +260,26 @@
     - Logo auto-detection: Auto-scans package folder for PNG/JPG/JPEG if not specified in config
     - Logo JPEG MIME type: Correctly sets image/jpeg for .jpg/.jpeg files (was hardcoded to image/png)
     - Logo persistence PATCH: Applies logo via dedicated PATCH after content commit to prevent loss
+
+    DelegatedImport Parity Enhancements (v1.93):
+    Backported additional capabilities from Invoke-DelegatedImport.ps1 for full parity:
+    - 401 token refresh: Invoke-GraphRequestWithRetry now detects HTTP 401 (expired token),
+      disconnects, re-authenticates using stored connection params, and retries the request.
+    - Expanded network error patterns: Retry now matches 'forcibly closed', 'Error while copying
+      content to a stream', 'ResponseEnded', 'response ended prematurely', 'ended prematurely',
+      'request was canceled', and 'send the request' in addition to existing patterns.
+    - Chunk transient error handling: Per-chunk upload retry now handles HTTP 500/502/503/504
+      with exponential backoff (10s * 2^attempt), increased from 3 to 5 retries per chunk.
+    - App publishingState check: Before replacing content on an existing app, checks the
+      publishingState. If the app is stuck in 'notPublished', deletes and falls through to
+      full upload path (via Wait-AppPublishingState helper function).
+    - Stuck app delete/recreate: When upload fails in Send-Win32Lob, the stuck app is deleted
+      and recreated before the next retry attempt (prevents HTTP 400 on new content versions).
+    - Escalating upload retry backoff: Upload retry delay now uses 30s * attempt number instead
+      of a flat 10s delay, matching the DelegatedImport backoff strategy.
+    - OrigSource to Source robocopy: When an OrigSource folder exists, copies it to Source via
+      robocopy /MIR /MT:4 before packaging, ensuring a clean reproducible build. Previously
+      only fell back to using OrigSource directly.
 
     WhatIf Support (v1.9):
     The script supports -WhatIf to preview operations without making changes:
@@ -466,7 +486,7 @@ $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.92"
+$BuildVer = "1.93"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -741,15 +761,36 @@ NAME: Invoke-GraphRequestWithRetry
                 $retryAfter = 10
                 Write-Log -Message "Precondition failed (412) — content version state conflict. Waiting $retryAfter seconds..." -LogLevel 2
             }
+            elseif ($statusCode -eq 401) {
+                # Token expired or revoked — attempt silent re-authentication
+                $isRetryable = $true
+                $retryAfter = 5
+                Write-Log -Message "Token expired (401). Attempting to refresh Graph session..." -LogLevel 2
+                try {
+                    Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+                    Start-Sleep -Seconds 2
+                    # Reconnect using the same parameters that were used for the original connection
+                    if ($script:MgGraphConnectParams) {
+                        Invoke-MgGraphConnect -ConnectParams $script:MgGraphConnectParams
+                    }
+                    else {
+                        Connect-MgGraph -NoWelcome -ErrorAction Stop
+                    }
+                    Write-Log -Message "Graph session refreshed successfully."
+                }
+                catch {
+                    Write-Log -Message "Graph session refresh failed: $($_.Exception.Message)" -LogLevel 3
+                }
+            }
             elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
                 # Server error - retry with exponential backoff
                 $isRetryable = $true
                 Write-Log -Message "Server error ($statusCode). Retrying in $delay seconds..." -LogLevel 2
             }
-            elseif ($_.Exception.Message -match 'network|timeout|connection') {
-                # Network error - retry
+            elseif ($_.Exception.Message -match 'network|timeout|connection|forcibly closed|Error while copying content to a stream|ResponseEnded|response ended prematurely|ended prematurely|request was canceled|send the request') {
+                # Network/transport error - retry
                 $isRetryable = $true
-                Write-Log -Message "Network error. Retrying in $delay seconds..." -LogLevel 2
+                Write-Log -Message "Network/transport error. Retrying in $delay seconds..." -LogLevel 2
             }
 
             if ($isRetryable -and $retryCount -lt $MaxRetries) {
@@ -2958,8 +2999,8 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
             Write-Progress -Activity "Uploading File to Azure Storage" -Status "Uploading chunk $currentChunk of $chunks" `
                 -PercentComplete ($currentChunk / $chunks * 100)
 
-            # Retry chunk upload with SAS renewal on auth failures
-            $chunkRetries = 3
+            # Retry chunk upload with SAS renewal on auth failures and transient storage errors
+            $chunkRetries = 5
             for ($attempt = 1; $attempt -le $chunkRetries; $attempt++) {
                 try {
                     $null = Send-AzureStorageChunk $sasUri $id $bytes
@@ -2979,6 +3020,12 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
                         $null = Update-AzureStorageUpload $fileUri
                         $sasRenewalTimer.Restart()
                         Start-Sleep -Seconds 5
+                    }
+                    elseif ($httpStatus -in @(500, 502, 503, 504) -and $attempt -lt $chunkRetries) {
+                        # Transient Azure Storage errors — wait with exponential backoff and retry the chunk
+                        $storageBackoff = 10 * [Math]::Pow(2, $attempt - 1)
+                        Write-Host "    Transient storage error ($httpStatus) on chunk $currentChunk. Waiting ${storageBackoff}s before retry (attempt $attempt/$chunkRetries)..." -ForegroundColor Yellow
+                        Start-Sleep -Seconds $storageBackoff
                     }
                     else {
                         throw
@@ -3745,6 +3792,66 @@ function Get-IntuneWinFile() {
 
 ####################################################
 
+function Wait-AppPublishingState {
+    <#
+.SYNOPSIS
+Polls an app's publishingState to verify it has reached 'published'.
+.DESCRIPTION
+Checks the publishingState of a Win32 app. If the app is stuck in 'notPublished'
+after max attempts, returns $false to signal the caller to delete and recreate.
+.PARAMETER AppId
+The Intune app ID to check.
+.PARAMETER DisplayName
+Display name of the app (for logging).
+.PARAMETER MaxAttempts
+Maximum number of polling attempts (default: 6).
+.PARAMETER WaitSeconds
+Seconds between polls (default: 10).
+.NOTES
+NAME: Wait-AppPublishingState
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AppId,
+
+        [Parameter(Mandatory)]
+        [string]$DisplayName,
+
+        [int]$MaxAttempts = 6,
+
+        [int]$WaitSeconds = 10
+    )
+
+    for ($i = 0; $i -lt $MaxAttempts; $i++) {
+        try {
+            $app = Get-IntuneApplicationMG -ID ([guid]$AppId)
+            if (-not $app) {
+                Write-Host "    App '$DisplayName' no longer found in tenant — proceeding" -ForegroundColor Yellow
+                return $true
+            }
+            $currentState = $app.publishingState
+            if ($currentState -eq 'published') {
+                if ($i -gt 0) {
+                    Write-Host "    App '$DisplayName' reached 'published' state after $($i * $WaitSeconds)s" -ForegroundColor Green
+                }
+                return $true
+            }
+            Write-Host "    App '$DisplayName' (ID: $AppId) publishingState: '$currentState' — waiting for 'published' (poll $($i + 1)/$MaxAttempts)..." -ForegroundColor Yellow
+        }
+        catch {
+            Write-Host "    Could not check publishingState for '$DisplayName': $($_.Exception.Message) — proceeding" -ForegroundColor Yellow
+            return $true
+        }
+        Start-Sleep -Seconds $WaitSeconds
+    }
+
+    Write-Host "    App '$DisplayName' (ID: $AppId) STUCK in '$currentState' state after $($MaxAttempts * $WaitSeconds)s — will delete and recreate" -ForegroundColor Red
+    return $false
+}
+
+####################################################
+
 function Send-Win32Lob() {
 
     <#
@@ -4266,8 +4373,25 @@ NAME: Send-Win32Lob
             catch {
                 Write-Host "Upload attempt $uploadAttempt/$maxUploadAttempts failed: $($_.Exception.Message)" -ForegroundColor Red
                 if ($uploadAttempt -lt $maxUploadAttempts) {
-                    Write-Host "Abandoning this upload — will create a fresh content version and retry..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 10
+                    $backoffSeconds = 30 * $uploadAttempt
+                    Write-Host "Abandoning this upload — waiting ${backoffSeconds}s before retry..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $backoffSeconds
+
+                    # A failed upload leaves the app stuck in 'notPublished' with an
+                    # uncommitted content version.  The API rejects new content versions
+                    # on a stuck app (HTTP 400).  Delete the app and recreate it fresh.
+                    Write-Host "    Deleting stuck app '$displayName' (ID: $appId) to reset state..." -ForegroundColor Yellow
+                    try {
+                        $deleteUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appId"
+                        Invoke-MgGraphRequest -Method DELETE -Uri $deleteUri | Out-Null
+                        Start-Sleep -Seconds 5
+                        $mobileApp = Invoke-PostRequest "mobileApps" ($mobileAppBody | ConvertTo-Json)
+                        $appId = $mobileApp.id
+                        Write-Host "    Recreated app — new ID: $appId" -ForegroundColor Green
+                    }
+                    catch {
+                        Write-Host "    Could not reset app state: $($_.Exception.Message) — next attempt will try with existing app" -ForegroundColor Yellow
+                    }
                 }
             }
         }
@@ -4451,8 +4575,9 @@ NAME: Update-Win32LobContent
             catch {
                 Write-Host "Upload attempt $uploadAttempt/$maxUploadAttempts failed: $($_.Exception.Message)" -ForegroundColor Red
                 if ($uploadAttempt -lt $maxUploadAttempts) {
-                    Write-Host "Abandoning this upload — will create a fresh content version and retry..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 10
+                    $backoffSeconds = 30 * $uploadAttempt
+                    Write-Host "Abandoning this upload — waiting ${backoffSeconds}s before retry..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $backoffSeconds
                 }
             }
         }
@@ -5690,8 +5815,21 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Host "No logo defined in config file" -ForegroundColor Gray
                     }
 
-                    # Call the content replacement function
-                    Update-Win32LobContent -AppId $appID -SourceFile $script:SourceFile
+                    # Check publishingState before update — a stuck app needs to be deleted and recreated
+                    $isPublished = Wait-AppPublishingState -AppId $appID -DisplayName $displayName
+                    if (-not $isPublished) {
+                        Write-Host "    Deleting stuck app '$displayName' (ID: $appID)..." -ForegroundColor Yellow
+                        $deleteUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
+                        Invoke-MgGraphRequest -Method DELETE -Uri $deleteUri | Out-Null
+                        Start-Sleep -Seconds 5
+                        Write-Host "    Stuck app deleted — falling through to full upload path" -ForegroundColor Green
+                        # Clear appID so the main flow treats this as a new app
+                        $appID = $null
+                    }
+                    else {
+                        # Call the content replacement function
+                        Update-Win32LobContent -AppId $appID -SourceFile $script:SourceFile
+                    }
 
                     Write-Log -Message "Content replacement completed for: $displayName"
 
@@ -8681,6 +8819,8 @@ else {
         }
         Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
         Write-Log -Message "Authenticated to Graph. ClientId: $($postContext.ClientId), AuthType: $($postContext.AuthType), Scopes: $($postContext.Scopes -join ', ')"
+        # Store connection params for 401 re-auth in Invoke-GraphRequestWithRetry
+        $script:MgGraphConnectParams = $connectParams
     }
     elseif ($userName) {
         Write-Log -Message "Authenticate to AzureAD..."
@@ -8788,22 +8928,27 @@ if (-not($AssignGroupsOnly)) {
 }
 
 if ( $AppType -ne "Edge" -and (-not($AssignGroupsOnly))) {
-    # Determine which source folder to use - Source takes precedence, fall back to OrigSource
+    # Determine which source folder to use
+    # If OrigSource exists, copy it to Source via robocopy (mirrors DelegatedImport behavior)
+    # This ensures a clean, reproducible Source folder from the golden OrigSource copy.
     $EffectiveSourcePath = $SourcePath
-    if (!(Test-Path $SourcePath)) {
-        if (Test-Path $OrigSourcePath) {
-            Write-Log -Message "Source folder not found at: [$SourcePath]"
-            Write-Log -Message "Using OrigSource folder instead: [$OrigSourcePath]"
-            Write-Host "Source folder not found, using OrigSource folder instead..." -ForegroundColor Yellow
-            $EffectiveSourcePath = $OrigSourcePath
+    if (Test-Path $OrigSourcePath) {
+        Write-Log -Message "OrigSource folder found at: [$OrigSourcePath]"
+        Write-Host "Copying OrigSource -> Source via robocopy..." -ForegroundColor Cyan
+        if (Test-Path $SourcePath) {
+            Remove-Item -Path $SourcePath -Recurse -Force -ErrorAction Stop
         }
-        else {
-            Write-Log -Message "Error - Neither Source nor OrigSource folder found" -LogLevel 3
-            Write-Host "Error: Neither Source nor OrigSource folder found at:" -ForegroundColor Red
-            Write-Host "  Source: $SourcePath" -ForegroundColor Red
-            Write-Host "  OrigSource: $OrigSourcePath" -ForegroundColor Red
-            exit
-        }
+        New-Item -ItemType Directory -Path $SourcePath -Force | Out-Null
+        & robocopy "$OrigSourcePath" "$SourcePath" /MIR /MT:4 /NJH /NJS /NP | Out-Null
+        Write-Log -Message "OrigSource copied to Source successfully"
+        $EffectiveSourcePath = $SourcePath
+    }
+    elseif (!(Test-Path $SourcePath)) {
+        Write-Log -Message "Error - Neither Source nor OrigSource folder found" -LogLevel 3
+        Write-Host "Error: Neither Source nor OrigSource folder found at:" -ForegroundColor Red
+        Write-Host "  Source: $SourcePath" -ForegroundColor Red
+        Write-Host "  OrigSource: $OrigSourcePath" -ForegroundColor Red
+        exit
     }
 
     # Version detection for EXE and MSI files
