@@ -1,13 +1,160 @@
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -ReplaceExistingContent -SkipPackageRemoval
+===============================================================================
+ Upload-IntuneWin.ps1 - Usage Examples
+===============================================================================
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -IntuneWinPackageOnly -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
+ Replace the placeholder values below with your own:
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
+   admin@yourtenant.onmicrosoft.com   an Intune Administrator account
+   <application-id>                   Entra app registration (client) ID
+   <tenant-id>                        your Entra tenant ID
+   Intune-Windows-Devices             an Entra security group in your tenant
+   C:\Upload-IntuneWin\...            wherever you cloned this repository
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval -ReplaceExistingContent
+ The sample packages referenced below ship with this repository.
+ Full documentation: Upload-IntuneWin_ReadMe.md
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -SkipPackageRemoval -ReplaceExistingContent -ReplaceExistingAssignments
+-------------------------------------------------------------------------------
+ 1. Getting started
+-------------------------------------------------------------------------------
 
-.\Upload-IntuneWin.ps1 -IntuneAdmin "username@mytenanthere.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -AvailableAADGroupName "EUD-CloudPC-Devices" -SkipPackageRemoval -ReplaceExistingAssignments
+# Simplest run - interactive sign-in, package and upload, no assignment
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -SkipGroupAssignment
+
+# Build the .intunewin only - no tenant connection, useful for testing packaging
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Upload-IntuneWin\Install-7zip" -IntuneWinPackageOnly
+
+# Preview everything without making any changes
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -WhatIf
+
+
+-------------------------------------------------------------------------------
+ 2. Authentication
+-------------------------------------------------------------------------------
+
+# Interactive, using your own Entra app registration instead of the built-in one
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -ClientID "<application-id>" -TenantID "<tenant-id>" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath
+
+# Unattended, app-only with a client secret (see the ReadMe for required API permissions)
+.\Upload-IntuneWin.ps1 -ClientID "<application-id>" -TenantID "<tenant-id>" -ClientSecret "<client-secret>" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -SkipPackageRemoval
+
+# Unattended, app-only with a certificate (preferred over a secret)
+.\Upload-IntuneWin.ps1 -ClientID "<application-id>" -TenantID "<tenant-id>" -CertName "CN=IntuneAutomation" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -SkipPackageRemoval
+
+# Keep the Graph session open across several runs, then disconnect on the last one
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -DisconnectGraph
+
+
+-------------------------------------------------------------------------------
+ 3. Group assignments
+-------------------------------------------------------------------------------
+
+# Required install
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices"
+
+# Available in Company Portal
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-VSCode" -NewTagPath -AvailableAADGroupName "Intune-Windows-Users"
+
+# Multiple groups, and all three assignment intents at once
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices", "Intune-Pilot-Devices" -AvailableAADGroupName "Intune-Windows-Users" -UninstallAADGroupName "Intune-Legacy-Devices"
+
+# Assign groups to an app that is already in Intune - no repackaging or upload
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -AssignGroupsOnly -RequiredAADGroupName "Intune-Windows-Devices"
+
+# Clear the existing assignments first, then apply only the ones given here
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices" -ReplaceExistingAssignments
+
+
+-------------------------------------------------------------------------------
+ 4. Updating an existing app
+-------------------------------------------------------------------------------
+
+# Replace the content of an app that already exists, keeping its assignments
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -ReplaceExistingContent -SkipPackageRemoval
+
+# Replace both the content and the assignments
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices" -ReplaceExistingContent -ReplaceExistingAssignments
+
+
+-------------------------------------------------------------------------------
+ 5. Scope tags
+-------------------------------------------------------------------------------
+
+# Apply one or more RBAC scope tags to the app
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices" -ScopeTagName "Windows-Apps", "Pilot"
+
+
+-------------------------------------------------------------------------------
+ 6. Bulk upload
+-------------------------------------------------------------------------------
+
+# -PackagePath accepts an array, so several packages go up on one connection
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip", "C:\Upload-IntuneWin\Install-VSCode", "C:\Upload-IntuneWin\Install-DOTNET8_x64" -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices" -SkipPackageRemoval
+
+# Or loop over a folder of packages
+Get-ChildItem "C:\Upload-IntuneWin" -Directory -Filter "Install-*" | ForEach-Object {
+    .\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath $_.FullName -NewTagPath -RequiredAADGroupName "Intune-Windows-Devices" -SkipPackageRemoval
+}
+
+
+-------------------------------------------------------------------------------
+ 7. Deleting apps
+-------------------------------------------------------------------------------
+
+# Always preview a delete first
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -DeleteApp -AppNameToDelete "7-Zip" -WhatIf
+
+# Delete one app, or several
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -DeleteApp -AppNameToDelete "7-Zip"
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -DeleteApp -AppNameToDelete "7-Zip", "Visual Studio Code"
+
+
+-------------------------------------------------------------------------------
+ 8. Behind a corporate proxy
+-------------------------------------------------------------------------------
+
+# Test connectivity before a real run - exits 0 = PASS, 1 = FAIL, 2 = init error
+.\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri "http://proxy.yourcompany.com:8080"
+
+# Windows-integrated (NTLM/Negotiate) proxy authentication
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -ProxyUri "http://proxy.yourcompany.com:8080" -ProxyUseDefaultCredentials
+
+# A dedicated proxy account
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -ProxyUri "http://proxy.yourcompany.com:8080" -ProxyCredential (Get-Credential)
+
+# Bypass the proxy for specific hosts
+.\Upload-IntuneWin.ps1 -IntuneAdmin "admin@yourtenant.onmicrosoft.com" -PackagePath "C:\Upload-IntuneWin\Install-7zip" -NewTagPath -ProxyUri "http://proxy.yourcompany.com:8080" -ProxyBypassList "*.yourcompany.com", "localhost"
+
+# Set it once for the session instead of passing it every time
+$env:INTUNEWIN_PROXY_URI = "http://proxy.yourcompany.com:8080"
+$env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS = "true"
+
+
+-------------------------------------------------------------------------------
+ 9. Config-driven settings
+-------------------------------------------------------------------------------
+
+ These are set in the package's Config.xml or Config.json rather than on the
+ command line. See Upload-IntuneWin_ReadMe.md for the full reference.
+
+ Dependencies and supersedence - each app can carry its own type:
+
+   <Dependencies>Microsoft Visual C++ Redistributable:autoInstall,Microsoft .NET Runtime 8.0:detect</Dependencies>
+   <Supersedence>My Application v1.0:update,My Application v0.9:replace</Supersedence>
+
+ PowerShell script installer - use a .ps1 instead of a command line for the
+ install, the uninstall, or both:
+
+   <InstallScriptFile>Scripts\Install.ps1</InstallScriptFile>
+   <UninstallScriptFile>Scripts\Uninstall.ps1</UninstallScriptFile>
+   <InstallScriptRunAs32Bit>false</InstallScriptRunAs32Bit>
+   <InstallScriptEnforceSignatureCheck>false</InstallScriptEnforceSignatureCheck>
+
+
+-------------------------------------------------------------------------------
+ 10. Help
+-------------------------------------------------------------------------------
+
+Get-Help .\Upload-IntuneWin.ps1 -Full
+Get-Help .\Upload-IntuneWin.ps1 -Examples

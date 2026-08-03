@@ -26,10 +26,6 @@
     Specifies the Intune Administrator user name for interactive authentication.
     Uses Connect-MgGraph with interactive login.
 
-.PARAMETER UserName
-    Specifies an Azure/Intune admin user name for legacy AzureAD module authentication.
-    This parameter is used with the older authentication method.
-
 .PARAMETER PackagePath
     Mandatory. Specifies the path to the package folder containing the Config.xml file.
     The folder should contain a 'Source' subfolder with the application files.
@@ -246,7 +242,7 @@
 
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.93
+    Version        : 1.96
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
 
@@ -280,6 +276,57 @@
     - OrigSource to Source robocopy: When an OrigSource folder exists, copies it to Source via
       robocopy /MIR /MT:4 before packaging, ensuring a clean reproducible build. Previously
       only fell back to using OrigSource directly.
+
+    Dependency and Supersedence Fixes (v1.94):
+    Application dependencies and supersedence declared in Config.xml/Config.json never applied.
+    - Parameter mismatch: Set-IntuneAppDependency / Set-IntuneAppSupersedence were called with
+      -SourceAppId / -TargetAppDisplayName, which the functions did not declare. Canonical names
+      are now used and the old names are retained as parameter aliases.
+    - Name to ID resolution: Config supplies display names but the Graph payload requires an
+      application ID. New Resolve-IntuneAppReference accepts either a GUID or a display name.
+    - Correct Graph endpoint: POST .../mobileApps/{id}/relationships is not supported for Win32
+      apps. Replaced with the updateRelationships action used by the Intune portal.
+    - @odata.type ordering: The payload is built with ordered dictionaries so '@odata.type' is the
+      first property of each relationship object. An unordered hashtable could serialise it later,
+      which Graph rejects with HTTP 400 "The annotation 'odata.type' was found...".
+    - Relationship merge: updateRelationships replaces the entire child relationship set, so the
+      existing relationships are read back and re-posted alongside the new one. Adding a
+      dependency no longer wipes supersedence (and vice versa).
+    - Self-reference guard, OData single-quote escaping in the display-name lookup, and -WhatIf is
+      now genuinely read-only for relationship changes.
+
+    Per-App Relationship Types and Proxy Auth (v1.95):
+    - Per-app dependency/supersedence types: previously one <DependencyType> applied to the whole
+      <Dependencies> list. Each app can now carry its own type, either by repeating the element
+      pair (matched by position) or with an inline 'Name:Type' suffix on any entry. An inline type
+      overrides the element type. Config.json also accepts [{ name, type }] objects.
+      Repeating <Dependencies> previously produced a space-joined string and silently mangled the
+      app names; repeated elements are now read as a list.
+    - HTTP 407 handling: a client-credentials token request through an authenticating proxy failed
+      with 407, but the error was non-terminating, so the run continued with a null token and
+      still printed "Successfully authenticated to Microsoft Graph". The request is now wrapped,
+      the token is validated, and failures throw with proxy guidance.
+    - Automatic proxy credential retry: on a 407 with no explicit -ProxyUri, the script attaches
+      the caller's Windows credentials to the system default proxy and retries once, which covers
+      the common NTLM/Negotiate corporate proxy.
+
+    PowerShell Script Installer Type (v1.96):
+    Supports the portal's Program tab "Installer type: PowerShell script" / "Uninstaller type:
+    PowerShell script" options (Graph beta win32LobAppInstallPowerShellScript /
+    win32LobAppUninstallPowerShellScript).
+    - Config keys: InstallScriptFile / UninstallScriptFile, each with optional
+      *ScriptEnforceSignatureCheck and *ScriptRunAs32Bit. Paths may be absolute or relative to the
+      package folder. Config.json uses the camelCase equivalents.
+    - Install and uninstall are independent, so all four portal combinations work: script+script,
+      script+command, command+script, and command+command (the existing default).
+    - Scripts are uploaded to the app's committed content version and activated by pointing
+      activeInstallScript / activeUninstallScript at them. Where a script is set, Intune ignores
+      the matching command line.
+    - Scripts are re-applied whenever content is replaced, because they belong to the content
+      version rather than the app.
+    - Graph still requires both command lines, so a placeholder is generated when only a script is
+      configured. Script content is capped at 100KB by the service and is rejected before upload
+      if it exceeds that.
 
     WhatIf Support (v1.9):
     The script supports -WhatIf to preview operations without making changes:
@@ -350,6 +397,10 @@
     - detectionScriptFile: Path to PowerShell detection script
     - detectionScriptEnforceSignatureCheck: Require signed detection script
     - detectionScriptRunAs32Bit: Run detection script as 32-bit
+    - installScriptFile / uninstallScriptFile: Path to a PowerShell install/uninstall script,
+      replacing the matching command line (portal "Installer type: PowerShell script")
+    - installScriptEnforceSignatureCheck / uninstallScriptEnforceSignatureCheck: Require signed script
+    - installScriptRunAs32Bit / uninstallScriptRunAs32Bit: Run the script as 32-bit
 
     Config.xml supports the same attributes in the IntuneWin_Settings section:
     - AppType: MSI, EXE, PS1, or Edge
@@ -374,13 +425,6 @@ param(
     )]
     [ValidateNotNullOrEmpty()]
     [string] $IntuneAdmin,
-
-    [Parameter(Position = 2, ValueFromPipelineByPropertyName = $true,
-        ValueFromPipeline = $True,
-        HelpMessage = 'Please specify an Azure/Intune admin user name'
-    )]
-    [ValidateNotNullOrEmpty()]
-    [string] $UserName,
 
     [Parameter(Position = 3, ValueFromPipelineByPropertyName = $true,
         HelpMessage = 'Please enter path to package folder, containing Config.json or Config.xml file. Required unless using -DeleteApp with -AppNameToDelete.'
@@ -479,26 +523,96 @@ param(
         HelpMessage = 'Specifies the display name(s) of the application(s) to delete from Intune. Supports pipeline input.'
     )]
     [Alias("DisplayName", "Name")]
-    [string[]] $AppNameToDelete
+    [string[]] $AppNameToDelete,
+
+    # ── Proxy authentication (opt-in; mirrors the standalone proxy module). ──
+    # Presence of -ProxyUri (or $env:INTUNEWIN_PROXY_URI) opts the run into routing every
+    # outbound HTTP/S call through a corporate proxy. The same PSCredential serves
+    # the proxy server, MSAL.NET token acquisition, the Microsoft.Graph SDK's
+    # HttpClient (via HTTPS_PROXY / HTTP_PROXY env vars), the Azure Storage
+    # block-blob SAS upload path, and the GitHub IntuneWinAppUtil download.
+    [Parameter(HelpMessage = 'Absolute URI of the outbound HTTP/HTTPS proxy (e.g., http://saas-proxy.contoso.com:443). Falls back to $env:INTUNEWIN_PROXY_URI. When neither is set the script runs WITHOUT proxy.')]
+    [Alias('Proxy', 'HttpsProxy')]
+    [uri] $ProxyUri,
+
+    [Parameter(HelpMessage = 'PSCredential used to authenticate against the proxy server. If -ProxyUri is supplied but no -ProxyCredential is, the script prompts ONCE via Get-Credential and reuses the result. Mutually exclusive with -ProxyUseDefaultCredentials.')]
+    [PSCredential] $ProxyCredential,
+
+    [Parameter(HelpMessage = 'Use Windows-integrated authentication (Kerberos / NTLM) for the proxy instead of explicit credentials. Skips the credential prompt. Falls back to $env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS.')]
+    [switch] $ProxyUseDefaultCredentials,
+
+    [Parameter(HelpMessage = 'Wildcard hostname patterns to bypass the proxy for (e.g., *.contoso.com). Falls back to $env:INTUNEWIN_PROXY_BYPASS (semicolon-separated).')]
+    [string[]] $ProxyBypassList,
+
+    [Parameter(HelpMessage = 'Disable the default behaviour of bypassing the proxy for local-name addresses. Falls back to $env:INTUNEWIN_PROXY_BYPASS_ON_LOCAL=false.')]
+    [switch] $NoProxyBypassLocal,
+
+    [Parameter(HelpMessage = 'Alternate execution path: validate direct vs proxy connectivity to Microsoft Graph and Entra ID, print a report, and exit. Exit codes: 0 = PASS, 1 = FAIL, 2 = init error.')]
+    [switch] $TestProxyConnectivity
 )
 $script:exitCode = 0
 $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
 
-$BuildVer = "1.93"
+$BuildVer = "1.96"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
-$LogName = $ScriptName + "_" + (Get-Date -UFormat "%d-%m-%Y")
-$logPath = "$($env:LocalAppData)\Microsoft\IntuneApps\$ScriptName"
-$logFile = "$logPath\$LogName.log"
 Add-Type -AssemblyName Microsoft.VisualBasic
 $script:EventLogName = "Application"
 $script:EventLogSource = "EventSystem"
 if ($packagePath) {
     $packagePath = $packagePath.Trim()
 }
+
+####################################################
+# Log file path
+####################################################
+# Mirror the transcript-logging convention from Invoke-DelegatedImport.ps1:
+# write to a 'Logs' subfolder alongside the script, with a per-run timestamped
+# file name and rotation (see Remove-OldLogFiles below). Additionally embed the
+# package displayName (read from Config.json / Config.xml) so each log file
+# clearly maps to the package upload it relates to.
+$logTimestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+$packageLogName = $null
+if ($packagePath) {
+    # When multiple package paths are supplied, name the log after the first one.
+    $firstPkgPath = @($packagePath)[0]
+    if (-not [string]::IsNullOrWhiteSpace($firstPkgPath)) {
+        $firstPkgPath = ([string]$firstPkgPath).Trim()
+        $pkgJsonPath = Join-Path -Path $firstPkgPath -ChildPath 'Config.json'
+        $pkgXmlPath = Join-Path -Path $firstPkgPath -ChildPath 'Config.xml'
+        try {
+            if (Test-Path -LiteralPath $pkgJsonPath) {
+                $packageLogName = (Get-Content -LiteralPath $pkgJsonPath -Raw | ConvertFrom-Json).displayName
+            }
+            elseif (Test-Path -LiteralPath $pkgXmlPath) {
+                [xml]$pkgXmlDoc = Get-Content -LiteralPath $pkgXmlPath
+                $packageLogName = $pkgXmlDoc.CONFIG.IntuneWin_Settings.displayName
+            }
+        }
+        catch {
+            # Non-fatal this early in startup; fall back to a generic name below.
+            $packageLogName = $null
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($packageLogName) -and $AppNameToDelete) {
+    $packageLogName = @($AppNameToDelete)[0]
+}
+if ([string]::IsNullOrWhiteSpace($packageLogName)) {
+    $packageLogName = 'NoPackage'
+}
+# Sanitise for use in a file name: replace illegal characters and collapse whitespace.
+$packageLogNameSafe = ([string]$packageLogName -replace '[\\/:*?"<>|]', '_' -replace '\s+', '-').Trim('-_')
+if ([string]::IsNullOrWhiteSpace($packageLogNameSafe)) { $packageLogNameSafe = 'NoPackage' }
+if ($packageLogNameSafe.Length -gt 80) { $packageLogNameSafe = $packageLogNameSafe.Substring(0, 80) }
+# Log file name prefix (intentionally shorter than $ScriptName for tidier file names).
+$logPrefix = 'Upload'
+$LogName = "${logPrefix}_${packageLogNameSafe}_${logTimestamp}"
+$logPath = Join-Path -Path $PSScriptRoot -ChildPath 'Logs'
+$logFile = Join-Path -Path $logPath -ChildPath "$LogName.log"
 
 # Determine source path - use Source folder if it exists, otherwise fall back to OrigSource
 $SourcePath = if ($packagePath) { "$packagePath\Source" } else { $null }
@@ -518,9 +632,89 @@ else {
 }
 
 ####################################################
+# Bundled module precedence
+####################################################
+# Mirror Invoke-DelegatedImport.ps1: make a packaged copy of the critical
+# Microsoft.Graph.Authentication module (shipped inside the script's
+# 'Modules' folder) discoverable and take precedence over any installed
+# copy, WITHOUT requiring the user to install it. The bundled folder is
+# prepended to $env:PSModulePath so the bundled module wins over machine /
+# user module locations.
+#
+# SECURITY: the critical Microsoft.Graph.Authentication module handles auth
+# tokens, so the prepend is fail-closed — every *.psm1 under the bundled
+# folder must be Authenticode-signed by a trusted publisher. A signature
+# failure BLOCKS the prepend (a counterfeit module dropped into 'Modules'
+# could exfiltrate Graph tokens) and the script falls back to the installed
+# copy. Override the trusted-publisher allow-list with
+# $env:INTUNEWIN_TRUSTED_PUBLISHERS (semicolon-separated subject substrings).
+$graphModuleName = "Microsoft.Graph.Authentication"
+$bundledModulesPath = Join-Path -Path $PSScriptRoot -ChildPath 'Modules'
+if (Test-Path -LiteralPath $bundledModulesPath) {
+    $trustedPublisherDefaults = @(
+        'CN=Microsoft Corporation',
+        'CN=Microsoft Code Signing',
+        'CN=Microsoft 3rd Party Application Component',
+        'CN=GitHub'
+    )
+    $trustedPublishers = if ($env:INTUNEWIN_TRUSTED_PUBLISHERS) {
+        @($env:INTUNEWIN_TRUSTED_PUBLISHERS -split ';' | Where-Object { $_ })
+    }
+    else {
+        $trustedPublisherDefaults
+    }
+
+    $bundledGraphPath = Join-Path -Path $bundledModulesPath -ChildPath $graphModuleName
+    $bundledOk = $true
+    $bundledReason = ''
+    if (Test-Path -LiteralPath $bundledGraphPath) {
+        try {
+            $psm1Files = @(Get-ChildItem -LiteralPath $bundledGraphPath -Recurse -Filter '*.psm1' -ErrorAction Stop)
+            if ($psm1Files.Count -eq 0) {
+                $bundledOk = $false
+                $bundledReason = "bundled module folder '$graphModuleName' contains no *.psm1 files"
+            }
+            else {
+                foreach ($psm1 in $psm1Files) {
+                    $sig = Get-AuthenticodeSignature -LiteralPath $psm1.FullName -ErrorAction Stop
+                    if ($sig.Status -ne 'Valid') {
+                        $bundledOk = $false
+                        $bundledReason = "bundled module '$graphModuleName\$($psm1.Name)' has signature status '$($sig.Status)'"
+                        break
+                    }
+                    $subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+                    $matched = $false
+                    foreach ($pub in $trustedPublishers) {
+                        if ($subject -like "*$pub*") { $matched = $true; break }
+                    }
+                    if (-not $matched) {
+                        $bundledOk = $false
+                        $bundledReason = "bundled module '$graphModuleName\$($psm1.Name)' is signed by an untrusted publisher: $subject"
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            $bundledOk = $false
+            $bundledReason = "signature validation failed: $($_.Exception.Message)"
+        }
+
+        if ($bundledOk) {
+            if (($env:PSModulePath -split [IO.Path]::PathSeparator) -notcontains $bundledModulesPath) {
+                $env:PSModulePath = $bundledModulesPath + [IO.Path]::PathSeparator + $env:PSModulePath
+                Write-Host "Bundled '$graphModuleName' module path prepended to PSModulePath: $bundledModulesPath" -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Warning "Bundled modules path NOT trusted - $bundledReason. Skipping prepend of '$bundledModulesPath'; falling back to installed module."
+        }
+    }
+}
+
+####################################################
 # Check for Microsoft.Graph.Authentication module
 ####################################################
-$graphModuleName = "Microsoft.Graph.Authentication"
 $graphModule = Get-Module -Name $graphModuleName -ListAvailable -ErrorAction SilentlyContinue
 
 if ($null -eq $graphModule) {
@@ -575,6 +769,650 @@ else {
 #Build Functions
 ####################################################
 
+####################################################
+# Embedded proxy support (standalone — no module dependency).
+# Mirrors the public surface of the standalone proxy module:
+# Initialize-IntuneWinProxy / Set-IntuneWinProxyConfiguration / Test-IntuneWinProxyEnabled /
+# Get-IntuneWinProxyConfiguration / Add-IntuneWinProxyParameter / Test-IntuneWinGraphConnectivity /
+# Invoke-IntuneWinProxyTest. State lives in $script:IntuneWinProxyState. Designed to run
+# in both PowerShell 5.1 and 7+ and to degrade gracefully under Constrained
+# Language Mode (per-call splat fallback when DefaultWebProxy cannot be set).
+####################################################
+
+$script:IntuneWinProxyState = @{
+    Enabled                  = $false
+    ProxyUri                 = $null     # [uri]
+    ProxyAddress             = $null     # [string] absolute uri (cached for splats)
+    ProxyCredential          = $null     # [PSCredential]
+    UseDefaultCredentials    = $false
+    BypassList               = @()       # [string[]]
+    BypassOnLocal            = $true
+    PreviousDefaultWebProxy  = $null
+    PreviousHttpClientProxy  = $null
+    HttpClientProxySupported = $false
+    ConfiguredAt             = $null
+    LanguageMode             = $ExecutionContext.SessionState.LanguageMode
+    PreviousEnvHttpsProxy    = $null
+    PreviousEnvHttpProxy     = $null
+    PreviousEnvNoProxy       = $null
+    EnvVarsSet               = $false
+}
+
+function Test-IntuneWinProxyEnabled {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    return [bool]$script:IntuneWinProxyState.Enabled
+}
+
+function Get-IntuneWinProxyConfiguration {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param()
+    if (-not $script:IntuneWinProxyState.Enabled) { return $null }
+    return [pscustomobject]@{
+        Enabled                  = $script:IntuneWinProxyState.Enabled
+        ProxyUri                 = $script:IntuneWinProxyState.ProxyUri
+        ProxyAddress             = $script:IntuneWinProxyState.ProxyAddress
+        ProxyCredential          = $script:IntuneWinProxyState.ProxyCredential
+        UseDefaultCredentials    = $script:IntuneWinProxyState.UseDefaultCredentials
+        BypassList               = @($script:IntuneWinProxyState.BypassList)
+        BypassOnLocal            = $script:IntuneWinProxyState.BypassOnLocal
+        HttpClientProxySupported = $script:IntuneWinProxyState.HttpClientProxySupported
+        ConfiguredAt             = $script:IntuneWinProxyState.ConfiguredAt
+    }
+}
+
+function Add-IntuneWinProxyParameter {
+    <#
+    .SYNOPSIS
+        Mutate a splat hashtable in-place to add -Proxy / -ProxyCredential /
+        -ProxyUseDefaultCredentials keys when IntuneWinProxy is enabled. No-op
+        otherwise so call sites stay clean whether proxy is on or off.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [hashtable]$Parameters
+    )
+    if (-not $script:IntuneWinProxyState.Enabled) { return }
+
+    $Parameters['Proxy'] = $script:IntuneWinProxyState.ProxyAddress
+    if ($script:IntuneWinProxyState.UseDefaultCredentials) {
+        $Parameters['ProxyUseDefaultCredentials'] = $true
+        if ($Parameters.ContainsKey('ProxyCredential')) { $Parameters.Remove('ProxyCredential') | Out-Null }
+    }
+    elseif ($script:IntuneWinProxyState.ProxyCredential) {
+        $Parameters['ProxyCredential'] = $script:IntuneWinProxyState.ProxyCredential
+        if ($Parameters.ContainsKey('ProxyUseDefaultCredentials')) { $Parameters.Remove('ProxyUseDefaultCredentials') | Out-Null }
+    }
+}
+
+function Set-IntuneWinProxyConfiguration {
+    <#
+    .SYNOPSIS
+        Low-level setter: configure both .NET proxy stacks
+        (System.Net.WebRequest.DefaultWebProxy + System.Net.Http.HttpClient.DefaultProxy
+        on PS 7+) plus HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars so that
+        downstream Invoke-RestMethod, Invoke-WebRequest, MSAL.NET, the
+        Microsoft.Graph SDK, and any other System.Net.Http call inherit the
+        same proxy without per-call splatting.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'ExplicitCredential')]
+    [OutputType([System.Net.WebProxy])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [uri]$ProxyUri,
+
+        [Parameter(ParameterSetName = 'ExplicitCredential')]
+        [PSCredential]$ProxyCredential,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'DefaultCredentials')]
+        [switch]$UseDefaultCredentials,
+
+        [Parameter()]
+        [string[]]$BypassList = @(),
+
+        [Parameter()]
+        [bool]$BypassOnLocal = $true
+    )
+
+    if (-not $ProxyUri.IsAbsoluteUri) {
+        throw "IntuneWinProxy: ProxyUri must be an absolute URI (got '$ProxyUri')."
+    }
+    if ($ProxyUri.Scheme -notin @('http', 'https')) {
+        throw "IntuneWinProxy: ProxyUri scheme must be 'http' or 'https' (got '$($ProxyUri.Scheme)')."
+    }
+
+    $cleanBypass = @()
+    foreach ($entry in $BypassList) {
+        if (-not [string]::IsNullOrWhiteSpace($entry)) { $cleanBypass += $entry.Trim() }
+    }
+
+    $proxyAddress = $ProxyUri.AbsoluteUri.TrimEnd('/')
+
+    if (-not $PSCmdlet.ShouldProcess($proxyAddress, 'Set proxy configuration')) {
+        return
+    }
+
+    $proxy = $null
+    try {
+        $proxy = New-Object System.Net.WebProxy -ArgumentList $ProxyUri.AbsoluteUri
+    }
+    catch {
+        Write-Warning "IntuneWinProxy: cannot construct System.Net.WebProxy under language mode '$($ExecutionContext.SessionState.LanguageMode)' ($($_.Exception.Message)). Per-call proxy splatting via Add-IntuneWinProxyParameter will still work."
+    }
+
+    if ($proxy) {
+        try { $proxy.BypassProxyOnLocal = [bool]$BypassOnLocal } catch { Write-Verbose "IntuneWinProxy: BypassProxyOnLocal could not be set ($($_.Exception.Message))." }
+        foreach ($bp in $cleanBypass) {
+            try { [void]$proxy.BypassArrayList.Add($bp) }
+            catch { Write-Warning "IntuneWinProxy: failed to add bypass entry '$bp' - $($_.Exception.Message)" }
+        }
+        if ($UseDefaultCredentials) {
+            try { $proxy.UseDefaultCredentials = $true } catch { Write-Verbose "IntuneWinProxy: UseDefaultCredentials assign failed ($($_.Exception.Message))." }
+            try { $proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials } catch { Write-Verbose "IntuneWinProxy: DefaultNetworkCredentials assign failed ($($_.Exception.Message))." }
+        }
+        elseif ($ProxyCredential) {
+            try { $proxy.Credentials = $ProxyCredential.GetNetworkCredential() } catch { Write-Verbose "IntuneWinProxy: NetworkCredential conversion failed ($($_.Exception.Message))." }
+        }
+    }
+
+    # Snapshot previous values so callers / cleanup can restore.
+    $previousFrameworkProxy = $null
+    try { $previousFrameworkProxy = [System.Net.WebRequest]::DefaultWebProxy } catch { $previousFrameworkProxy = $null }
+    if ($proxy) {
+        try { [System.Net.WebRequest]::DefaultWebProxy = $proxy }
+        catch { Write-Warning "IntuneWinProxy: cannot assign [System.Net.WebRequest]::DefaultWebProxy under language mode '$($ExecutionContext.SessionState.LanguageMode)' ($($_.Exception.Message)). Per-call splat fallback in effect." }
+    }
+
+    $httpClientSupported = $false
+    $previousHttpClientProxy = $null
+    try {
+        $httpClientType = [System.Net.Http.HttpClient]
+        $defaultProxyProp = $httpClientType.GetProperty('DefaultProxy', [System.Reflection.BindingFlags]::Public -bor [System.Reflection.BindingFlags]::Static)
+        if ($defaultProxyProp -and $defaultProxyProp.CanWrite) {
+            $previousHttpClientProxy = $defaultProxyProp.GetValue($null)
+            $defaultProxyProp.SetValue($null, $proxy)
+            $httpClientSupported = $true
+        }
+    }
+    catch {
+        Write-Verbose "IntuneWinProxy: HttpClient.DefaultProxy is not assignable on this runtime - using WebRequest path only. ($($_.Exception.Message))"
+    }
+
+    # Microsoft.Graph.Authentication 2.x reads HTTPS_PROXY/HTTP_PROXY/NO_PROXY from
+    # process environment (the .NET / curl / az CLI convention). Snapshot so a later
+    # cleanup can restore the previous values.
+    $previousEnvHttps = [System.Environment]::GetEnvironmentVariable('HTTPS_PROXY', 'Process')
+    $previousEnvHttp = [System.Environment]::GetEnvironmentVariable('HTTP_PROXY', 'Process')
+    $previousEnvNo = [System.Environment]::GetEnvironmentVariable('NO_PROXY', 'Process')
+    $envVarsSet = $false
+    try {
+        [System.Environment]::SetEnvironmentVariable('HTTPS_PROXY', $proxyAddress, 'Process')
+        [System.Environment]::SetEnvironmentVariable('HTTP_PROXY', $proxyAddress, 'Process')
+        if ($cleanBypass.Count -gt 0) {
+            $noProxyList = $cleanBypass | ForEach-Object {
+                $entry = $_
+                if ($entry.StartsWith('*.')) { $entry.Substring(2) } else { $entry }
+            }
+            [System.Environment]::SetEnvironmentVariable('NO_PROXY', ($noProxyList -join ','), 'Process')
+        }
+        else {
+            [System.Environment]::SetEnvironmentVariable('NO_PROXY', $null, 'Process')
+        }
+        $envVarsSet = $true
+    }
+    catch {
+        Write-Warning "IntuneWinProxy: failed to set HTTPS_PROXY/HTTP_PROXY/NO_PROXY environment variables ($($_.Exception.Message)). MSAL / Graph SDK may not pick up the proxy."
+    }
+
+    $script:IntuneWinProxyState.Enabled = $true
+    $script:IntuneWinProxyState.ProxyUri = $ProxyUri
+    $script:IntuneWinProxyState.ProxyAddress = $proxyAddress
+    $script:IntuneWinProxyState.ProxyCredential = $ProxyCredential
+    $script:IntuneWinProxyState.UseDefaultCredentials = [bool]$UseDefaultCredentials
+    $script:IntuneWinProxyState.BypassList = $cleanBypass
+    $script:IntuneWinProxyState.BypassOnLocal = [bool]$BypassOnLocal
+    $script:IntuneWinProxyState.PreviousDefaultWebProxy = $previousFrameworkProxy
+    $script:IntuneWinProxyState.PreviousHttpClientProxy = $previousHttpClientProxy
+    $script:IntuneWinProxyState.HttpClientProxySupported = $httpClientSupported
+    $script:IntuneWinProxyState.PreviousEnvHttpsProxy = $previousEnvHttps
+    $script:IntuneWinProxyState.PreviousEnvHttpProxy = $previousEnvHttp
+    $script:IntuneWinProxyState.PreviousEnvNoProxy = $previousEnvNo
+    $script:IntuneWinProxyState.EnvVarsSet = $envVarsSet
+    $script:IntuneWinProxyState.ConfiguredAt = Get-Date
+
+    return $proxy
+}
+
+function Test-IntuneWinGraphConnectivity {
+    <#
+    .SYNOPSIS
+        Read-only probe of outbound network connectivity to Microsoft Graph
+        and Entra ID. TCP-connect each endpoint and (optionally) HTTPS HEAD.
+        Honours whatever proxy is currently configured on the .NET stacks at
+        invocation time.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Endpoint = @('graph.microsoft.com:443', 'login.microsoftonline.com:443'),
+
+        [Parameter()]
+        [ValidateRange(1, 60)]
+        [int]$TimeoutSeconds = 5,
+
+        [Parameter()]
+        [switch]$IncludeHttpsProbe,
+
+        [Parameter()]
+        [ValidateRange(1, 120)]
+        [int]$HttpsTimeoutSeconds = 15
+    )
+
+    $proxyAddress = $null
+    $directMode = $true
+    if ($script:IntuneWinProxyState.Enabled) {
+        $proxyAddress = $script:IntuneWinProxyState.ProxyAddress
+        $directMode = $false
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+
+    foreach ($pair in $Endpoint) {
+        $hostName = $null
+        $port = 443
+        if ($pair -match '^(?<h>[^:/\s]+)(:(?<p>\d+))?$') {
+            $hostName = $Matches['h']
+            if ($Matches['p']) { $port = [int]$Matches['p'] }
+        }
+        else {
+            $results.Add([pscustomobject]@{
+                    Endpoint        = $pair
+                    Host            = $pair
+                    Port            = $null
+                    TcpStatus       = 'FAIL'
+                    TcpDurationMs   = 0
+                    TcpDetail       = "Invalid endpoint format. Expected 'host:port' (got '$pair')."
+                    HttpsStatus     = 'SKIP'
+                    HttpsDetail     = 'Skipped (invalid endpoint)'
+                    HttpsStatusCode = $null
+                    HttpsDurationMs = 0
+                })
+            continue
+        }
+
+        # TCP probe — skipped in proxy mode (raw TCP cannot traverse HTTP CONNECT proxy).
+        $tcpStatus = 'FAIL'
+        $tcpDetail = $null
+        $tcpDurationMs = 0
+        if ($script:IntuneWinProxyState.Enabled) {
+            $tcpStatus = 'SKIP'
+            $tcpDetail = 'Skipped (raw TCP cannot traverse HTTP proxy - HTTPS probe is the meaningful test in proxy mode)'
+        }
+        else {
+            $tcpStart = [DateTime]::UtcNow
+            try {
+                $client = $null
+                try { $client = New-Object System.Net.Sockets.TcpClient } catch { $client = $null }
+                if ($client) {
+                    $iar = $client.BeginConnect($hostName, $port, $null, $null)
+                    $reachable = $iar.AsyncWaitHandle.WaitOne($TimeoutSeconds * 1000, $false) -and $client.Connected
+                    $client.Close()
+                    if ($reachable) { $tcpStatus = 'OK'; $tcpDetail = 'Reachable' }
+                    else { $tcpStatus = 'FAIL'; $tcpDetail = "Unreachable within $TimeoutSeconds s" }
+                }
+                else {
+                    $previousProgress = $ProgressPreference
+                    $ProgressPreference = 'SilentlyContinue'
+                    try {
+                        $tnc = Test-NetConnection -ComputerName $hostName -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    }
+                    finally { $ProgressPreference = $previousProgress }
+                    if ($tnc) { $tcpStatus = 'OK'; $tcpDetail = 'Reachable (Test-NetConnection CLM fallback)' }
+                    else { $tcpStatus = 'FAIL'; $tcpDetail = 'Unreachable (Test-NetConnection CLM fallback)' }
+                }
+            }
+            catch {
+                $tcpStatus = 'WARN'
+                $tcpDetail = "Probe error: $($_.Exception.Message)"
+            }
+            $tcpDurationMs = [int]([DateTime]::UtcNow - $tcpStart).TotalMilliseconds
+        }
+
+        $httpsStatus = 'SKIP'
+        $httpsDetail = 'Not requested'
+        $httpsStatusCode = $null
+        $httpsDurationMs = 0
+
+        if ($IncludeHttpsProbe) {
+            $httpsStart = [DateTime]::UtcNow
+            $probeUri = "https://${hostName}:${port}/"
+            try {
+                $iwrParams = @{
+                    Uri             = $probeUri
+                    Method          = 'HEAD'
+                    UseBasicParsing = $true
+                    TimeoutSec      = $HttpsTimeoutSeconds
+                    ErrorAction     = 'Stop'
+                }
+                Add-IntuneWinProxyParameter -Parameters $iwrParams
+                $resp = Invoke-WebRequest @iwrParams
+                $httpsStatus = 'OK'
+                $httpsStatusCode = [int]$resp.StatusCode
+                $httpsDetail = "HTTP $httpsStatusCode round-trip OK"
+            }
+            catch {
+                $ex = $_.Exception
+                $resp = $null
+                try { $resp = $ex.Response } catch { $resp = $null }
+                if ($resp) {
+                    try { $httpsStatusCode = [int]$resp.StatusCode } catch { $httpsStatusCode = $null }
+                    $httpsStatus = 'OK'
+                    $httpsDetail = if ($httpsStatusCode) { "HTTP $httpsStatusCode (any response = network path works)" } else { 'Non-success HTTP response (network path works)' }
+                }
+                else {
+                    $httpsStatus = 'FAIL'
+                    $httpsDetail = "Transport error: $($ex.Message)"
+                }
+            }
+            $httpsDurationMs = [int]([DateTime]::UtcNow - $httpsStart).TotalMilliseconds
+        }
+
+        $results.Add([pscustomobject]@{
+                Endpoint        = $pair
+                Host            = $hostName
+                Port            = $port
+                TcpStatus       = $tcpStatus
+                TcpDurationMs   = $tcpDurationMs
+                TcpDetail       = $tcpDetail
+                HttpsStatus     = $httpsStatus
+                HttpsStatusCode = $httpsStatusCode
+                HttpsDurationMs = $httpsDurationMs
+                HttpsDetail     = $httpsDetail
+            })
+    }
+
+    $allOk = $true
+    foreach ($r in $results) {
+        if ($r.TcpStatus -ne 'OK' -and $r.TcpStatus -ne 'SKIP') { $allOk = $false; break }
+        if ($IncludeHttpsProbe -and $r.HttpsStatus -ne 'OK' -and $r.HttpsStatus -ne 'SKIP') { $allOk = $false; break }
+    }
+
+    return [pscustomobject]@{
+        Success      = $allOk
+        DirectMode   = $directMode
+        ProxyAddress = $proxyAddress
+        Results      = $results.ToArray()
+    }
+}
+
+function Initialize-IntuneWinProxy {
+    <#
+    .SYNOPSIS
+        High-level entry to opt this script into proxy authentication.
+        Resolves params (param -> env), optionally probes direct connectivity
+        first (-OnlyIfNeeded), then calls Set-IntuneWinProxyConfiguration to apply
+        both .NET stacks + HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'Prompt')]
+    [OutputType([System.Net.WebProxy])]
+    param(
+        [Parameter()]
+        [Alias('Proxy', 'HttpsProxy')]
+        [uri]$ProxyUri,
+
+        [Parameter(ParameterSetName = 'Prompt')]
+        [PSCredential]$ProxyCredential,
+
+        [Parameter(Mandatory = $true, ParameterSetName = 'DefaultCredentials')]
+        [switch]$UseDefaultCredentials,
+
+        [Parameter()]
+        [string[]]$BypassList,
+
+        [Parameter()]
+        [Nullable[bool]]$BypassOnLocal,
+
+        [Parameter()]
+        [switch]$NonInteractive,
+
+        [Parameter()]
+        [string]$PromptMessage,
+
+        [Parameter()]
+        [switch]$Force,
+
+        [Parameter()]
+        [switch]$OnlyIfNeeded,
+
+        [Parameter()]
+        [ValidateRange(1, 60)]
+        [int]$ProbeTimeoutSeconds = 5
+    )
+
+    # 1. Resolve effective ProxyUri (param -> env)
+    $effectiveUri = $null
+    if ($ProxyUri) {
+        $effectiveUri = $ProxyUri
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:INTUNEWIN_PROXY_URI)) {
+        try { $effectiveUri = [uri]$env:INTUNEWIN_PROXY_URI }
+        catch { throw "IntuneWinProxy: `$env:INTUNEWIN_PROXY_URI is not a valid absolute URI ('$env:INTUNEWIN_PROXY_URI'): $($_.Exception.Message)" }
+    }
+    if (-not $effectiveUri) { return $null }
+
+    # 2. Already configured? Skip unless -Force.
+    if ((Test-IntuneWinProxyEnabled) -and -not $Force) {
+        Write-Verbose "IntuneWinProxy: configuration already set for $($script:IntuneWinProxyState.ProxyAddress) - skipping (use -Force to reapply)."
+        return $null
+    }
+
+    # 2b. Auto-fallback: probe direct connectivity first.
+    if ($OnlyIfNeeded) {
+        Write-Verbose 'IntuneWinProxy: -OnlyIfNeeded set; probing direct connectivity before configuring proxy.'
+        try {
+            $probe = Test-IntuneWinGraphConnectivity -TimeoutSeconds $ProbeTimeoutSeconds -IncludeHttpsProbe -ErrorAction Stop
+        }
+        catch {
+            Write-Verbose "IntuneWinProxy: direct probe threw ($($_.Exception.Message)); proceeding with proxy configuration."
+            $probe = [pscustomobject]@{ Success = $false }
+        }
+        if ($probe.Success) {
+            Write-Verbose 'IntuneWinProxy: direct connectivity OK - skipping proxy configuration (auto-fallback).'
+            return $null
+        }
+    }
+
+    # 3. Resolve UseDefaultCredentials (param -> env).
+    $effectiveUseDefault = [bool]$UseDefaultCredentials
+    if (-not $effectiveUseDefault -and -not $ProxyCredential) {
+        if ($env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS) {
+            $envValue = $env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS.Trim().ToLowerInvariant()
+            if ($envValue -in @('true', '1', 'yes', 'on')) { $effectiveUseDefault = $true }
+        }
+    }
+
+    # 4. Resolve BypassList (param -> env).
+    $effectiveBypass = @()
+    if ($PSBoundParameters.ContainsKey('BypassList') -and $null -ne $BypassList) {
+        $effectiveBypass = @($BypassList)
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:INTUNEWIN_PROXY_BYPASS)) {
+        $effectiveBypass = @($env:INTUNEWIN_PROXY_BYPASS -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    # 5. Resolve BypassOnLocal (param -> env -> default $true).
+    $effectiveBypassLocal = $true
+    if ($PSBoundParameters.ContainsKey('BypassOnLocal') -and $null -ne $BypassOnLocal) {
+        $effectiveBypassLocal = [bool]$BypassOnLocal
+    }
+    elseif ($env:INTUNEWIN_PROXY_BYPASS_ON_LOCAL) {
+        $envValue = $env:INTUNEWIN_PROXY_BYPASS_ON_LOCAL.Trim().ToLowerInvariant()
+        if ($envValue -in @('false', '0', 'no', 'off')) { $effectiveBypassLocal = $false }
+    }
+
+    # 6. Detect non-interactive / CI context.
+    $effectiveNonInteractive = [bool]$NonInteractive
+    if (-not $effectiveNonInteractive) {
+        if ($env:TF_BUILD -or $env:GITHUB_ACTIONS -or $env:CI -or $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI) {
+            $effectiveNonInteractive = $true
+        }
+    }
+
+    # 7. Resolve credential (param -> prompt -> graceful fallback to default credentials).
+    $effectiveCred = $ProxyCredential
+    if (-not $effectiveUseDefault -and -not $effectiveCred) {
+        if ($effectiveNonInteractive) {
+            throw "IntuneWinProxy: a proxy credential is required for '$effectiveUri' but no -ProxyCredential was supplied and the session is non-interactive. Pass -ProxyUseDefaultCredentials or pre-build the credential."
+        }
+        $effectivePrompt = if ([string]::IsNullOrWhiteSpace($PromptMessage)) {
+            "Enter the proxy credentials used to reach the Internet via $effectiveUri. Used for both the proxy server and the .NET default proxy credential for Graph / MSAL / Invoke-RestMethod / Azure Storage calls."
+        }
+        else { $PromptMessage }
+
+        Write-Host ''
+        Write-Host '  IntuneWinProxy: a credential is required for the proxy.' -ForegroundColor Yellow
+        Write-Host '    A Windows credential dialog should appear (it can open BEHIND the active window) or, in some hosts, a console prompt below.' -ForegroundColor Yellow
+        Write-Host '    TIP: pass -ProxyUseDefaultCredentials for Windows-integrated (NTLM/Negotiate) auth and skip the prompt entirely.' -ForegroundColor Yellow
+        Write-Host ''
+
+        try { $effectiveCred = Get-Credential -Message $effectivePrompt }
+        catch {
+            Write-Warning "IntuneWinProxy: Get-Credential threw in this host ($($_.Exception.Message)). Treating as no credential."
+            $effectiveCred = $null
+        }
+        if (-not $effectiveCred) {
+            $langMode = $ExecutionContext.SessionState.LanguageMode
+            Write-Warning "IntuneWinProxy: no credential was returned for proxy '$($effectiveUri.AbsoluteUri)' (host language mode: '$langMode'). Falling back to Windows integrated auth (UseDefaultCredentials)."
+            $effectiveUseDefault = $true
+            $effectiveCred = $null
+        }
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($effectiveUri.AbsoluteUri, 'Initialize proxy configuration')) {
+        return
+    }
+
+    $setArgs = @{
+        ProxyUri      = $effectiveUri
+        BypassList    = $effectiveBypass
+        BypassOnLocal = $effectiveBypassLocal
+    }
+    if ($effectiveUseDefault) { $setArgs['UseDefaultCredentials'] = $true }
+    elseif ($effectiveCred) { $setArgs['ProxyCredential'] = $effectiveCred }
+
+    $proxy = Set-IntuneWinProxyConfiguration @setArgs
+
+    Write-Verbose "IntuneWinProxy: configured for $($script:IntuneWinProxyState.ProxyAddress) | BypassOnLocal=$($script:IntuneWinProxyState.BypassOnLocal) | BypassList=[$($script:IntuneWinProxyState.BypassList -join ';')] | UseDefaultCredentials=$($script:IntuneWinProxyState.UseDefaultCredentials) | HttpClientProxySupported=$($script:IntuneWinProxyState.HttpClientProxySupported)"
+
+    return $proxy
+}
+
+function Invoke-IntuneWinProxyTest {
+    <#
+    .SYNOPSIS
+        Two-phase connectivity test (direct then proxy) for diagnostic reports.
+        Returns a structured pscustomobject so callers can drive exit-code logic.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter()]
+        [Alias('Proxy', 'HttpsProxy')]
+        [uri]$ProxyUri,
+
+        [Parameter()]
+        [PSCredential]$ProxyCredential,
+
+        [Parameter()]
+        [switch]$UseDefaultCredentials,
+
+        [Parameter()]
+        [string[]]$BypassList,
+
+        [Parameter()]
+        [Nullable[bool]]$BypassOnLocal,
+
+        [Parameter()]
+        [string[]]$Endpoint = @('graph.microsoft.com:443', 'login.microsoftonline.com:443'),
+
+        [Parameter()]
+        [ValidateRange(1, 60)]
+        [int]$TimeoutSeconds = 5,
+
+        [Parameter()]
+        [ValidateRange(1, 120)]
+        [int]$HttpsTimeoutSeconds = 15
+    )
+
+    Write-Host ''
+    Write-Host '════════════════════════════════════════════════════════════════════' -ForegroundColor Cyan
+    Write-Host '  Phase 1: Direct connectivity to Microsoft Graph / Entra ID' -ForegroundColor Cyan
+    Write-Host '════════════════════════════════════════════════════════════════════' -ForegroundColor Cyan
+
+    $directResult = Test-IntuneWinGraphConnectivity -Endpoint $Endpoint -TimeoutSeconds $TimeoutSeconds -IncludeHttpsProbe -HttpsTimeoutSeconds $HttpsTimeoutSeconds
+    foreach ($r in $directResult.Results) {
+        $color = if ($r.TcpStatus -eq 'OK' -and ($r.HttpsStatus -eq 'OK' -or $r.HttpsStatus -eq 'SKIP')) { 'Green' }
+        elseif ($r.TcpStatus -eq 'SKIP' -and $r.HttpsStatus -eq 'OK') { 'Green' }
+        else { 'Red' }
+        Write-Host ("  {0,-40} TCP={1,-4} ({2}ms)  HTTPS={3,-4} ({4}ms)  {5}" -f $r.Endpoint, $r.TcpStatus, $r.TcpDurationMs, $r.HttpsStatus, $r.HttpsDurationMs, $r.HttpsDetail) -ForegroundColor $color
+    }
+    Write-Host ("  Verdict: {0}" -f $(if ($directResult.Success) { 'PASS' } else { 'FAIL' })) -ForegroundColor $(if ($directResult.Success) { 'Green' } else { 'Yellow' })
+
+    $proxyResult = $null
+    $effectiveProxyUri = $null
+    if ($ProxyUri) { $effectiveProxyUri = $ProxyUri }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:INTUNEWIN_PROXY_URI)) {
+        try { $effectiveProxyUri = [uri]$env:INTUNEWIN_PROXY_URI } catch { $effectiveProxyUri = $null }
+    }
+
+    if ($effectiveProxyUri) {
+        Write-Host ''
+        Write-Host '════════════════════════════════════════════════════════════════════' -ForegroundColor Cyan
+        Write-Host "  Phase 2: Proxy connectivity via $effectiveProxyUri" -ForegroundColor Cyan
+        Write-Host '════════════════════════════════════════════════════════════════════' -ForegroundColor Cyan
+        try {
+            $initArgs = @{ ProxyUri = $effectiveProxyUri; Force = $true }
+            if ($ProxyCredential) { $initArgs['ProxyCredential'] = $ProxyCredential }
+            if ($UseDefaultCredentials) { $initArgs['UseDefaultCredentials'] = $true }
+            if ($PSBoundParameters.ContainsKey('BypassList')) { $initArgs['BypassList'] = $BypassList }
+            if ($PSBoundParameters.ContainsKey('BypassOnLocal')) { $initArgs['BypassOnLocal'] = $BypassOnLocal }
+            Initialize-IntuneWinProxy @initArgs | Out-Null
+
+            $proxyResult = Test-IntuneWinGraphConnectivity -Endpoint $Endpoint -TimeoutSeconds $TimeoutSeconds -IncludeHttpsProbe -HttpsTimeoutSeconds $HttpsTimeoutSeconds
+            foreach ($r in $proxyResult.Results) {
+                $color = if (($r.TcpStatus -eq 'OK' -or $r.TcpStatus -eq 'SKIP') -and ($r.HttpsStatus -eq 'OK' -or $r.HttpsStatus -eq 'SKIP')) { 'Green' } else { 'Red' }
+                Write-Host ("  {0,-40} TCP={1,-4} ({2}ms)  HTTPS={3,-4} ({4}ms)  {5}" -f $r.Endpoint, $r.TcpStatus, $r.TcpDurationMs, $r.HttpsStatus, $r.HttpsDurationMs, $r.HttpsDetail) -ForegroundColor $color
+            }
+            Write-Host ("  Verdict: {0}" -f $(if ($proxyResult.Success) { 'PASS' } else { 'FAIL' })) -ForegroundColor $(if ($proxyResult.Success) { 'Green' } else { 'Red' })
+        }
+        catch {
+            Write-Host "  Proxy probe failed during init: $($_.Exception.Message)" -ForegroundColor Red
+            $proxyResult = [pscustomobject]@{ Success = $false; Results = @() }
+        }
+    }
+    else {
+        Write-Host ''
+        Write-Host '  Phase 2 skipped: no -ProxyUri and no $env:INTUNEWIN_PROXY_URI set.' -ForegroundColor DarkGray
+    }
+
+    $overallSuccess = if ($effectiveProxyUri) { [bool]($proxyResult -and $proxyResult.Success) } else { [bool]$directResult.Success }
+    return [pscustomobject]@{
+        Success      = $overallSuccess
+        DirectResult = $directResult
+        ProxyResult  = $proxyResult
+        ProxyUri     = $effectiveProxyUri
+    }
+}
+
+####################################################
+
 function Start-Log {
     param (
         [string]$FilePath,
@@ -587,6 +1425,15 @@ function Start-Log {
     if (!([system.diagnostics.eventlog]::SourceExists($EventLogSource))) { New-EventLog -LogName $EventLogName -Source $EventLogSource }
 
     try {
+        # Ensure the parent (Logs) directory exists before touching the file. New-Item -Force
+        # would create it implicitly, but creating it explicitly guarantees the Logs folder is
+        # present even if the file itself is later removed via -DeleteExistingFile, and surfaces
+        # any permission/path errors clearly at startup instead of on the first Write-Log.
+        $logDirectory = Split-Path -Path $FilePath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($logDirectory) -and -not (Test-Path -LiteralPath $logDirectory)) {
+            New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+        }
+
         if (!(Test-Path $FilePath)) {
             ## Create the log file
             New-Item $FilePath -Type File -Force | Out-Null
@@ -602,6 +1449,37 @@ function Start-Log {
     }
     catch {
         Write-Error $_.Exception.Message
+    }
+}
+
+####################################################
+
+function Remove-OldLogFiles {
+    <#
+    .SYNOPSIS
+        Retains only the N most recent log files in a directory and deletes older ones.
+    .DESCRIPTION
+        Mirrors the log-rotation pattern used by Invoke-DelegatedImport.ps1 so the
+        Logs subfolder does not grow without bound. Matching is scoped by a prefix
+        (e.g. the script name) so unrelated files are never touched.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$LogDirectory,
+        [string]$LogPrefix,
+        [int]$KeepCount = 10
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogDirectory) -or -not (Test-Path -LiteralPath $LogDirectory)) { return }
+
+    $logFiles = @(Get-ChildItem -Path $LogDirectory -Filter "${LogPrefix}_*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object -Property LastWriteTime -Descending)
+
+    if ($logFiles.Count -gt $KeepCount) {
+        $toDelete = $logFiles | Select-Object -Skip $KeepCount
+        foreach ($file in $toDelete) {
+            Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -691,7 +1569,7 @@ Invoke-GraphRequestWithRetry -Method GET -Uri "https://graph.microsoft.com/beta/
 .NOTES
 NAME: Invoke-GraphRequestWithRetry
 #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
         [ValidateSet('GET', 'POST', 'PATCH', 'DELETE', 'PUT')]
@@ -712,6 +1590,13 @@ NAME: Invoke-GraphRequestWithRetry
         [Parameter(Mandatory = $false)]
         [int]$InitialDelaySeconds = 2
     )
+
+    # -WhatIf short-circuit: skip any mutating request when WhatIf is active.
+    if ($Method -in @('POST', 'PATCH', 'PUT', 'DELETE') -and $WhatIfPreference) {
+        Write-Log -Message "WhatIf: would $Method $Uri (skipped)"
+        Write-Host "WhatIf: would $Method $Uri" -ForegroundColor Cyan
+        return $null
+    }
 
     $retryCount = 0
     $delay = $InitialDelaySeconds
@@ -937,10 +1822,31 @@ NAME: Test-IntuneWinAppUtil
                     "Accept"     = "application/vnd.github.v3+json"
                 }
 
-                $response = Invoke-RestMethod -Uri $githubApiUrl -Headers $headers -Method Get -ErrorAction Stop
+                $irmParams = @{
+                    Uri         = $githubApiUrl
+                    Headers     = $headers
+                    Method      = 'Get'
+                    ErrorAction = 'Stop'
+                }
+                Add-IntuneWinProxyParameter -Parameters $irmParams
+                $response = Invoke-RestMethod @irmParams
 
                 if ($response -and $response.Count -gt 0) {
-                    $githubCommitDate = [DateTime]::Parse($response[0].commit.committer.date).ToUniversalTime()
+                    # GitHub returns ISO 8601 dates (e.g. 2025-08-13T21:16:57Z). Invoke-RestMethod may
+                    # already have deserialized this into a [DateTime]; if it is still a string, parse it
+                    # using InvariantCulture so a non-US host locale (e.g. en-GB) does not misread the
+                    # month/day order and throw "String was not recognized as a valid DateTime".
+                    $rawCommitDate = $response[0].commit.committer.date
+                    if ($rawCommitDate -is [DateTime]) {
+                        $githubCommitDate = $rawCommitDate.ToUniversalTime()
+                    }
+                    else {
+                        $githubCommitDate = [DateTime]::Parse(
+                            [string]$rawCommitDate,
+                            [System.Globalization.CultureInfo]::InvariantCulture,
+                            [System.Globalization.DateTimeStyles]::RoundtripKind
+                        ).ToUniversalTime()
+                    }
                     Write-Host "  GitHub last commit date: $($githubCommitDate.ToString('yyyy-MM-dd HH:mm:ss')) UTC" -ForegroundColor Cyan
 
                     # Compare dates - if GitHub version is newer (commit date is after local file date)
@@ -949,7 +1855,13 @@ NAME: Test-IntuneWinAppUtil
 
                         # Download the new version
                         $tempPath = Join-Path $env:TEMP "IntuneWinAppUtil_new.exe"
-                        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempPath -UseBasicParsing
+                        $dlParams = @{
+                            Uri             = $downloadUrl
+                            OutFile         = $tempPath
+                            UseBasicParsing = $true
+                        }
+                        Add-IntuneWinProxyParameter -Parameters $dlParams
+                        Invoke-WebRequest @dlParams
 
                         # Verify download
                         if (Test-Path $tempPath) {
@@ -993,7 +1905,13 @@ NAME: Test-IntuneWinAppUtil
             }
 
             # Download the tool
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $ToolPath -UseBasicParsing
+            $dlParams = @{
+                Uri             = $downloadUrl
+                OutFile         = $ToolPath
+                UseBasicParsing = $true
+            }
+            Add-IntuneWinProxyParameter -Parameters $dlParams
+            Invoke-WebRequest @dlParams
 
             if (Test-Path $ToolPath) {
                 $downloadedVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ToolPath)
@@ -1016,152 +1934,6 @@ NAME: Test-IntuneWinAppUtil
         Write-Host "Error validating IntuneWinAppUtil.exe: $($_.Exception.Message)" -ForegroundColor Red
         throw $_
     }
-}
-
-####################################################
-
-function Get-AuthToken {
-
-    <#
-.SYNOPSIS
-This function is used to authenticate with the Graph API REST interface
-.DESCRIPTION
-The function authenticate with the Graph API Interface with the tenant name
-.EXAMPLE
-Get-AuthToken
-Authenticates you with the Graph API interface
-.NOTES
-NAME: Get-AuthToken
-#>
-
-    [cmdletbinding()]
-
-    param
-    (
-        [Parameter(Mandatory = $true)]
-        $User
-    )
-
-    $userUpn = New-Object "System.Net.Mail.MailAddress" -ArgumentList $User
-
-    $tenant = $userUpn.Host
-
-    Write-Host "Checking for AzureAD module..."
-
-    #$AadModule = Get-Module -Name "AzureAD" -ListAvailable
-    $AadModule = Get-Module -Name "AzureADPreview" -ListAvailable
-
-    <#
-    if ($null -eq $AadModule) {
-        write-host
-        write-host "AzureAD Powershell module not installed..." -f Red
-        write-host "Install by running 'Install-Module AzureAD' or 'Install-Module AzureADPreview' from an elevated PowerShell prompt" -f Yellow
-        write-host "Script can't continue..." -f Red
-        write-host
-        exit
-    }
-#>
-
-    if ($null -eq $AadModule) {
-        Write-Host
-        Write-Host "AzureADPreview Powershell module not installed..." -f Red
-        Write-Host "Attempting module install now (requires Admin rights!)" -f Red
-        Install-Module -Name AzureADPreview -AllowClobber -Force -Scope CurrentUser
-        Write-Host
-    }
-
-    # Getting path to ActiveDirectory Assemblies
-    # If the module count is greater than 1 find the latest version
-
-    if ($AadModule.count -gt 1) {
-
-        $Latest_Version = ($AadModule | Select-Object version | Sort-Object)[-1]
-
-        $aadModule = $AadModule | Where-Object { $_.version -eq $Latest_Version.version }
-
-        # Checking if there are multiple versions of the same module found
-
-        if ($AadModule.count -gt 1) {
-
-            $aadModule = $AadModule | Select-Object -Unique
-
-        }
-
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-    else {
-
-        $adal = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
-        $adalforms = Join-Path $AadModule.ModuleBase "Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll"
-
-    }
-
-    [System.Reflection.Assembly]::LoadFrom($adal) | Out-Null
-
-    [System.Reflection.Assembly]::LoadFrom($adalforms) | Out-Null
-
-    $clientId = "d1ddf0e4-d672-4dae-b554-9d5bdfd93547"
-
-    $redirectUri = "urn:ietf:wg:oauth:2.0:oob"
-
-    $resourceAppIdURI = "https://graph.microsoft.com"
-
-    $authority = "https://login.microsoftonline.com/$Tenant"
-
-    try {
-
-        $authContext = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext" -ArgumentList $authority
-
-        # https://msdn.microsoft.com/en-us/library/azure/microsoft.identitymodel.clients.activedirectory.promptbehavior.aspx
-        # Change the prompt behaviour to force credentials each time: Auto, Always, Never, RefreshSession
-
-        $platformParameters = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters" -ArgumentList "Auto"
-
-        $userId = New-Object "Microsoft.IdentityModel.Clients.ActiveDirectory.UserIdentifier" -ArgumentList ($User, "OptionalDisplayableId")
-
-        $authResult = $authContext.AcquireTokenAsync($resourceAppIdURI, $clientId, $redirectUri, $platformParameters, $userId).Result
-
-        # If the accesstoken is valid then create the authentication header
-
-        if ($authResult.AccessToken) {
-
-            # Creating header for Authorization token
-
-            $authHeader = @{
-                'Content-Type'  = 'application/json'
-                'Authorization' = "Bearer " + $authResult.AccessToken
-                'ExpiresOn'     = $authResult.ExpiresOn
-            }
-
-            return $authHeader
-
-        }
-
-        else {
-
-            Write-Host
-            Write-Host "Authorization Access Token is null, please re-run authentication..." -ForegroundColor Red
-            Write-Host
-            $script:exitCode = 1
-            return $null
-
-        }
-
-    }
-
-    catch {
-
-        Write-Host $_.Exception.Message -f Red
-        Write-Host $_.Exception.ItemName -f Red
-        Write-Host
-        $script:exitCode = 1
-        return $null
-
-    }
-
 }
 
 ####################################################
@@ -1267,12 +2039,7 @@ NAME: Get-IntuneAppCategory
         $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileAppCategories"
 
         try {
-            if ($userName) {
-                $result = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-            }
-            else {
-                $result = Invoke-MgGraphRequest -Method Get -Uri $uri
-            }
+            $result = Invoke-MgGraphRequest -Method Get -Uri $uri
 
             if ($result.value.Count -gt 0) {
                 $category = $result.value | Where-Object { $_.displayName -eq $CategoryName }
@@ -1338,16 +2105,7 @@ NAME: Set-IntuneAppCategory
                 "@odata.id" = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileAppCategories/$($category.id)"
             }
 
-            if ($userName) {
-                $categoryJson = $categoryBody | ConvertTo-Json -Depth 10
-                $headers = Copy-Object $authToken
-                $headers["content-length"] = $categoryJson.Length
-                $headers["content-type"] = "application/json"
-                $null = Invoke-RestMethod -Uri $categoryUri -Headers $headers -Method Post -Body $categoryJson
-            }
-            else {
-                $null = Invoke-MgGraphRequest -Uri $categoryUri -Method Post -Body $categoryBody
-            }
+            $null = Invoke-MgGraphRequest -Uri $categoryUri -Method Post -Body $categoryBody
 
             Write-Log -Message "Category '$CategoryName' assigned successfully"
             Write-Host "Category '$CategoryName' assigned successfully" -ForegroundColor Green
@@ -1369,6 +2127,336 @@ NAME: Set-IntuneAppCategory
 
 ####################################################
 
+function ConvertTo-AppRelationshipEntry {
+    <#
+.SYNOPSIS
+Normalises dependency/supersedence config into explicit app name + relationship type pairs
+.DESCRIPTION
+Flattens every supported config style into one object per referenced app, so each app can carry
+its own relationship type instead of sharing a single type across the whole list:
+
+  1. Repeated element pairs - repeat the element and its type element; the two lists are matched
+     by position:
+         <Dependencies>App 1.0</Dependencies><DependencyType>autoInstall</DependencyType>
+         <Dependencies>App 2.0</Dependencies><DependencyType>detect</DependencyType>
+  2. Inline 'Name:Type' - a per-app type suffix on any entry, using the same convention as
+     CustomReturnCodes:
+         <Dependencies>App 1.0:autoInstall,App 2.0:detect</Dependencies>
+  3. Shared type - a plain list governed by a single type element (original behaviour):
+         <Dependencies>App 1.0,App 2.0</Dependencies><DependencyType>autoInstall</DependencyType>
+
+JSON supports all of the above plus an array of objects:
+    "dependencies": [ { "name": "App 1.0", "type": "autoInstall" }, { "name": "App 2.0", "type": "detect" } ]
+
+An inline or per-object type always wins over the positional/shared type.
+.PARAMETER Value
+The Dependencies/Supersedence config value - a string, an array of strings, or an array of objects
+.PARAMETER TypeValue
+The DependencyType/SupersedenceType config value - a string or an array of strings
+.PARAMETER ValidType
+The permitted relationship types, e.g. 'detect','autoInstall'
+.PARAMETER DefaultType
+The type used when none is supplied, or when the supplied one is not valid
+.PARAMETER Label
+Noun used in warning messages, e.g. 'dependency'
+.EXAMPLE
+ConvertTo-AppRelationshipEntry -Value 'App 1.0:detect,App 2.0' -TypeValue 'autoInstall' -ValidType 'detect','autoInstall' -DefaultType 'autoInstall' -Label 'dependency'
+.NOTES
+NAME: ConvertTo-AppRelationshipEntry
+#>
+
+    [cmdletbinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$Value,
+
+        [Parameter(Mandatory = $false)]
+        [object]$TypeValue,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$ValidType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DefaultType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    process {
+        $groups = @($Value | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($groups.Count -eq 0) { return }
+
+        $types = @($TypeValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+
+        if ($types.Count -gt 1 -and $types.Count -ne $groups.Count) {
+            Write-Log -Message "Config declares $($groups.Count) $Label element(s) but $($types.Count) type element(s) - matching by position, extras ignored" -LogLevel 2
+            Write-Host "  Warning: $($groups.Count) $Label element(s) but $($types.Count) type element(s) - matching by position" -ForegroundColor Yellow
+        }
+
+        $parsed = @()
+        for ($i = 0; $i -lt $groups.Count; $i++) {
+            $group = $groups[$i]
+
+            $groupType = if ($i -lt $types.Count) { $types[$i] }
+            elseif ($types.Count -ge 1) { $types[0] }
+            else { $DefaultType }
+
+            # JSON object form: { "name": "...", "type": "..." }
+            if ($group -isnot [string] -and $group.PSObject.Properties['name']) {
+                $objType = if ($group.PSObject.Properties['type'] -and -not [string]::IsNullOrWhiteSpace([string]$group.type)) { [string]$group.type } else { $groupType }
+                $parsed += [pscustomobject]@{ Name = ([string]$group.name).Trim(); Type = $objType.Trim() }
+                continue
+            }
+
+            foreach ($token in ([string]$group -split ',')) {
+                $token = $token.Trim()
+                if (-not $token) { continue }
+
+                $name = $token
+                $type = $groupType
+
+                # Only treat a trailing ':suffix' as a type when it really is one, so app names containing ':' survive
+                $sep = $token.LastIndexOf(':')
+                if ($sep -gt 0) {
+                    $suffix = $token.Substring($sep + 1).Trim()
+                    if ($ValidType -contains $suffix) {
+                        $name = $token.Substring(0, $sep).Trim()
+                        $type = $suffix
+                    }
+                }
+
+                if ($name) { $parsed += [pscustomobject]@{ Name = $name; Type = $type } }
+            }
+        }
+
+        foreach ($entry in $parsed) {
+            # Graph rejects a mis-cased dependencyType/supersedenceType, so emit the canonical spelling
+            $canonical = $ValidType | Where-Object { $_ -eq $entry.Type } | Select-Object -First 1
+            if (-not $canonical) {
+                Write-Log -Message "Invalid $Label type '$($entry.Type)' for '$($entry.Name)' - using '$DefaultType'" -LogLevel 2
+                Write-Host "  Warning: invalid $Label type '$($entry.Type)' for '$($entry.Name)' - using '$DefaultType'" -ForegroundColor Yellow
+                $canonical = $DefaultType
+            }
+            [pscustomobject]@{ Name = $entry.Name; Type = $canonical }
+        }
+    }
+}
+
+####################################################
+
+function Enable-SystemProxyDefaultCredential {
+    <#
+.SYNOPSIS
+Attaches the logged-on user's Windows credentials to the system default web proxy
+.DESCRIPTION
+Corporate proxies that require Windows-integrated (NTLM/Negotiate) authentication return HTTP 407
+to .NET clients, because the default proxy object is created without credentials. This attaches
+DefaultNetworkCredentials to the process-wide default proxy so subsequent calls authenticate.
+
+Only relevant when the run was not started with an explicit -ProxyUri; returns $false when there
+is no system proxy in play for the probe destination, so the caller can report the real problem.
+.PARAMETER ProbeUri
+Destination used to decide whether a proxy is actually in the path. Defaults to the Entra ID
+token endpoint.
+.EXAMPLE
+if (Enable-SystemProxyDefaultCredential) { <retry the request> }
+.NOTES
+NAME: Enable-SystemProxyDefaultCredential
+#>
+
+    [cmdletbinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [uri]$ProbeUri = 'https://login.microsoftonline.com'
+    )
+
+    process {
+        try {
+            $proxy = [System.Net.WebRequest]::DefaultWebProxy
+            if ($null -eq $proxy) { return $false }
+
+            $resolved = $proxy.GetProxy($ProbeUri)
+            if ($null -eq $resolved -or $resolved.AbsoluteUri -eq $ProbeUri.AbsoluteUri) {
+                return $false
+            }
+
+            $proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+            Write-Log -Message "Attached default network credentials to system proxy $($resolved.AbsoluteUri)"
+        }
+        catch {
+            Write-Log -Message "Could not attach default credentials to the system proxy: $($_.Exception.Message)" -LogLevel 2
+            return $false
+        }
+
+        try {
+            $prop = [System.Net.Http.HttpClient].GetProperty('DefaultProxy', [System.Reflection.BindingFlags]::Public -bor [System.Reflection.BindingFlags]::Static)
+            if ($prop -and $prop.CanWrite) { $prop.SetValue($null, [System.Net.WebRequest]::DefaultWebProxy) }
+        }
+        catch {
+            Write-Verbose "HttpClient.DefaultProxy not updated: $($_.Exception.Message)"
+        }
+
+        return $true
+    }
+}
+
+####################################################
+
+function Resolve-IntuneAppReference {
+    <#
+.SYNOPSIS
+Resolves an application reference (GUID or display name) to an Intune application ID
+.DESCRIPTION
+Dependency and supersedence references come from Config.xml/Config.json as display names,
+but the Graph relationship payload requires the target application ID. This helper accepts
+either form and always returns an application ID (or $null when it cannot be resolved).
+.PARAMETER AppReference
+An application ID (GUID) or the display name of an application
+.EXAMPLE
+$id = Resolve-IntuneAppReference -AppReference "Microsoft Edge Stable"
+.NOTES
+NAME: Resolve-IntuneAppReference
+#>
+
+    [cmdletbinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AppReference
+    )
+
+    process {
+        $parsedGuid = [guid]::Empty
+        if ([guid]::TryParse($AppReference, [ref]$parsedGuid)) {
+            return $AppReference
+        }
+
+        Write-Log -Message "Resolving application reference '$AppReference' to an application ID..."
+        $app = Get-IntuneAppByDisplayName -DisplayName $AppReference
+
+        if ($null -eq $app -or [string]::IsNullOrWhiteSpace([string]$app.id)) {
+            Write-Log -Message "Could not resolve application reference '$AppReference' - application not found" -LogLevel 2
+            Write-Host "Warning: Application '$AppReference' not found - cannot create relationship" -ForegroundColor Yellow
+            return $null
+        }
+
+        Write-Log -Message "Resolved '$AppReference' to application ID: $($app.id)"
+        return [string]$app.id
+    }
+}
+
+####################################################
+
+function Set-IntuneAppRelationship {
+    <#
+.SYNOPSIS
+Adds or updates a dependency/supersedence relationship on an Intune application
+.DESCRIPTION
+Graph rejects POSTs of individual relationships to /mobileApps/{id}/relationships for Win32
+apps; the supported action is /mobileApps/{id}/updateRelationships, which REPLACES the entire
+child relationship set. This function therefore reads the current child relationships, merges
+in (or updates) the requested one, and POSTs the complete set back.
+
+The payload is built with ordered dictionaries because Graph requires the '@odata.type'
+annotation to be the first property of each relationship object - an unordered hashtable can
+serialise it later and produces "The annotation 'odata.type' was found. This annotation is
+either not recognized or not expected at the current position."
+.PARAMETER SourceAppId
+The ID of the application the relationship is being added to (the parent app)
+.PARAMETER TargetAppId
+The ID of the application being depended upon or superseded (the child app)
+.PARAMETER OdataType
+'#microsoft.graph.mobileAppDependency' or '#microsoft.graph.mobileAppSupersedence'
+.PARAMETER RelationshipType
+The dependencyType ('detect'/'autoInstall') or supersedenceType ('update'/'replace') value
+.EXAMPLE
+Set-IntuneAppRelationship -SourceAppId "12345" -TargetAppId "67890" -OdataType "#microsoft.graph.mobileAppDependency" -RelationshipType "autoInstall"
+.NOTES
+NAME: Set-IntuneAppRelationship
+#>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceAppId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetAppId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('#microsoft.graph.mobileAppDependency', '#microsoft.graph.mobileAppSupersedence')]
+        [string]$OdataType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RelationshipType
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        if ($SourceAppId -eq $TargetAppId) {
+            Write-Log -Message "Skipping relationship - an application cannot reference itself ($SourceAppId)" -LogLevel 2
+            Write-Host "Warning: Skipped self-referencing relationship" -ForegroundColor Yellow
+            return $false
+        }
+
+        $graphApiVersion = "beta"
+        $typeProperty = if ($OdataType -eq '#microsoft.graph.mobileAppDependency') { 'dependencyType' } else { 'supersedenceType' }
+
+        try {
+            # updateRelationships replaces the whole child set, so seed the payload with what already exists
+            $existingUri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$SourceAppId/relationships"
+            $existing = Invoke-MgGraphRequest -Uri $existingUri -Method Get
+
+            $relationships = @()
+            foreach ($rel in @($existing.value)) {
+                # 'parent' entries are owned by the other app and must not be echoed back
+                if ($rel.targetType -ne 'child') { continue }
+
+                $relOdataType = [string]$rel.'@odata.type'
+                if ($relOdataType -ne '#microsoft.graph.mobileAppDependency' -and $relOdataType -ne '#microsoft.graph.mobileAppSupersedence') { continue }
+
+                # The requested relationship is re-added below with the requested type
+                if ($rel.targetId -eq $TargetAppId -and $relOdataType -eq $OdataType) { continue }
+
+                $relTypeProperty = if ($relOdataType -eq '#microsoft.graph.mobileAppDependency') { 'dependencyType' } else { 'supersedenceType' }
+                $relationships += [ordered]@{
+                    '@odata.type'    = $relOdataType
+                    'targetId'       = [string]$rel.targetId
+                    $relTypeProperty = [string]$rel.$relTypeProperty
+                }
+            }
+
+            $relationships += [ordered]@{
+                '@odata.type' = $OdataType
+                'targetId'    = $TargetAppId
+                $typeProperty = $RelationshipType
+            }
+
+            $json = ([ordered]@{ relationships = @($relationships) } | ConvertTo-Json -Depth 10)
+
+            $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$SourceAppId/updateRelationships"
+            if ($PSCmdlet.ShouldProcess($SourceAppId, "Set $OdataType relationship to $TargetAppId ($RelationshipType)")) {
+                $null = Invoke-MgGraphRequest -Uri $uri -Method Post -Body $json -ContentType "application/json"
+                Write-Log -Message "Relationship set successfully ($OdataType -> $TargetAppId, $RelationshipType)"
+            }
+
+            return $true
+        }
+        catch {
+            Write-Log -Message "Error setting relationship ($OdataType -> $TargetAppId): $_" -LogLevel 2
+            Write-Host "Warning: Failed to set relationship - $_" -ForegroundColor Yellow
+            return $false
+        }
+    }
+}
+
+####################################################
+
 function Set-IntuneAppDependency {
     <#
 .SYNOPSIS
@@ -1379,21 +2467,26 @@ The dependency type can be 'detect' (just check if installed) or 'autoInstall' (
 .PARAMETER ApplicationId
 The ID of the application that has the dependency (the dependent app)
 .PARAMETER DependencyAppId
-The ID of the application that is depended upon (the dependency)
+The application that is depended upon - either an application ID (GUID) or a display name,
+which is resolved to an ID before the relationship is created
 .PARAMETER DependencyType
 The type of dependency: 'detect' or 'autoInstall'. Default is 'autoInstall'.
 .EXAMPLE
 Set-IntuneAppDependency -ApplicationId "12345" -DependencyAppId "67890" -DependencyType "autoInstall"
+.EXAMPLE
+Set-IntuneAppDependency -ApplicationId "12345" -DependencyAppId "Microsoft Edge Stable" -DependencyType "detect"
 .NOTES
 NAME: Set-IntuneAppDependency
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
+        [Alias('SourceAppId')]
         [string]$ApplicationId,
 
         [Parameter(Mandatory = $true)]
+        [Alias('TargetAppId', 'TargetAppDisplayName', 'DependencyAppDisplayName')]
         [string]$DependencyAppId,
 
         [Parameter(Mandatory = $false)]
@@ -1408,41 +2501,24 @@ NAME: Set-IntuneAppDependency
     process {
         Write-Log -Message "Adding dependency on app '$DependencyAppId' for application ID: $ApplicationId (Type: $DependencyType)"
 
-        $graphApiVersion = "beta"
-        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId/relationships"
-
-        try {
-            $dependencyBody = @{
-                "@odata.type"    = "#microsoft.graph.mobileAppDependency"
-                "targetId"       = $DependencyAppId
-                "dependencyType" = $DependencyType
-            }
-
-            if ($userName) {
-                $dependencyJson = $dependencyBody | ConvertTo-Json -Depth 10
-                $headers = Copy-Object $authToken
-                $headers["content-length"] = $dependencyJson.Length
-                $headers["content-type"] = "application/json"
-                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $dependencyJson
-            }
-            else {
-                $null = Invoke-MgGraphRequest -Uri $uri -Method Post -Body $dependencyBody
-            }
-
-            Write-Log -Message "Dependency added successfully"
-            Write-Host "Dependency on app '$DependencyAppId' added successfully" -ForegroundColor Green
-            return $true
-        }
-        catch {
-            if ($_.Exception.Message -match "already exists") {
-                Write-Log -Message "Dependency on app '$DependencyAppId' already exists"
-                Write-Host "Dependency already exists" -ForegroundColor Green
-                return $true
-            }
-            Write-Log -Message "Error adding dependency: $_" -LogLevel 2
-            Write-Host "Warning: Failed to add dependency - $_" -ForegroundColor Yellow
+        $targetAppId = Resolve-IntuneAppReference -AppReference $DependencyAppId
+        if ([string]::IsNullOrWhiteSpace($targetAppId)) {
             return $false
         }
+
+        $params = @{
+            SourceAppId      = $ApplicationId
+            TargetAppId      = $targetAppId
+            OdataType        = '#microsoft.graph.mobileAppDependency'
+            RelationshipType = $DependencyType
+        }
+        $result = Set-IntuneAppRelationship @params
+
+        if ($result -and -not $WhatIfPreference) {
+            Write-Log -Message "Dependency added successfully"
+            Write-Host "Dependency on app '$DependencyAppId' added successfully" -ForegroundColor Green
+        }
+        return $result
     }
 }
 
@@ -1458,21 +2534,26 @@ The supersedence type can be 'update' (upgrade in place) or 'replace' (uninstall
 .PARAMETER ApplicationId
 The ID of the application that supersedes (the newer app)
 .PARAMETER SupersededAppId
-The ID of the application being superseded (the older app)
+The application being superseded - either an application ID (GUID) or a display name, which is
+resolved to an ID before the relationship is created
 .PARAMETER SupersedenceType
 The type of supersedence: 'update' or 'replace'. Default is 'update'.
 .EXAMPLE
 Set-IntuneAppSupersedence -ApplicationId "12345" -SupersededAppId "67890" -SupersedenceType "update"
+.EXAMPLE
+Set-IntuneAppSupersedence -ApplicationId "12345" -SupersededAppId "Microsoft Edge Stable" -SupersedenceType "replace"
 .NOTES
 NAME: Set-IntuneAppSupersedence
 #>
 
-    [cmdletbinding()]
+    [cmdletbinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
+        [Alias('SourceAppId')]
         [string]$ApplicationId,
 
         [Parameter(Mandatory = $true)]
+        [Alias('TargetAppId', 'TargetAppDisplayName', 'SupersededAppDisplayName')]
         [string]$SupersededAppId,
 
         [Parameter(Mandatory = $false)]
@@ -1487,41 +2568,24 @@ NAME: Set-IntuneAppSupersedence
     process {
         Write-Log -Message "Adding supersedence of app '$SupersededAppId' for application ID: $ApplicationId (Type: $SupersedenceType)"
 
-        $graphApiVersion = "beta"
-        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps/$ApplicationId/relationships"
-
-        try {
-            $supersedenceBody = @{
-                "@odata.type"      = "#microsoft.graph.mobileAppSupersedence"
-                "targetId"         = $SupersededAppId
-                "supersedenceType" = $SupersedenceType
-            }
-
-            if ($userName) {
-                $supersedenceJson = $supersedenceBody | ConvertTo-Json -Depth 10
-                $headers = Copy-Object $authToken
-                $headers["content-length"] = $supersedenceJson.Length
-                $headers["content-type"] = "application/json"
-                $null = Invoke-RestMethod -Uri $uri -Headers $headers -Method Post -Body $supersedenceJson
-            }
-            else {
-                $null = Invoke-MgGraphRequest -Uri $uri -Method Post -Body $supersedenceBody
-            }
-
-            Write-Log -Message "Supersedence added successfully"
-            Write-Host "Supersedence of app '$SupersededAppId' added successfully" -ForegroundColor Green
-            return $true
-        }
-        catch {
-            if ($_.Exception.Message -match "already exists") {
-                Write-Log -Message "Supersedence of app '$SupersededAppId' already exists"
-                Write-Host "Supersedence already exists" -ForegroundColor Green
-                return $true
-            }
-            Write-Log -Message "Error adding supersedence: $_" -LogLevel 2
-            Write-Host "Warning: Failed to add supersedence - $_" -ForegroundColor Yellow
+        $targetAppId = Resolve-IntuneAppReference -AppReference $SupersededAppId
+        if ([string]::IsNullOrWhiteSpace($targetAppId)) {
             return $false
         }
+
+        $params = @{
+            SourceAppId      = $ApplicationId
+            TargetAppId      = $targetAppId
+            OdataType        = '#microsoft.graph.mobileAppSupersedence'
+            RelationshipType = $SupersedenceType
+        }
+        $result = Set-IntuneAppRelationship @params
+
+        if ($result -and -not $WhatIfPreference) {
+            Write-Log -Message "Supersedence added successfully"
+            Write-Host "Supersedence of app '$SupersededAppId' added successfully" -ForegroundColor Green
+        }
+        return $result
     }
 }
 
@@ -1556,15 +2620,12 @@ NAME: Get-IntuneAppByDisplayName
         Write-Log -Message "Looking up application by display name: '$DisplayName'"
 
         $graphApiVersion = "beta"
-        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps?`$filter=displayName eq '$DisplayName'"
+        # OData string literals escape a single quote by doubling it
+        $filterValue = $DisplayName -replace "'", "''"
+        $uri = "https://graph.microsoft.com/$graphApiVersion/deviceAppManagement/mobileApps?`$filter=displayName eq '$filterValue'"
 
         try {
-            if ($userName) {
-                $response = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-            }
-            else {
-                $response = Invoke-MgGraphRequest -Uri $uri -Method Get
-            }
+            $response = Invoke-MgGraphRequest -Uri $uri -Method Get
 
             if ($response.value -and $response.value.Count -gt 0) {
                 $app = $response.value[0]
@@ -1650,12 +2711,7 @@ NAME: Remove-IntuneApp
             Write-Host "  Deleting application..." -ForegroundColor Yellow
             Write-Log -Message "Deleting application with ID: $($app.id)"
 
-            if ($userName) {
-                Invoke-RestMethod -Uri $uri -Headers $authToken -Method Delete
-            }
-            else {
-                Invoke-MgGraphRequest -Uri $uri -Method Delete
-            }
+            Invoke-MgGraphRequest -Uri $uri -Method Delete
 
             $result.Status = "Deleted"
             $result.Message = "Application successfully deleted"
@@ -2714,140 +3770,65 @@ function Copy-Object($object) {
 
 ####################################################
 
-function Write-AuthHeaders($authToken) {
-
-    foreach ($header in $authToken.GetEnumerator()) {
-        if ($header.Name.ToLower() -eq "authorization") {
-            continue;
-        }
-
-        Write-Host -ForegroundColor Gray "$($header.Name): $($header.Value)";
-    }
-}
-
-####################################################
-
 function Invoke-GetRequest($collectionPath) {
-
-    Write-Host "Running Invoke-GetRequest: $collectionPath" -ForegroundColor Green
-    Write-Host "Running Invoke-GetRequest baseURL: $script:baseUrl" -ForegroundColor Green
-    Write-Host
-
-
-    $uri = "$script:baseUrl$collectionPath";
-    $request = "GET $uri";
-
-    if ($userName) {
-        if ($logRequestUris) { Write-Host $request; }
-        if ($logHeaders) { Write-AuthHeaders $authToken; }
-    }
-
-    try {
-        if ($userName) {
-            Test-AuthToken -User $Username
-            $response = Invoke-RestMethod $uri -Method Get -Headers $authToken;
-        }
-        else {
-            #Write-Host "Get URI: $uri" -ForegroundColor Magenta
-            $response = Invoke-MgGraphRequest $uri -Method Get
-        }
-        Write-Host
-        Write-Host "Response returned:" -ForegroundColor Green
-        #$response
-        Write-Host
-        Write-Host "Response: $($response | Out-String)" -ForegroundColor Yellow
-        Write-Host
-        return $response
-    }
-    catch {
-        throw
-    }
+    # Thin shim — delegates to Invoke-GraphRequestWithRetry so all legacy callers get retry/throttling handling.
+    $uri = "$script:baseUrl$collectionPath"
+    if ($logRequestUris) { Write-Host "GET $uri" }
+    return Invoke-GraphRequestWithRetry -Method GET -Uri $uri
 }
 
 ####################################################
 
 function Invoke-PatchRequest($collectionPath, $body) {
-
-    Invoke-IntuneGraphRequest "PATCH" $collectionPath $body;
-
+    $uri = "$script:baseUrl$collectionPath"
+    if ($logRequestUris) { Write-Host "PATCH $uri" }
+    return Invoke-GraphRequestWithRetry -Method PATCH -Uri $uri -Body $body
 }
 
 ####################################################
 
 function Invoke-PostRequest($collectionPath, $body) {
-
-    Invoke-IntuneGraphRequest "POST" $collectionPath $body;
-
+    $uri = "$script:baseUrl$collectionPath"
+    if ($logRequestUris) { Write-Host "POST $uri" }
+    return Invoke-GraphRequestWithRetry -Method POST -Uri $uri -Body $body
 }
 
 ####################################################
 
 function Invoke-IntuneGraphRequest($verb, $collectionPath, $body) {
+    $uri = "$script:baseUrl$collectionPath"
+    if ($logRequestUris) { Write-Host "$verb $uri" }
+    return Invoke-GraphRequestWithRetry -Method $verb -Uri $uri -Body $body
+}
 
-    $uri = "$script:baseUrl$collectionPath";
-    $request = "$verb $uri";
+####################################################
 
-    <#
-    If ($authToken) {
-        Write-Host "authToken: $authToken"
+function Format-SafeSasMessage {
+    # Redacts SAS-token query parameters (sig/se/sp/sv/sr/st/skoid/sktid/skt/ske/sks/skv/spr/si/srt/ss/tn)
+    # from any string so error/log output does not leak credentials.
+    param([Parameter(Position = 0)] $Message)
+    if ($null -eq $Message) { return $Message }
+    $text = [string]$Message
+    if ([string]::IsNullOrEmpty($text)) { return $text }
+    $pattern = '(?i)(?<=[?&])(sig|se|sp|sv|sr|st|skoid|sktid|skt|ske|sks|skv|spr|si|srt|ss|tn)=[^&\s"'']*'
+    return [regex]::Replace($text, $pattern, '$1=***REDACTED***')
+}
+
+####################################################
+
+function Test-ZipEntrySafePath {
+    # ZIP-Slip guard: reject entries whose resolved destination escapes the target directory.
+    param(
+        [Parameter(Mandatory = $true)][string] $EntryFullName,
+        [Parameter(Mandatory = $true)][string] $DestinationDir
+    )
+    if ($EntryFullName -match '(^|[\\/])\.\.([\\/]|$)') {
+        throw "ZIP entry path traversal detected (relative ..): '$EntryFullName'"
     }
-    Else { Throw "No authToken" }
-    #$authToken | Format-List *
-
-    $clonedHeaders = Copy-Object $authToken;
-    #$clonedHeaders | Format-List *
-    $clonedHeaders["content-length"] = $body.Length;
-    Write-Host "After clonedHeaders length" -ForegroundColor Yellow
-    $clonedHeaders["content-type"] = "application/json";
-
-    if ($logRequestUris) { Write-Host $request; }
-    if ($logHeaders) { Write-AuthHeaders $clonedHeaders; }
-    if ($logContent) { Write-Host -ForegroundColor Gray $body; }
-
-    Exit
-    #>
-
-    if ($userName) {
-        if ($authToken) {
-            Write-Host "authToken expires on:" -ForegroundColor Green
-            $authToken.ExpiresOn.datetime
-
-            # Setting DateTime to Universal time to work in all timezones
-            $DateTime = (Get-Date).ToUniversalTime()
-            Write-Host "$DateTime" -ForegroundColor Magenta
-
-            # If the authToken exists checking when it expires
-            $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
-            Write-Host "$TokenExpires" -ForegroundColor Magenta
-        }
-        else { throw "No authToken" }
-
-        $clonedHeaders = Copy-Object $authToken;
-        #Write-Host "clonedHeaders: $clonedHeaders" -ForegroundColor Green
-        #$clonedHeaders | Format-List *
-
-        $clonedHeaders["content-length"] = $body.Length;
-        $clonedHeaders["content-type"] = "application/json";
-
-        Write-Host $request
-        Write-AuthHeaders $clonedHeaders
-        Write-Host -ForegroundColor Gray $body`n
-    }
-    try {
-        if ($userName) {
-            Test-AuthToken -User $Username
-            $response = Invoke-RestMethod $uri -Method $verb -Headers $clonedHeaders -Body $body -UseBasicParsing;
-        }
-        else {
-            #$response = Invoke-MgGraphRequest $uri -Method $verb -Body $body -Headers $clonedHeaders
-            $response = Invoke-MgGraphRequest $uri -Method $verb -Body $body
-        }
-        $response;
-    }
-    catch {
-        Write-Host -ForegroundColor Red $request;
-        Write-Host -ForegroundColor Red $_.Exception.Message;
-        throw;
+    $rooted = [System.IO.Path]::GetFullPath((Join-Path $DestinationDir $EntryFullName))
+    $rootedDir = [System.IO.Path]::GetFullPath($DestinationDir.TrimEnd('\', '/'))
+    if (-not $rooted.StartsWith($rootedDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ZIP entry resolves outside the destination directory: '$EntryFullName' -> '$rooted' (destination '$rootedDir')"
     }
 }
 
@@ -2857,21 +3838,29 @@ function Send-AzureStorageChunk($sasUri, $id, $body) {
 
     $uri = "$sasUri&comp=block&blockid=$id";
     $request = "PUT $uri";
+    $safeRequest = Format-SafeSasMessage $request
 
     $headers = @{
         "x-ms-blob-type" = "BlockBlob"
     };
 
-    if ($logRequestUris) { Write-Host $request; }
-    if ($logHeaders) { Write-AuthHeaders $headers; }
+    if ($logRequestUris) { Write-Host $safeRequest; }
 
     try {
         # Upload binary data directly without text encoding conversion
-        $response = Invoke-WebRequest $uri -Method Put -Headers $headers -Body $body -UseBasicParsing;
+        $iwrParams = @{
+            Uri             = $uri
+            Method          = 'Put'
+            Headers         = $headers
+            Body            = $body
+            UseBasicParsing = $true
+        }
+        Add-IntuneWinProxyParameter -Parameters $iwrParams
+        $response = Invoke-WebRequest @iwrParams
     }
     catch {
-        Write-Host -ForegroundColor Red $request;
-        Write-Host -ForegroundColor Red $_.Exception.Message;
+        Write-Host -ForegroundColor Red $safeRequest;
+        Write-Host -ForegroundColor Red (Format-SafeSasMessage $_.Exception.Message);
         throw
     }
 
@@ -2904,21 +3893,30 @@ function Complete-AzureStorageUpload($sasUri, $ids) {
         Write-Host -ForegroundColor Cyan "XML Length: $($xmlBytes.Length) bytes"
         Write-Host -ForegroundColor Cyan "URI: $uri"
 
-        $response = Invoke-WebRequest -Uri $uri -Method Put -Headers $headers -Body $xmlBytes -ContentType "application/xml; charset=utf-8" -UseBasicParsing
+        $iwrParams = @{
+            Uri             = $uri
+            Method          = 'Put'
+            Headers         = $headers
+            Body            = $xmlBytes
+            ContentType     = 'application/xml; charset=utf-8'
+            UseBasicParsing = $true
+        }
+        Add-IntuneWinProxyParameter -Parameters $iwrParams
+        $response = Invoke-WebRequest @iwrParams
 
         Write-Host -ForegroundColor Green "Azure Storage Response: StatusCode=$($response.StatusCode) StatusDescription=$($response.StatusDescription)"
         return $response
     }
     catch {
-        Write-Host -ForegroundColor Red $request;
-        Write-Host -ForegroundColor Red "Error Message: $($_.Exception.Message)";
+        Write-Host -ForegroundColor Red (Format-SafeSasMessage $request);
+        Write-Host -ForegroundColor Red ("Error Message: " + (Format-SafeSasMessage $_.Exception.Message));
 
         if ($_.Exception.Response) {
             try {
                 $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
                 $reader.BaseStream.Position = 0
                 $responseBody = $reader.ReadToEnd()
-                Write-Host -ForegroundColor Red "Response Body: $responseBody"
+                Write-Host -ForegroundColor Red ("Response Body: " + (Format-SafeSasMessage $responseBody))
                 $reader.Close()
             }
             catch {
@@ -2938,6 +3936,13 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
 
     try {
 
+        # Fail fast with a clear message if the SAS URI is missing/blank. Without this guard
+        # an empty $sasUri produces block URLs like "&comp=block&blockid=..." which fail with
+        # the cryptic "Invalid URI: The hostname could not be parsed."
+        if ([string]::IsNullOrWhiteSpace($sasUri)) {
+            throw "Azure Storage SAS URI is empty — the file entry did not return an 'azureStorageUri'. Cannot upload."
+        }
+
         $chunkSizeInBytes = 1024l * 1024l * $azureStorageUploadChunkSizeInMb;
 
         # Start the timer for SAS URI renewal.
@@ -2951,7 +3956,13 @@ function Send-FileToAzureStorage($sasUri, $filepath, $fileUri) {
         $sasProbeWait = 10
         for ($probe = 1; $probe -le $sasProbeRetries; $probe++) {
             try {
-                Invoke-WebRequest -Uri "$sasUri&comp=blocklist" -Method Get -UseBasicParsing | Out-Null
+                $probeParams = @{
+                    Uri             = "$sasUri&comp=blocklist"
+                    Method          = 'Get'
+                    UseBasicParsing = $true
+                }
+                Add-IntuneWinProxyParameter -Parameters $probeParams
+                Invoke-WebRequest @probeParams | Out-Null
                 break
             }
             catch {
@@ -3080,37 +4091,50 @@ function Update-AzureStorageUpload($fileUri) {
 function Wait-FileProcessing($fileUri, $stage) {
 
     Write-Host "Wait-FileProcessing: $fileUri" -ForegroundColor Cyan
-    $attempts = 600;
-    $waitTimeInSeconds = 10;
+
+    # Hardened watchdog: 60 polls * 10 s = 10 min target, capped by a 20 min wall-clock,
+    # with up to 3 retries on transient 'Failed' states.
+    $maxAttempts = 60
+    $waitTimeInSeconds = 10
+    $maxWallClockMinutes = 20
+    $maxFailedRetries = 3
 
     $successState = "$($stage)Success"
     $pendingState = "$($stage)Pending"
+    $failedState = "$($stage)Failed"
 
+    $wallClock = [System.Diagnostics.Stopwatch]::StartNew()
+    $failedRetries = 0
+    $attempt = 0
     $file = $null
-    while ($attempts -gt 0) {
-        $file = Invoke-GetRequest $fileUri;
 
-        Write-Host
-        Write-Host "File: $($file | Out-String)" -ForegroundColor Yellow
-        Write-Host
+    while ($attempt -lt $maxAttempts -and $wallClock.Elapsed.TotalMinutes -lt $maxWallClockMinutes) {
+        $attempt++
+        $file = Invoke-GetRequest $fileUri
 
-        if ($file.uploadState -eq $successState) {
-            break;
+        $currentState = if ($file) { [string]$file.uploadState } else { '<null>' }
+        Write-Host "  Poll $attempt/$maxAttempts (elapsed $([int]$wallClock.Elapsed.TotalSeconds)s): uploadState='$currentState'" -ForegroundColor Yellow
+
+        if ($currentState -eq $successState) {
+            Write-Host "  Stage '$stage' reached success after $attempt polls / $([int]$wallClock.Elapsed.TotalSeconds)s." -ForegroundColor Green
+            return $file
         }
-        elseif ($file.uploadState -ne $pendingState) {
-            Write-Host -ForegroundColor Red $_.Exception.Message;
-            throw "File upload state is not successful: $($file.uploadState)";
+        elseif ($currentState -eq $failedState) {
+            $failedRetries++
+            if ($failedRetries -gt $maxFailedRetries) {
+                throw "File upload state '$currentState' failed $failedRetries times for stage '$stage' (uri: $fileUri)."
+            }
+            Write-Host "  Stage '$stage' returned '$currentState' (retry $failedRetries/$maxFailedRetries) — backing off ${waitTimeInSeconds}s..." -ForegroundColor Red
+        }
+        elseif ($currentState -ne $pendingState) {
+            throw "File upload state is not successful: '$currentState' for stage '$stage' (uri: $fileUri)."
         }
 
-        Start-Sleep $waitTimeInSeconds;
-        $attempts--;
+        Start-Sleep -Seconds $waitTimeInSeconds
     }
 
-    if ($null -eq $file -or $file.uploadState -ne $successState) {
-        throw "File request did not complete in the allotted time.";
-    }
-
-    $file;
+    $wallClock.Stop()
+    throw "File processing watchdog timed out after $attempt polls / $([int]$wallClock.Elapsed.TotalSeconds)s for stage '$stage' (uri: $fileUri)."
 }
 
 ####################################################
@@ -3735,6 +4759,7 @@ function Get-IntuneWinXML() {
 
     $zip.Entries | Where-Object { $_.Name -like "$filename" } | ForEach-Object {
 
+        Test-ZipEntrySafePath -EntryFullName $_.FullName -DestinationDir $Directory
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, "$Directory\$filename", $true)
 
     }
@@ -3778,6 +4803,7 @@ function Get-IntuneWinFile() {
 
     $zip.Entries | Where-Object { $_.Name -like "$filename" } | ForEach-Object {
 
+        Test-ZipEntrySafePath -EntryFullName $_.FullName -DestinationDir "$Directory\$folder"
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, "$Directory\$folder\$filename", $true)
 
     }
@@ -3848,6 +4874,294 @@ NAME: Wait-AppPublishingState
 
     Write-Host "    App '$DisplayName' (ID: $AppId) STUCK in '$currentState' state after $($MaxAttempts * $WaitSeconds)s — will delete and recreate" -ForegroundColor Red
     return $false
+}
+
+####################################################
+
+function Resolve-AppScriptPath {
+    <#
+.SYNOPSIS
+Resolves a configured script path against the package folder
+.DESCRIPTION
+Rooted paths are used as supplied; anything else is treated as relative to the package folder, so
+configs can say 'Scripts\Install.ps1'. Returns an empty string when nothing is configured.
+.PARAMETER Path
+The raw path from Config.xml/Config.json
+.EXAMPLE
+$full = Resolve-AppScriptPath -Path 'Scripts\Install.ps1'
+.NOTES
+NAME: Resolve-AppScriptPath
+#>
+
+    [cmdletbinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Path
+    )
+
+    process {
+        if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+        $trimmed = $Path.Trim()
+        if ([System.IO.Path]::IsPathRooted($trimmed)) { return $trimmed }
+        return (Join-Path -Path $packagePath -ChildPath $trimmed)
+    }
+}
+
+####################################################
+
+function New-IntuneWin32AppScript {
+    <#
+.SYNOPSIS
+Uploads a PowerShell install or uninstall script to a Win32 app content version
+.DESCRIPTION
+Creates a win32LobAppInstallPowerShellScript or win32LobAppUninstallPowerShellScript against the
+app's content version and returns the new script ID. This backs the portal's Program tab
+"Installer type: PowerShell script" / "Uninstaller type: PowerShell script" options.
+
+The script is only stored here - it does not take effect until the app's activeInstallScript /
+activeUninstallScript reference points at the returned ID (see Set-IntuneWin32AppScript).
+.PARAMETER ApplicationId
+The mobileApp ID
+.PARAMETER ContentVersionId
+The content version the script belongs to - the same content version used for the .intunewin upload
+.PARAMETER ScriptType
+'Install' or 'Uninstall'
+.PARAMETER ScriptFile
+Path to the .ps1 file to upload
+.PARAMETER EnforceSignatureCheck
+Require the script to be signed before it will run. Default is $false.
+.PARAMETER RunAs32Bit
+Run the script in a 32-bit PowerShell host. Default is $false (64-bit).
+.EXAMPLE
+$id = New-IntuneWin32AppScript -ApplicationId $appId -ContentVersionId $cv -ScriptType Install -ScriptFile 'C:\Pkg\Scripts\Install.ps1'
+.NOTES
+NAME: New-IntuneWin32AppScript
+#>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ContentVersionId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Install', 'Uninstall')]
+        [string]$ScriptType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptFile,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$EnforceSignatureCheck = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$RunAs32Bit = $false
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        if (-not (Test-Path -Path $ScriptFile -PathType Leaf)) {
+            Write-Log -Message "$ScriptType script not found: $ScriptFile" -LogLevel 3
+            Write-Host "Error: $ScriptType script not found: $ScriptFile" -ForegroundColor Red
+            throw "$ScriptType script not found: $ScriptFile"
+        }
+
+        $bytes = [System.IO.File]::ReadAllBytes($ScriptFile)
+        $encoded = [System.Convert]::ToBase64String($bytes)
+
+        # Graph caps the content property at 100KB, and content is the base64 form
+        if ($encoded.Length -gt 102400) {
+            throw ("$ScriptType script '{0}' is too large: {1:N0} bytes raw / {2:N0} base64 - Graph limits script content to 100KB." -f `
+                (Split-Path $ScriptFile -Leaf), $bytes.Length, $encoded.Length)
+        }
+
+        $odataType = if ($ScriptType -eq 'Install') { '#microsoft.graph.win32LobAppInstallPowerShellScript' } else { '#microsoft.graph.win32LobAppUninstallPowerShellScript' }
+
+        # 'id' and 'state' are read-only and must not be sent
+        $scriptBody = [ordered]@{
+            '@odata.type'           = $odataType
+            'displayName'           = [System.IO.Path]::GetFileName($ScriptFile)
+            'content'               = $encoded
+            'enforceSignatureCheck' = $EnforceSignatureCheck
+            'runAs32Bit'            = $RunAs32Bit
+        }
+        $json = $scriptBody | ConvertTo-Json -Depth 5
+
+        Write-Log -Message "Uploading $ScriptType script '$ScriptFile' ($($bytes.Length) bytes) to content version $ContentVersionId"
+
+        if (-not $PSCmdlet.ShouldProcess($ApplicationId, "Upload $ScriptType PowerShell script '$(Split-Path $ScriptFile -Leaf)'")) {
+            return $null
+        }
+
+        # contentVersions normally needs the win32LobApp cast; the documented path omits it, so try both
+        $uris = @(
+            "mobileApps/$ApplicationId/microsoft.graph.win32LobApp/contentVersions/$ContentVersionId/scripts"
+            "mobileApps/$ApplicationId/contentVersions/$ContentVersionId/scripts"
+        )
+
+        $response = $null
+        $lastError = $null
+        foreach ($uri in $uris) {
+            try {
+                $response = Invoke-PostRequest $uri $json
+                break
+            }
+            catch {
+                $lastError = $_
+                Write-Log -Message "Script upload via '$uri' failed: $($_.Exception.Message)" -LogLevel 2
+            }
+        }
+
+        if ($null -eq $response -or [string]::IsNullOrWhiteSpace([string]$response.id)) {
+            throw "Failed to upload $ScriptType script '$(Split-Path $ScriptFile -Leaf)': $($lastError.Exception.Message)"
+        }
+
+        if ($response.state -eq 'commitFailed') {
+            throw "$ScriptType script '$(Split-Path $ScriptFile -Leaf)' was rejected by Intune (state: commitFailed)"
+        }
+
+        Write-Log -Message "$ScriptType script uploaded - ID: $($response.id), state: $($response.state)"
+        Write-Host "  $ScriptType script uploaded: $(Split-Path $ScriptFile -Leaf) (state: $($response.state))" -ForegroundColor Green
+        return [string]$response.id
+    }
+}
+
+####################################################
+
+function Set-IntuneWin32AppScript {
+    <#
+.SYNOPSIS
+Applies the configured PowerShell install and/or uninstall scripts to a Win32 app
+.DESCRIPTION
+Uploads whichever of the install/uninstall scripts are configured, then points the app's
+activeInstallScript / activeUninstallScript at them. Install and uninstall are independent, so all
+four portal combinations work: script+script, script+command, command+script, command+command
+(the last being the default when no script is configured).
+
+Where a script is set, Intune ignores the corresponding command line - Graph documents the
+reference as "when null, the install command line is used instead".
+.PARAMETER ApplicationId
+The mobileApp ID
+.PARAMETER ContentVersionId
+The content version the scripts belong to
+.PARAMETER InstallScriptFile
+Optional path to the install .ps1
+.PARAMETER UninstallScriptFile
+Optional path to the uninstall .ps1
+.PARAMETER InstallScriptEnforceSignatureCheck
+Require the install script to be signed
+.PARAMETER InstallScriptRunAs32Bit
+Run the install script in a 32-bit PowerShell host
+.PARAMETER UninstallScriptEnforceSignatureCheck
+Require the uninstall script to be signed
+.PARAMETER UninstallScriptRunAs32Bit
+Run the uninstall script in a 32-bit PowerShell host
+.EXAMPLE
+Set-IntuneWin32AppScript -ApplicationId $appId -ContentVersionId $cv -InstallScriptFile 'C:\Pkg\Install.ps1'
+.NOTES
+NAME: Set-IntuneWin32AppScript
+#>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ApplicationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ContentVersionId,
+
+        [Parameter(Mandatory = $false)]
+        [string]$InstallScriptFile,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UninstallScriptFile,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$InstallScriptEnforceSignatureCheck = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$InstallScriptRunAs32Bit = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$UninstallScriptEnforceSignatureCheck = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$UninstallScriptRunAs32Bit = $false
+    )
+
+    begin {
+        Write-Log -Message "$($MyInvocation.InvocationName) function..."
+    }
+
+    process {
+        $hasInstall = -not [string]::IsNullOrWhiteSpace($InstallScriptFile)
+        $hasUninstall = -not [string]::IsNullOrWhiteSpace($UninstallScriptFile)
+        if (-not $hasInstall -and -not $hasUninstall) { return $true }
+
+        Write-Host
+        Write-Host "Applying PowerShell script installer settings..." -ForegroundColor Cyan
+
+        $reference = [ordered]@{}
+
+        if ($hasInstall) {
+            $installId = New-IntuneWin32AppScript -ApplicationId $ApplicationId -ContentVersionId $ContentVersionId `
+                -ScriptType 'Install' -ScriptFile $InstallScriptFile `
+                -EnforceSignatureCheck $InstallScriptEnforceSignatureCheck -RunAs32Bit $InstallScriptRunAs32Bit
+            if ($installId) {
+                $reference['activeInstallScript'] = [ordered]@{
+                    '@odata.type' = 'microsoft.graph.mobileAppScriptReference'
+                    'targetId'    = $installId
+                }
+            }
+        }
+
+        if ($hasUninstall) {
+            $uninstallId = New-IntuneWin32AppScript -ApplicationId $ApplicationId -ContentVersionId $ContentVersionId `
+                -ScriptType 'Uninstall' -ScriptFile $UninstallScriptFile `
+                -EnforceSignatureCheck $UninstallScriptEnforceSignatureCheck -RunAs32Bit $UninstallScriptRunAs32Bit
+            if ($uninstallId) {
+                $reference['activeUninstallScript'] = [ordered]@{
+                    '@odata.type' = 'microsoft.graph.mobileAppScriptReference'
+                    'targetId'    = $uninstallId
+                }
+            }
+        }
+
+        if ($reference.Count -eq 0) { return $false }
+
+        $reference['@odata.type'] = '#microsoft.graph.win32LobApp'
+        $json = $reference | ConvertTo-Json -Depth 5
+
+        if (-not $PSCmdlet.ShouldProcess($ApplicationId, "Activate PowerShell script installer ($($reference.Keys -join ', '))")) {
+            return $true
+        }
+
+        try {
+            Invoke-PatchRequest "mobileApps/$ApplicationId" $json | Out-Null
+        }
+        catch {
+            Write-Log -Message "Failed to activate PowerShell script installer: $($_.Exception.Message)" -LogLevel 3
+            Write-Host "Error: uploaded the script(s) but could not activate them - $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+
+        if ($reference.Contains('activeInstallScript')) {
+            Write-Host "  Install uses PowerShell script (install command line ignored)" -ForegroundColor Green
+        }
+        if ($reference.Contains('activeUninstallScript')) {
+            Write-Host "  Uninstall uses PowerShell script (uninstall command line ignored)" -ForegroundColor Green
+        }
+        Write-Log -Message "PowerShell script installer activated for app $ApplicationId"
+        return $true
+    }
 }
 
 ####################################################
@@ -4403,6 +5717,14 @@ NAME: Send-Win32Lob
             throw "Content upload failed for '$displayName' after $maxUploadAttempts attempts"
         }
 
+        # Scripts hang off the committed content version, so they can only be added once the upload has landed
+        $null = Set-IntuneWin32AppScript -ApplicationId $appId -ContentVersionId $contentVersionId `
+            -InstallScriptFile $script:InstallScriptFile -UninstallScriptFile $script:UninstallScriptFile `
+            -InstallScriptEnforceSignatureCheck ([bool]$script:InstallScriptEnforceSignatureCheck) `
+            -InstallScriptRunAs32Bit ([bool]$script:InstallScriptRunAs32Bit) `
+            -UninstallScriptEnforceSignatureCheck ([bool]$script:UninstallScriptEnforceSignatureCheck) `
+            -UninstallScriptRunAs32Bit ([bool]$script:UninstallScriptRunAs32Bit)
+
     }
 
     catch {
@@ -4589,6 +5911,14 @@ NAME: Update-Win32LobContent
             throw "Content upload failed for application ID '$AppId' after $maxUploadAttempts attempts"
         }
 
+        # Scripts belong to the new content version, so re-apply them whenever content is replaced
+        $null = Set-IntuneWin32AppScript -ApplicationId $AppId -ContentVersionId $contentVersionId `
+            -InstallScriptFile $script:InstallScriptFile -UninstallScriptFile $script:UninstallScriptFile `
+            -InstallScriptEnforceSignatureCheck ([bool]$script:InstallScriptEnforceSignatureCheck) `
+            -InstallScriptRunAs32Bit ([bool]$script:InstallScriptRunAs32Bit) `
+            -UninstallScriptEnforceSignatureCheck ([bool]$script:UninstallScriptEnforceSignatureCheck) `
+            -UninstallScriptRunAs32Bit ([bool]$script:UninstallScriptRunAs32Bit)
+
         Write-Host "Successfully updated content for application ID: $AppId" -ForegroundColor Green
         Write-Host
 
@@ -4637,16 +5967,14 @@ NAME: Get-XMLConfig
         [xml]$script:XML_Content = Get-Content $XMLFile
 
         foreach ($XMLEntity in $XML_Content.GetElementsByTagName("Azure_Settings")) {
-            <#
-            If (Test-Null($Username)) {
-                $script:Username = [string]$XMLEntity.Username
-            }
-            #>
             $script:baseUrl = [string]$XMLEntity.baseUrl
             $script:logRequestUris = [string]$XMLEntity.logRequestUris
             $script:logHeaders = [string]$XMLEntity.logHeaders
             $script:logContent = [string]$XMLEntity.logContent
             $script:azureStorageUploadChunkSizeInMb = [string]$XMLEntity.azureStorageUploadChunkSizeInMb
+            if ([string]::IsNullOrWhiteSpace([string]$script:azureStorageUploadChunkSizeInMb) -or [int]$script:azureStorageUploadChunkSizeInMb -lt 1) {
+                $script:azureStorageUploadChunkSizeInMb = 25
+            }
             $script:sleep = [int32]$XMLEntity.sleep
         }
 
@@ -4773,18 +6101,26 @@ NAME: Get-XMLConfig
             # Custom Return Codes (comma-separated list of code:type pairs, e.g., "3010:softReboot,1641:hardReboot")
             $script:CustomReturnCodes = [string]$XMLEntity.CustomReturnCodes
 
-            # Dependencies (comma-separated list of app display names)
-            $script:Dependencies = [string]$XMLEntity.Dependencies
-            $script:DependencyType = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DependencyType)) { [string]$XMLEntity.DependencyType } else { "autoInstall" }
+            # Dependencies - element may be repeated to give each app its own type, and entries may use 'Name:Type'
+            $script:Dependencies = @($XMLEntity.Dependencies | ForEach-Object { if ($_ -is [System.Xml.XmlElement]) { $_.InnerText } else { [string]$_ } })
+            $script:DependencyType = @($XMLEntity.DependencyType | ForEach-Object { if ($_ -is [System.Xml.XmlElement]) { $_.InnerText } else { [string]$_ } })
 
-            # Supersedence (comma-separated list of app display names)
-            $script:Supersedence = [string]$XMLEntity.Supersedence
-            $script:SupersedenceType = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.SupersedenceType)) { [string]$XMLEntity.SupersedenceType } else { "update" }
+            # Supersedence - element may be repeated to give each app its own type, and entries may use 'Name:Type'
+            $script:Supersedence = @($XMLEntity.Supersedence | ForEach-Object { if ($_ -is [System.Xml.XmlElement]) { $_.InnerText } else { [string]$_ } })
+            $script:SupersedenceType = @($XMLEntity.SupersedenceType | ForEach-Object { if ($_ -is [System.Xml.XmlElement]) { $_.InnerText } else { [string]$_ } })
 
             # PowerShell Script Detection settings
             $script:DetectionScriptFile = [string]$XMLEntity.DetectionScriptFile
             $script:DetectionScriptEnforceSignatureCheck = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptEnforceSignatureCheck)) { [bool]::Parse([string]$XMLEntity.DetectionScriptEnforceSignatureCheck) } else { $false }
             $script:DetectionScriptRunAs32Bit = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.DetectionScriptRunAs32Bit)) { [bool]::Parse([string]$XMLEntity.DetectionScriptRunAs32Bit) } else { $false }
+
+            # PowerShell script installer/uninstaller - set either, both, or neither; whichever is set replaces its command line
+            $script:InstallScriptFile = Resolve-AppScriptPath ([string]$XMLEntity.InstallScriptFile)
+            $script:InstallScriptEnforceSignatureCheck = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.InstallScriptEnforceSignatureCheck)) { [bool]::Parse([string]$XMLEntity.InstallScriptEnforceSignatureCheck) } else { $false }
+            $script:InstallScriptRunAs32Bit = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.InstallScriptRunAs32Bit)) { [bool]::Parse([string]$XMLEntity.InstallScriptRunAs32Bit) } else { $false }
+            $script:UninstallScriptFile = Resolve-AppScriptPath ([string]$XMLEntity.UninstallScriptFile)
+            $script:UninstallScriptEnforceSignatureCheck = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.UninstallScriptEnforceSignatureCheck)) { [bool]::Parse([string]$XMLEntity.UninstallScriptEnforceSignatureCheck) } else { $false }
+            $script:UninstallScriptRunAs32Bit = if (-not [string]::IsNullOrWhiteSpace([string]$XMLEntity.UninstallScriptRunAs32Bit)) { [bool]::Parse([string]$XMLEntity.UninstallScriptRunAs32Bit) } else { $false }
 
             # Read optional upload parameters from Config.xml
             # NewTagPath (boolean, default true)
@@ -4902,7 +6238,16 @@ NAME: Get-JSONConfig
         Write-Log -Message "Reading JSON file: $JSONFile"
 
         try {
-            $script:JSON_Content = Get-Content $JSONFile -Raw | ConvertFrom-Json
+            # Read raw bytes so a UTF-8 BOM can be stripped before JSON parsing.
+            # ConvertFrom-Json on PS 5.1 rejects content that starts with a BOM.
+            $jsonBytes = [System.IO.File]::ReadAllBytes($JSONFile)
+            if ($jsonBytes.Length -ge 3 -and $jsonBytes[0] -eq 0xEF -and $jsonBytes[1] -eq 0xBB -and $jsonBytes[2] -eq 0xBF) {
+                $jsonText = [System.Text.Encoding]::UTF8.GetString($jsonBytes, 3, $jsonBytes.Length - 3)
+            }
+            else {
+                $jsonText = [System.Text.Encoding]::UTF8.GetString($jsonBytes)
+            }
+            $script:JSON_Content = $jsonText | ConvertFrom-Json
         }
         catch {
             Write-Log -Message "Error - Failed to parse JSON file: $JSONFile - $_" -LogLevel 3
@@ -4914,7 +6259,7 @@ NAME: Get-JSONConfig
         $script:logRequestUris = '$true'
         $script:logHeaders = '$false'
         $script:logContent = '$true'
-        $script:azureStorageUploadChunkSizeInMb = 6
+        $script:azureStorageUploadChunkSizeInMb = 25
         $script:sleep = 5
 
         # Override Azure settings if present in JSON
@@ -5072,7 +6417,6 @@ NAME: Get-JSONConfig
         # Dependencies (array of app display names)
         $script:Dependencies = $JSON_Content.dependencies
         $script:DependencyType = if ($JSON_Content.dependencyType) { [string]$JSON_Content.dependencyType } else { "autoInstall" }
-
         # Supersedence (array of app display names)
         $script:Supersedence = $JSON_Content.supersedence
         $script:SupersedenceType = if ($JSON_Content.supersedenceType) { [string]$JSON_Content.supersedenceType } else { "update" }
@@ -5081,6 +6425,14 @@ NAME: Get-JSONConfig
         $script:DetectionScriptFile = if ($JSON_Content.detectionScriptFile) { [string]$JSON_Content.detectionScriptFile } else { "" }
         $script:DetectionScriptEnforceSignatureCheck = if ($null -ne $JSON_Content.detectionScriptEnforceSignatureCheck) { [bool]$JSON_Content.detectionScriptEnforceSignatureCheck } else { $false }
         $script:DetectionScriptRunAs32Bit = if ($null -ne $JSON_Content.detectionScriptRunAs32Bit) { [bool]$JSON_Content.detectionScriptRunAs32Bit } else { $false }
+
+        # PowerShell script installer/uninstaller - set either, both, or neither; whichever is set replaces its command line
+        $script:InstallScriptFile = Resolve-AppScriptPath ([string]$JSON_Content.installScriptFile)
+        $script:InstallScriptEnforceSignatureCheck = if ($null -ne $JSON_Content.installScriptEnforceSignatureCheck) { [bool]$JSON_Content.installScriptEnforceSignatureCheck } else { $false }
+        $script:InstallScriptRunAs32Bit = if ($null -ne $JSON_Content.installScriptRunAs32Bit) { [bool]$JSON_Content.installScriptRunAs32Bit } else { $false }
+        $script:UninstallScriptFile = Resolve-AppScriptPath ([string]$JSON_Content.uninstallScriptFile)
+        $script:UninstallScriptEnforceSignatureCheck = if ($null -ne $JSON_Content.uninstallScriptEnforceSignatureCheck) { [bool]$JSON_Content.uninstallScriptEnforceSignatureCheck } else { $false }
+        $script:UninstallScriptRunAs32Bit = if ($null -ne $JSON_Content.uninstallScriptRunAs32Bit) { [bool]$JSON_Content.uninstallScriptRunAs32Bit } else { $false }
 
         # Additional Requirement Rules (array of requirement rule objects)
         $script:RequirementRules = $JSON_Content.requirementRules
@@ -5589,8 +6941,8 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 else {
                     # Auto-detect a PNG/JPG/JPEG in the package folder
                     $autoLogo = Get-ChildItem -Path $packagePath -File -ErrorAction SilentlyContinue |
-                        Where-Object { $_.Extension -match '^\.(png|jpg|jpeg)$' } |
-                        Select-Object -First 1
+                    Where-Object { $_.Extension -match '^\.(png|jpg|jpeg)$' } |
+                    Select-Object -First 1
                     if ($autoLogo) {
                         $LogoFile = $autoLogo.Name
                         $script:LogoFile = $LogoFile
@@ -5786,17 +7138,8 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         try {
                             # Convert to JSON explicitly with proper depth to ensure correct serialization
                             $logoJson = $logoBody | ConvertTo-Json -Depth 10 -Compress
-                            if ($userName) {
-                                # Using legacy auth token method
-                                $clonedHeaders = Copy-Object $authToken
-                                $clonedHeaders["content-length"] = $logoJson.Length
-                                $clonedHeaders["content-type"] = "application/json"
-                                $null = Invoke-RestMethod -Uri $logoUri -Method Patch -Headers $clonedHeaders -Body $logoJson -UseBasicParsing
-                            }
-                            else {
-                                # Using Invoke-MgGraphRequest with pre-serialized JSON string and explicit content type
-                                $null = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoJson -ContentType "application/json"
-                            }
+                            # Using Invoke-MgGraphRequest with pre-serialized JSON string and explicit content type
+                            $null = Invoke-MgGraphRequest -Uri $logoUri -Method PATCH -Body $logoJson -ContentType "application/json"
                             Write-Log -Message "Logo added successfully"
                             Write-Host "Logo added successfully" -ForegroundColor Green
                         }
@@ -5816,6 +7159,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     }
 
                     # Check publishingState before update — a stuck app needs to be deleted and recreated
+                    $stuckAppDeleted = $false
                     $isPublished = Wait-AppPublishingState -AppId $appID -DisplayName $displayName
                     if (-not $isPublished) {
                         Write-Host "    Deleting stuck app '$displayName' (ID: $appID)..." -ForegroundColor Yellow
@@ -5825,181 +7169,174 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                         Write-Host "    Stuck app deleted — falling through to full upload path" -ForegroundColor Green
                         # Clear appID so the main flow treats this as a new app
                         $appID = $null
+                        $stuckAppDeleted = $true
                     }
                     else {
                         # Call the content replacement function
                         Update-Win32LobContent -AppId $appID -SourceFile $script:SourceFile
                     }
 
-                    Write-Log -Message "Content replacement completed for: $displayName"
+                    # When a stuck app was deleted there is no longer an app to patch. Skip the
+                    # content-replacement post-processing (settings/category PATCH calls fail with
+                    # a null appID) and leave $script:contentReplaced unset so the normal upload
+                    # path below recreates the application from scratch.
+                    if (-not $stuckAppDeleted) {
+                        Write-Log -Message "Content replacement completed for: $displayName"
 
-                    # Set allowAvailableUninstall based on config (defaults to true)
-                    $allowUninstallValue = $script:AllowAvailableUninstall
-                    $allowUninstallLabel = if ($allowUninstallValue) { "Enabled" } else { "Disabled" }
-                    Write-Log -Message "Setting allowAvailableUninstall to $allowUninstallValue..."
-                    $uninstallBody = @{
-                        "@odata.type"             = "#microsoft.graph.win32LobApp"
-                        "allowAvailableUninstall" = $allowUninstallValue
-                    }
-                    $appUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
-                    try {
-                        if ($userName) {
-                            # Using legacy auth token method
-                            $uninstallJson = $uninstallBody | ConvertTo-Json -Depth 10
-                            $clonedHeaders = Copy-Object $authToken
-                            $clonedHeaders["content-length"] = $uninstallJson.Length
-                            $clonedHeaders["content-type"] = "application/json"
-                            $null = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $uninstallJson -UseBasicParsing
+                        # Set allowAvailableUninstall based on config (defaults to true)
+                        $allowUninstallValue = $script:AllowAvailableUninstall
+                        $allowUninstallLabel = if ($allowUninstallValue) { "Enabled" } else { "Disabled" }
+                        Write-Log -Message "Setting allowAvailableUninstall to $allowUninstallValue..."
+                        $uninstallBody = @{
+                            "@odata.type"             = "#microsoft.graph.win32LobApp"
+                            "allowAvailableUninstall" = $allowUninstallValue
                         }
-                        else {
+                        $appUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appID"
+                        try {
                             # Using Invoke-MgGraphRequest with hashtable
                             $null = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $uninstallBody
+                            Write-Log -Message "allowAvailableUninstall set to $allowUninstallValue successfully"
+                            Write-Host "Allow available uninstall: $allowUninstallLabel" -ForegroundColor Green
                         }
-                        Write-Log -Message "allowAvailableUninstall set to $allowUninstallValue successfully"
-                        Write-Host "Allow available uninstall: $allowUninstallLabel" -ForegroundColor Green
-                    }
-                    catch {
-                        Write-Log -Message "Warning: Failed to set allowAvailableUninstall - $_" -LogLevel 2
-                        Write-Host "Warning: Failed to set allowAvailableUninstall - $_" -ForegroundColor Yellow
-                    }
+                        catch {
+                            Write-Log -Message "Warning: Failed to set allowAvailableUninstall - $_" -LogLevel 2
+                            Write-Host "Warning: Failed to set allowAvailableUninstall - $_" -ForegroundColor Yellow
+                        }
 
-                    # Re-apply settings from config file (description, displayVersion, publisher)
-                    Write-Log -Message "Re-applying settings from config file..."
-                    Write-Host "Updating application properties from config..." -ForegroundColor Cyan
+                        # Re-apply settings from config file (description, displayVersion, publisher)
+                        Write-Log -Message "Re-applying settings from config file..."
+                        Write-Host "Updating application properties from config..." -ForegroundColor Cyan
 
-                    # Build minimum supported OS properties for ReplaceExistingContent
-                    $minOSResultForReplace = $null
-                    if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
-                        $minOSResultForReplace = Get-MinimumOperatingSystemObject -MinimumOS $script:MinimumSupportedOS
-                    }
+                        # Build minimum supported OS properties for ReplaceExistingContent
+                        $minOSResultForReplace = $null
+                        if (-not [string]::IsNullOrWhiteSpace($script:MinimumSupportedOS)) {
+                            $minOSResultForReplace = Get-MinimumOperatingSystemObject -MinimumOS $script:MinimumSupportedOS
+                        }
 
-                    $settingsBody = @{
-                        "@odata.type"    = "#microsoft.graph.win32LobApp"
-                        "description"    = $script:Description
-                        "displayVersion" = $script:displayVersion
-                        "publisher"      = $script:Publisher
-                    }
+                        $settingsBody = @{
+                            "@odata.type"    = "#microsoft.graph.win32LobApp"
+                            "description"    = $script:Description
+                            "displayVersion" = $script:displayVersion
+                            "publisher"      = $script:Publisher
+                        }
 
-                    # Add logo to settings body if loaded from config
-                    if (-not [string]::IsNullOrWhiteSpace($Icon)) {
-                        # Determine image type based on file extension
-                        $imageType = "image/png"
-                        if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
-                            $extension = [System.IO.Path]::GetExtension($LogoFile).ToLower()
-                            switch ($extension) {
-                                ".jpg" { $imageType = "image/jpeg" }
-                                ".jpeg" { $imageType = "image/jpeg" }
-                                ".png" { $imageType = "image/png" }
+                        # Add logo to settings body if loaded from config
+                        if (-not [string]::IsNullOrWhiteSpace($Icon)) {
+                            # Determine image type based on file extension
+                            $imageType = "image/png"
+                            if (-not [string]::IsNullOrWhiteSpace($LogoFile)) {
+                                $extension = [System.IO.Path]::GetExtension($LogoFile).ToLower()
+                                switch ($extension) {
+                                    ".jpg" { $imageType = "image/jpeg" }
+                                    ".jpeg" { $imageType = "image/jpeg" }
+                                    ".png" { $imageType = "image/png" }
+                                }
+                            }
+                            $settingsBody["largeIcon"] = @{
+                                "type"  = $imageType
+                                "value" = $Icon
+                            }
+                            Write-Log -Message "Including logo in settings update (Base64 length: $($Icon.Length))"
+                        }
+
+                        # Add extended settings if they are provided in config
+                        if ($script:IsFeatured -eq $true) {
+                            $settingsBody["isFeatured"] = $true
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:InformationUrl)) {
+                            $settingsBody["informationUrl"] = $script:InformationUrl
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:PrivacyInformationUrl)) {
+                            $settingsBody["privacyInformationUrl"] = $script:PrivacyInformationUrl
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:Developer)) {
+                            $settingsBody["developer"] = $script:Developer
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:Owner)) {
+                            $settingsBody["owner"] = $script:Owner
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:Notes)) {
+                            $settingsBody["notes"] = $script:Notes
+                        }
+
+                        # Add install experience settings
+                        $installExp = @{
+                            "runAsAccount" = $script:InstallExperience
+                        }
+                        if ($script:MaxRunTimeInMinutes -gt 0) {
+                            $installExp["maxRunTimeInMinutes"] = $script:MaxRunTimeInMinutes
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:DeviceRestartBehavior)) {
+                            $installExp["deviceRestartBehavior"] = $script:DeviceRestartBehavior
+                        }
+                        $settingsBody["installExperience"] = $installExp
+
+                        # Add system requirement settings
+                        if ($script:MinimumFreeDiskSpaceInMB -gt 0) {
+                            $settingsBody["minimumFreeDiskSpaceInMB"] = $script:MinimumFreeDiskSpaceInMB
+                        }
+                        if ($script:MinimumMemoryInMB -gt 0) {
+                            $settingsBody["minimumMemoryInMB"] = $script:MinimumMemoryInMB
+                        }
+                        if ($script:MinimumNumberOfProcessors -gt 0) {
+                            $settingsBody["minimumNumberOfProcessors"] = $script:MinimumNumberOfProcessors
+                        }
+                        if ($script:MinimumCpuSpeedInMHz -gt 0) {
+                            $settingsBody["minimumCpuSpeedInMHz"] = $script:MinimumCpuSpeedInMHz
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($script:AllowedArchitectures)) {
+                            $settingsBody["applicableArchitectures"] = $script:AllowedArchitectures
+                        }
+                        if ($null -ne $minOSResultForReplace) {
+                            if ($null -ne $minOSResultForReplace.osObject) {
+                                $settingsBody["minimumSupportedOperatingSystem"] = $minOSResultForReplace.osObject
+                            }
+                            if ($minOSResultForReplace.windowsRelease) {
+                                $settingsBody["minimumSupportedWindowsRelease"] = $minOSResultForReplace.windowsRelease
                             }
                         }
-                        $settingsBody["largeIcon"] = @{
-                            "type"  = $imageType
-                            "value" = $Icon
-                        }
-                        Write-Log -Message "Including logo in settings update (Base64 length: $($Icon.Length))"
-                    }
 
-                    # Add extended settings if they are provided in config
-                    if ($script:IsFeatured -eq $true) {
-                        $settingsBody["isFeatured"] = $true
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:InformationUrl)) {
-                        $settingsBody["informationUrl"] = $script:InformationUrl
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:PrivacyInformationUrl)) {
-                        $settingsBody["privacyInformationUrl"] = $script:PrivacyInformationUrl
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:Developer)) {
-                        $settingsBody["developer"] = $script:Developer
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:Owner)) {
-                        $settingsBody["owner"] = $script:Owner
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:Notes)) {
-                        $settingsBody["notes"] = $script:Notes
-                    }
-
-                    # Add install experience settings
-                    $installExp = @{
-                        "runAsAccount" = $script:InstallExperience
-                    }
-                    if ($script:MaxRunTimeInMinutes -gt 0) {
-                        $installExp["maxRunTimeInMinutes"] = $script:MaxRunTimeInMinutes
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:DeviceRestartBehavior)) {
-                        $installExp["deviceRestartBehavior"] = $script:DeviceRestartBehavior
-                    }
-                    $settingsBody["installExperience"] = $installExp
-
-                    # Add system requirement settings
-                    if ($script:MinimumFreeDiskSpaceInMB -gt 0) {
-                        $settingsBody["minimumFreeDiskSpaceInMB"] = $script:MinimumFreeDiskSpaceInMB
-                    }
-                    if ($script:MinimumMemoryInMB -gt 0) {
-                        $settingsBody["minimumMemoryInMB"] = $script:MinimumMemoryInMB
-                    }
-                    if ($script:MinimumNumberOfProcessors -gt 0) {
-                        $settingsBody["minimumNumberOfProcessors"] = $script:MinimumNumberOfProcessors
-                    }
-                    if ($script:MinimumCpuSpeedInMHz -gt 0) {
-                        $settingsBody["minimumCpuSpeedInMHz"] = $script:MinimumCpuSpeedInMHz
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($script:AllowedArchitectures)) {
-                        $settingsBody["applicableArchitectures"] = $script:AllowedArchitectures
-                    }
-                    if ($null -ne $minOSResultForReplace) {
-                        if ($null -ne $minOSResultForReplace.osObject) {
-                            $settingsBody["minimumSupportedOperatingSystem"] = $minOSResultForReplace.osObject
-                        }
-                        if ($minOSResultForReplace.windowsRelease) {
-                            $settingsBody["minimumSupportedWindowsRelease"] = $minOSResultForReplace.windowsRelease
-                        }
-                    }
-
-                    try {
-                        # Convert to JSON explicitly with proper depth to ensure correct serialization (especially for largeIcon)
-                        $settingsJson = $settingsBody | ConvertTo-Json -Depth 10 -Compress
-                        if ($userName) {
-                            $clonedHeaders = Copy-Object $authToken
-                            $clonedHeaders["content-length"] = $settingsJson.Length
-                            $clonedHeaders["content-type"] = "application/json"
-                            $null = Invoke-RestMethod -Uri $appUri -Method Patch -Headers $clonedHeaders -Body $settingsJson -UseBasicParsing
-                        }
-                        else {
+                        try {
+                            # Convert to JSON explicitly with proper depth to ensure correct serialization (especially for largeIcon)
+                            $settingsJson = $settingsBody | ConvertTo-Json -Depth 10 -Compress
                             $null = Invoke-MgGraphRequest -Uri $appUri -Method PATCH -Body $settingsJson -ContentType "application/json"
+                            Write-Log -Message "Settings updated: description, displayVersion, publisher and extended settings"
+                            Write-Host "Description: Updated" -ForegroundColor Green
+                            Write-Host "Display Version: $($script:displayVersion)" -ForegroundColor Green
+                            Write-Host "Publisher: $($script:Publisher)" -ForegroundColor Green
+                            if (-not [string]::IsNullOrWhiteSpace($Icon)) { Write-Host "Logo: Updated" -ForegroundColor Green }
+                            if ($script:IsFeatured) { Write-Host "Featured App: $($script:IsFeatured)" -ForegroundColor Green }
+                            if ($script:InformationUrl) { Write-Host "Information URL: $($script:InformationUrl)" -ForegroundColor Green }
+                            if ($script:PrivacyInformationUrl) { Write-Host "Privacy URL: $($script:PrivacyInformationUrl)" -ForegroundColor Green }
+                            if ($script:Developer) { Write-Host "Developer: $($script:Developer)" -ForegroundColor Green }
+                            if ($script:Owner) { Write-Host "Owner: $($script:Owner)" -ForegroundColor Green }
+                            if ($script:MaxRunTimeInMinutes -gt 60) { Write-Host "Max Run Time: $($script:MaxRunTimeInMinutes) minutes" -ForegroundColor Green }
+                            if ($script:DeviceRestartBehavior -ne "suppress") { Write-Host "Device Restart Behavior: $($script:DeviceRestartBehavior)" -ForegroundColor Green }
                         }
-                        Write-Log -Message "Settings updated: description, displayVersion, publisher and extended settings"
-                        Write-Host "Description: Updated" -ForegroundColor Green
-                        Write-Host "Display Version: $($script:displayVersion)" -ForegroundColor Green
-                        Write-Host "Publisher: $($script:Publisher)" -ForegroundColor Green
-                        if (-not [string]::IsNullOrWhiteSpace($Icon)) { Write-Host "Logo: Updated" -ForegroundColor Green }
-                        if ($script:IsFeatured) { Write-Host "Featured App: $($script:IsFeatured)" -ForegroundColor Green }
-                        if ($script:InformationUrl) { Write-Host "Information URL: $($script:InformationUrl)" -ForegroundColor Green }
-                        if ($script:PrivacyInformationUrl) { Write-Host "Privacy URL: $($script:PrivacyInformationUrl)" -ForegroundColor Green }
-                        if ($script:Developer) { Write-Host "Developer: $($script:Developer)" -ForegroundColor Green }
-                        if ($script:Owner) { Write-Host "Owner: $($script:Owner)" -ForegroundColor Green }
-                        if ($script:MaxRunTimeInMinutes -gt 60) { Write-Host "Max Run Time: $($script:MaxRunTimeInMinutes) minutes" -ForegroundColor Green }
-                        if ($script:DeviceRestartBehavior -ne "suppress") { Write-Host "Device Restart Behavior: $($script:DeviceRestartBehavior)" -ForegroundColor Green }
-                    }
-                    catch {
-                        Write-Log -Message "Warning: Failed to update settings - $_" -LogLevel 2
-                        Write-Host "Warning: Failed to update settings - $_" -ForegroundColor Yellow
-                    }
+                        catch {
+                            Write-Log -Message "Warning: Failed to update settings - $_" -LogLevel 2
+                            Write-Host "Warning: Failed to update settings - $_" -ForegroundColor Yellow
+                        }
 
-                    # Apply categories from config file (supports multiple comma-separated categories)
-                    if ($script:Categories -and $script:Categories.Count -gt 0) {
-                        Write-Log -Message "Applying categories from config: $($script:Categories -join ', ')"
-                        foreach ($cat in $script:Categories) {
-                            $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $cat
-                            if (-not $categoryResult) {
-                                Write-Log -Message "Warning: Category assignment may have failed for '$cat'" -LogLevel 2
+                        # Apply categories from config file (supports multiple comma-separated categories)
+                        if ($script:Categories -and $script:Categories.Count -gt 0) {
+                            Write-Log -Message "Applying categories from config: $($script:Categories -join ', ')"
+                            foreach ($cat in $script:Categories) {
+                                $categoryResult = Set-IntuneAppCategory -ApplicationId $appID -CategoryName $cat
+                                if (-not $categoryResult) {
+                                    Write-Log -Message "Warning: Category assignment may have failed for '$cat'" -LogLevel 2
+                                }
                             }
                         }
-                    }
 
-                    # Skip the normal upload process and group assignment when just replacing content
-                    # Jump to scope tag handling if specified
-                    $script:contentReplaced = $true
+                        # Skip the normal upload process and group assignment when just replacing content
+                        # Jump to scope tag handling if specified
+                        $script:contentReplaced = $true
+                    }
+                    else {
+                        Write-Log -Message "Stuck app was deleted - proceeding with full upload to recreate the application"
+                        Write-Host "Recreating application from scratch..." -ForegroundColor Cyan
+                    }
                 }
                 elseif ($ReplaceExistingAssignments) {
                     # ReplaceExistingAssignments mode - skip content upload, just update assignments
@@ -6023,7 +7360,10 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     Write-Host "Tip: Use -ReplaceExistingContent parameter to replace the package content while keeping all configuration." -ForegroundColor Yellow
                     Write-Host "Tip: Use -ReplaceExistingAssignments parameter to replace the assignments only." -ForegroundColor Yellow
                     Write-Host
-                    exit
+                    Write-Host "App already exists and is published — skipping upload (use -ReplaceExistingContent to replace)" -ForegroundColor Yellow
+                    Write-Log -Message "App already exists and is published — skipping upload (use -ReplaceExistingContent to replace)"
+                    $script:exitCode = 0
+                    return 0
                 }
             }
             else {
@@ -6113,6 +7453,16 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                     allowedArchitectures      = $script:AllowedArchitectures
                     minimumSupportedOS        = $script:MinimumSupportedOS
                     requirementRules          = $additionalRequirementRules
+                }
+
+                # Graph still requires both command lines even when a PowerShell script supersedes them
+                if ([string]::IsNullOrWhiteSpace($installCmdLine) -and -not [string]::IsNullOrWhiteSpace($script:InstallScriptFile)) {
+                    $installCmdLine = "powershell.exe -ExecutionPolicy Bypass -File `".\$(Split-Path $script:InstallScriptFile -Leaf)`""
+                    Write-Log -Message "No installCmdLine configured - using placeholder for script installer: $installCmdLine"
+                }
+                if ([string]::IsNullOrWhiteSpace($uninstallCmdLine) -and -not [string]::IsNullOrWhiteSpace($script:UninstallScriptFile)) {
+                    $uninstallCmdLine = "powershell.exe -ExecutionPolicy Bypass -File `".\$(Split-Path $script:UninstallScriptFile -Leaf)`""
+                    Write-Log -Message "No uninstallCmdLine configured - using placeholder for script uninstaller: $uninstallCmdLine"
                 }
 
                 Send-Win32Lob -EXE -SourceFile "$SourceFile" -publisher "$Publisher" -description "$Description" -detectionRules $DetectionRule `
@@ -6213,59 +7563,41 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
         if (-not (Test-Null($appID))) {
             # Process Dependencies
-            if ($script:Dependencies) {
+            $dependencyEntries = @(ConvertTo-AppRelationshipEntry -Value $script:Dependencies -TypeValue $script:DependencyType `
+                    -ValidType 'detect', 'autoInstall' -DefaultType 'autoInstall' -Label 'dependency')
+
+            if ($dependencyEntries.Count -gt 0) {
                 Write-Log -Message "Processing dependencies..."
                 Write-Host "Processing dependencies..." -ForegroundColor Cyan
 
-                $dependencyList = @()
-                if ($script:Dependencies -is [string]) {
-                    # Parse comma-separated list from XML
-                    $dependencyList = $script:Dependencies -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-                }
-                elseif ($script:Dependencies -is [array]) {
-                    # Array from JSON
-                    $dependencyList = $script:Dependencies
-                }
-
-                foreach ($depAppName in $dependencyList) {
-                    if (-not [string]::IsNullOrWhiteSpace($depAppName)) {
-                        Write-Log -Message "Adding dependency: $depAppName"
-                        $result = Set-IntuneAppDependency -SourceAppId $appID -TargetAppDisplayName $depAppName -DependencyType $script:DependencyType
-                        if ($result) {
-                            Write-Host "  Dependency added: $depAppName ($($script:DependencyType))" -ForegroundColor Green
-                        }
-                        else {
-                            Write-Host "  Failed to add dependency: $depAppName" -ForegroundColor Yellow
-                        }
+                foreach ($dep in $dependencyEntries) {
+                    Write-Log -Message "Adding dependency: $($dep.Name) ($($dep.Type))"
+                    $result = Set-IntuneAppDependency -ApplicationId $appID -DependencyAppId $dep.Name -DependencyType $dep.Type
+                    if ($result) {
+                        Write-Host "  Dependency added: $($dep.Name) ($($dep.Type))" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "  Failed to add dependency: $($dep.Name)" -ForegroundColor Yellow
                     }
                 }
             }
 
             # Process Supersedence
-            if ($script:Supersedence) {
+            $supersedenceEntries = @(ConvertTo-AppRelationshipEntry -Value $script:Supersedence -TypeValue $script:SupersedenceType `
+                    -ValidType 'update', 'replace' -DefaultType 'update' -Label 'supersedence')
+
+            if ($supersedenceEntries.Count -gt 0) {
                 Write-Log -Message "Processing supersedence..."
                 Write-Host "Processing supersedence..." -ForegroundColor Cyan
 
-                $supersedenceList = @()
-                if ($script:Supersedence -is [string]) {
-                    # Parse comma-separated list from XML
-                    $supersedenceList = $script:Supersedence -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-                }
-                elseif ($script:Supersedence -is [array]) {
-                    # Array from JSON
-                    $supersedenceList = $script:Supersedence
-                }
-
-                foreach ($supersededAppName in $supersedenceList) {
-                    if (-not [string]::IsNullOrWhiteSpace($supersededAppName)) {
-                        Write-Log -Message "Adding supersedence: $supersededAppName"
-                        $result = Set-IntuneAppSupersedence -SourceAppId $appID -TargetAppDisplayName $supersededAppName -SupersedenceType $script:SupersedenceType
-                        if ($result) {
-                            Write-Host "  Supersedence added: $supersededAppName ($($script:SupersedenceType))" -ForegroundColor Green
-                        }
-                        else {
-                            Write-Host "  Failed to add supersedence: $supersededAppName" -ForegroundColor Yellow
-                        }
+                foreach ($sup in $supersedenceEntries) {
+                    Write-Log -Message "Adding supersedence: $($sup.Name) ($($sup.Type))"
+                    $result = Set-IntuneAppSupersedence -ApplicationId $appID -SupersededAppId $sup.Name -SupersedenceType $sup.Type
+                    if ($result) {
+                        Write-Host "  Supersedence added: $($sup.Name) ($($sup.Type))" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "  Failed to add supersedence: $($sup.Name)" -ForegroundColor Yellow
                     }
                 }
             }
@@ -6335,12 +7667,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 foreach ($reqGroupName in @($RequiredAADGroupName)) {
                     Write-Log -Message "Prepare Entra ID group for required assignment targeting: $reqGroupName"
                     $script:groupsWereCreated = $false
-                    if ($userName) {
-                        $script:exitCode = New-EntraGroup -groupName $reqGroupName
-                    }
-                    else {
-                        $script:exitCode = New-EntraGroupMG -groupName $reqGroupName
-                    }
+                    $script:exitCode = New-EntraGroupMG -groupName $reqGroupName
 
                     if ($script:groupsWereCreated) {
                         Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
@@ -6359,12 +7686,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                     Write-Log -Message "Reading group IDs"
 
-                    if ($userName) {
-                        $installReqGroup = Get-GroupID -GroupName $reqGroupName
-                    }
-                    else {
-                        $installReqGroup = Get-GroupIDMG -GroupName $reqGroupName
-                    }
+                    $installReqGroup = Get-GroupIDMG -GroupName $reqGroupName
 
                     Write-Log -Message "Assigning groups to application..."
                     $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
@@ -6375,12 +7697,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 foreach ($availGroupName in @($AvailableAADGroupName)) {
                     Write-Log -Message "Prepare Entra ID group for available assignment targeting: $availGroupName"
                     $script:groupsWereCreated = $false
-                    if ($userName) {
-                        $script:exitCode = New-EntraGroup -groupName $availGroupName
-                    }
-                    else {
-                        $script:exitCode = New-EntraGroupMG -groupName $availGroupName
-                    }
+                    $script:exitCode = New-EntraGroupMG -groupName $availGroupName
 
                     if ($script:groupsWereCreated) {
                         Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
@@ -6399,12 +7716,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                     Write-Log -Message "Reading group IDs"
 
-                    if ($userName) {
-                        $installAvailGroup = Get-GroupID -GroupName $availGroupName
-                    }
-                    else {
-                        $installAvailGroup = Get-GroupIDMG -GroupName $availGroupName
-                    }
+                    $installAvailGroup = Get-GroupIDMG -GroupName $availGroupName
 
                     Write-Log -Message "Assigning groups to application..."
                     $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installAvailGroup -InstallIntent "available"
@@ -6415,12 +7727,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
                 foreach ($uninstGroupName in @($UninstallAADGroupName)) {
                     Write-Log -Message "Prepare Entra ID group for uninstall assignment targeting: $uninstGroupName"
                     $script:groupsWereCreated = $false
-                    if ($userName) {
-                        $script:exitCode = New-EntraGroup -groupName $uninstGroupName
-                    }
-                    else {
-                        $script:exitCode = New-EntraGroupMG -groupName $uninstGroupName
-                    }
+                    $script:exitCode = New-EntraGroupMG -groupName $uninstGroupName
 
                     if ($script:groupsWereCreated) {
                         Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
@@ -6439,12 +7746,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                     Write-Log -Message "Reading group IDs"
 
-                    if ($userName) {
-                        $uninstallGroup = Get-GroupID -GroupName $uninstGroupName
-                    }
-                    else {
-                        $uninstallGroup = Get-GroupIDMG -GroupName $uninstGroupName
-                    }
+                    $uninstallGroup = Get-GroupIDMG -GroupName $uninstGroupName
 
                     Write-Log -Message "Assigning groups to application..."
                     $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $uninstallGroup -InstallIntent "uninstall"
@@ -6455,12 +7757,7 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
             if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
                 Write-Log -Message "Create Entra ID groups for install/uninstall"
                 $script:groupsWereCreated = $false
-                if ($userName) {
-                    $script:exitCode = New-EntraGroup -groupName $EntraGroupName
-                }
-                else {
-                    $script:exitCode = New-EntraGroupMG -groupName $EntraGroupName
-                }
+                $script:exitCode = New-EntraGroupMG -groupName $EntraGroupName
 
                 if ($script:groupsWereCreated) {
                     Write-Host "Sleeping for $sleep seconds to allow Entra ID group creation..." -f Magenta
@@ -6479,24 +7776,9 @@ NAME: Build-IntuneAppPackage -AppType IntuneAppPackageType -RuleType TAGFILE -Re
 
                 Write-Log -Message "Reading group IDs"
 
-                if ($userName) {
-                    $installReqGroup = Get-GroupID -GroupName "$EntraGroupName-Required"
-                }
-                else {
-                    $installReqGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Required"
-                }
-                if ($userName) {
-                    $installAvailGroup = Get-GroupID -GroupName "$EntraGroupName-Available"
-                }
-                else {
-                    $installAvailGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Available"
-                }
-                if ($userName) {
-                    $uninstallGroup = Get-GroupID -GroupName "$EntraGroupName-UnInstall"
-                }
-                else {
-                    $uninstallGroup = Get-GroupIDMG -GroupName "$EntraGroupName-UnInstall"
-                }
+                $installReqGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Required"
+                $installAvailGroup = Get-GroupIDMG -GroupName "$EntraGroupName-Available"
+                $uninstallGroup = Get-GroupIDMG -GroupName "$EntraGroupName-UnInstall"
 
                 Write-Log -Message "Assigning groups to application..."
                 $null = Add-ApplicationAssignment -ApplicationId $appID -TargetGroupId $installReqGroup -InstallIntent "required"
@@ -6968,81 +8250,6 @@ NAME: New-EntraGroupMG -groupName
 
 ####################################################
 
-function New-EntraGroup {
-    <#
-.SYNOPSIS
-This function creates the relevant install/uninstall Entra ID groups
-.DESCRIPTION
-This function creates the relevant install/uninstall Entra ID groups. Sets $script:groupsWereCreated
-to indicate if any groups were newly created. Supports -WhatIf.
-.EXAMPLE
-New-EntraGroup -groupName "MyGroupName"
-This function creates the relevant install/uninstall Entra ID groups
-.NOTES
-NAME: New-EntraGroup -groupName
-#>
-
-    [cmdletbinding(SupportsShouldProcess = $true)]
-
-    param
-    (
-        [Parameter(Mandatory = $true)]
-        [string]$groupName
-    )
-
-    begin {
-        Write-Log -Message "$($MyInvocation.InvocationName) function..."
-        $script:groupsWereCreated = $false
-    }
-
-    process {
-        Write-Log -Message "groupName: [$groupName]"
-
-        $EntraGroups = $groupName
-        if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroupName)) {
-            $EntraGroups = @("$groupName-Required", "$groupName-Available", "$groupName-Uninstall")
-        }
-
-        foreach ($group in $EntraGroups) {
-            if (Get-AzureADGroup -SearchString $group) {
-                Write-Log -Message "Entra ID group $group already exists!"
-            }
-            else {
-                # Check WhatIf before creating group
-                if (-not $PSCmdlet.ShouldProcess("Entra ID Group '$group'", "Create")) {
-                    Write-Host "WhatIf: Would create Entra ID group '$group'" -ForegroundColor Cyan
-                    Write-Log -Message "WhatIf: Would create Entra ID group '$group'"
-                    continue
-                }
-
-                Write-Log -Message "Creating Entra ID group $group"
-                try {
-                    # mailNickname: remove spaces and invalid chars, append '-Group', truncate to 64 chars max
-                    $mailNick = ($group -replace '[^a-zA-Z0-9_\-\.]', '') + "-Group"
-                    if ($mailNick.Length -gt 64) { $mailNick = $mailNick.Substring(0, 64) }
-                    New-AzureADGroup -DisplayName $group -Description "Group for $group" -MailEnabled $false -SecurityEnabled $true -MailNickName $mailNick
-                    $script:groupsWereCreated = $true
-                }
-                catch {
-                    Write-Log -Message "Error creating Entra ID group $group"
-                    $script:exitCode = -1
-                    exit
-                }
-
-            }
-        }
-    }
-
-    end {
-        if (!($script:exitCode -eq 0)) { return $script:exitCode }# Just return without doing anything else, error tripped
-        Write-Log -Message "Returning..."
-        return $script:exitCode = 0
-    }
-
-}
-
-####################################################
-
 function Get-GroupIDMG {
     <#
 .SYNOPSIS
@@ -7127,56 +8334,6 @@ The function is used to get an Entra ID group and return its object ID if found
 
 ####################################################
 
-function Get-GroupID {
-    <#
-.SYNOPSIS
-This function is used to get an Entra ID group and return its object ID if found
-        .DESCRIPTION
-        The function is used to get an Entra ID group and return its object ID if found
-.EXAMPLE
-Get-GroupID -GroupName GroupNameHere
-The function is used to get an Entra ID group and return its object ID if found
-        .NOTES
-        NAME: Get-GroupID
-        #>
-
-    [cmdletbinding()]
-
-    param
-    (
-        [Parameter(Mandatory = $true)]
-        $GroupName
-    )
-
-    begin {
-        Write-Log -Message "$($MyInvocation.InvocationName) function..."
-    }
-
-    process {
-        Write-Log -Message "Search for group name: $GroupName"
-        $Group = Get-AzureADGroup -SearchString $GroupName
-
-        if (Test-Null($Group)) {
-            Write-Log -Message "Error - could not find group: $GroupName" -LogLevel 3
-            $script:exitCode = -1
-        }
-        else {
-            Write-Log -Message "Found group: `n$Group"
-            $script:exitCode = 0
-        }
-    }
-
-    end {
-        if (!($script:exitCode -eq 0)) { return $script:exitCode }# Just return without doing anything else, error tripped
-        $GroupID = $($Group).ObjectId
-        Write-Log -Message "Returning group ID: [$GroupID]"
-        return $GroupID
-    }
-
-}
-
-####################################################
-
 function Get-ApplicationID {
     <#
 .SYNOPSIS
@@ -7204,14 +8361,7 @@ NAME: Get-ApplicationID
 
     process {
         Write-Log -Message "Search for application name: $AppName"
-        #$filter = "DisplayName eq '"+$AppName+"'"
-        #Write-Log -Message "Using filter: $filter"
-        if ($userName) {
-            $application = Get-IntuneApplication -Name $AppName
-        }
-        else {
-            $application = Get-IntuneApplicationMG -DisplayName $AppName
-        }
+        $application = Get-IntuneApplicationMG -DisplayName $AppName
 
         if (Test-Null($application)) {
             #Write-Log -Message "Error - could not find application: $application" -LogLevel 3
@@ -7231,86 +8381,6 @@ NAME: Get-ApplicationID
 
 ####################################################
 
-function Get-IntuneApplication() {
-
-    <#
-.SYNOPSIS
-This function is used to get applications from the Graph API REST interface
-.DESCRIPTION
-The function connects to the Graph API Interface and gets any applications added
-.EXAMPLE
-Get-IntuneApplication
-Returns any applications configured in Intune
-.NOTES
-NAME: Get-IntuneApplication
-#>
-
-    [cmdletbinding()]
-
-    param
-    (
-        $Name
-    )
-
-    $graphApiVersion = "Beta"
-    $Resource = "deviceAppManagement/mobileApps"
-
-    try {
-        if ($userName) {
-            if ($Name) {
-
-                $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-                (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object { ($_.'displayName').contains("$Name") -and (!($_.'@odata.type').Contains("managed")) -and (!($_.'@odata.type').Contains("#microsoft.graph.iosVppApp")) }
-
-            }
-
-            else {
-
-                $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-                (Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get).Value | Where-Object { (!($_.'@odata.type').Contains("managed")) -and (!($_.'@odata.type').Contains("#microsoft.graph.iosVppApp")) }
-
-            }
-        }
-        else {
-            if ($Name) {
-
-                $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-                (Invoke-MgGraphRequest -Uri "$uri" -Method GET).Value | Where-Object { ($_.'displayName').contains("$Name") -and (!($_.'@odata.type').Contains("managed")) -and (!($_.'@odata.type').Contains("#microsoft.graph.iosVppApp")) }
-
-                #$dcp = Invoke-MgGraphRequest -Uri "$uri" -Method GET
-
-            }
-
-            else {
-
-                $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-                (Invoke-MgGraphRequest -Uri "$uri" -Method GET).Value | Where-Object { (!($_.'@odata.type').Contains("managed")) -and (!($_.'@odata.type').Contains("#microsoft.graph.iosVppApp")) }
-
-            }
-        }
-    }
-
-    catch {
-
-        $ex = $_.Exception
-        Write-Host "Request to $Uri failed with HTTP Status $([int]$ex.Response.StatusCode) $($ex.Response.StatusDescription)" -f Red
-        $errorResponse = $ex.Response.GetResponseStream()
-        $reader = New-Object System.IO.StreamReader($errorResponse)
-        $reader.BaseStream.Position = 0
-        $reader.DiscardBufferedData()
-        $responseBody = $reader.ReadToEnd();
-        Write-Host "Response content:`n$responseBody" -f Red
-        Write-Error "Request to $Uri failed with HTTP Status $($ex.Response.StatusCode) $($ex.Response.StatusDescription)"
-        Write-Host
-        $script:exitCode = 1
-        throw
-
-    }
-
-}
-
-####################################################
-
 function Get-IntuneApplicationMG {
     <#
     .SYNOPSIS
@@ -7322,7 +8392,7 @@ function Get-IntuneApplicationMG {
     .PARAMETER ID
     The Application ID to search for
     .EXAMPLE
-    Get-IntuneApplication
+    Get-IntuneApplicationMG
     Returns any applications configured in Intune
     #>
     [cmdletbinding(DefaultParameterSetName = 'All')]
@@ -7366,75 +8436,6 @@ function Get-IntuneApplicationMG {
     else {
         $return
     }
-}
-
-####################################################
-
-function Set-GroupMember {
-    <#
-.SYNOPSIS
-This function is used to make an object a member of an Entra group
-.DESCRIPTION
-This function is used to make an object a member of an Entra group
-.EXAMPLE
-Set-GroupMember -AddToGroup GroupIDObject -MemberToAdd GroupIDObject
-This function is used to make an object a member of an Entra group
-.NOTES
-NAME: Set-GroupMember
-#>
-
-    [cmdletbinding()]
-
-    param
-    (
-        [Parameter(Mandatory = $true)]
-        [string]$AddToGroup,
-
-        [Parameter(Mandatory = $true)]
-        [string]$MemberToAdd,
-
-        [bool]$Skip = $false
-    )
-
-    begin {
-        Write-Log -Message "$($MyInvocation.InvocationName) function..."
-    }
-
-    process {
-        $MemberName = (Get-AzureADGroup -ObjectId $MemberToAdd).DisplayName
-        $GroupName = (Get-AzureADGroup -ObjectId $AddToGroup).DisplayName
-        Write-Log -Message "Adding $MemberName (member object: $MemberToAdd)"
-        Write-Log -Message "To $GroupName (group object: $AddToGroup)"
-
-
-        $ExistingGroupMembers = Get-AzureADGroupMember -ObjectId $AddToGroup
-        #Write-Log -Message "Existing members: $ExistingGroupMembers"
-
-        foreach ($member in $ExistingGroupMembers) {
-            if ($($member).ObjectId -eq $MemberToAdd) {
-                Write-Log -Message "Member: [$MemberToAdd] already exists, returning..."
-                return $Skip = $true
-            }
-        }
-
-        try {
-            Write-Log -Message "Add member to group"
-            Add-AzureADGroupMember -ObjectId $AddToGroup -RefObjectId $MemberToAdd | Out-Null
-        }
-
-        catch {
-            Write-Log -Message "Error adding member to group" -LogLevel 3
-        }
-
-    }
-
-    end {
-        if ($Skip) { return }# Just return without doing anything else
-        Write-Log -Message "Added member object: $MemberToAdd"
-        Write-Log -Message "To group object: $AddToGroup"
-        return
-    }
-
 }
 
 ####################################################
@@ -7670,12 +8671,7 @@ NAME: Add-ApplicationAssignment
 
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
 
-            if ($userName) {
-                Invoke-RestMethod -Uri $uri -Headers $authToken -Method Post -Body $JSON -ContentType "application/json"
-            }
-            else {
-                Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
-            }
+            Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
             #}
 
         }#Try
@@ -7738,12 +8734,7 @@ NAME: Add-ApplicationAssignment
 
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
 
-            if ($userName) {
-                Invoke-RestMethod -Uri $uri -Headers $authToken -Method Post -Body $JSON -ContentType "application/json"
-            }
-            else {
-                Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
-            }
+            Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
         }
 
     }
@@ -7805,12 +8796,7 @@ NAME: Get-ApplicationLargeIcon
         else {
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
             Write-Log -Message "Fetching largeIcon from: $uri"
-            if ($userName) {
-                $response = Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-            }
-            else {
-                $response = Invoke-MgGraphRequest -Uri $uri -Method Get
-            }
+            $response = Invoke-MgGraphRequest -Uri $uri -Method Get
             return $response
         }
     }
@@ -7860,12 +8846,7 @@ NAME: Get-ApplicationAssignment
         else {
 
             $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
-            if ($userName) {
-                Invoke-RestMethod -Uri $uri -Headers $authToken -Method Get
-            }
-            else {
-                Invoke-MgGraphRequest -Uri $uri -Method Get
-            }
+            Invoke-MgGraphRequest -Uri $uri -Method Get
         }
     }
 
@@ -7941,12 +8922,7 @@ NAME: Clear-ApplicationAssignments
 
         $uri = "https://graph.microsoft.com/$graphApiVersion/$($Resource)"
 
-        if ($userName) {
-            Invoke-RestMethod -Uri $uri -Headers $authToken -Method Post -Body $JSON -ContentType "application/json"
-        }
-        else {
-            Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
-        }
+        Invoke-MgGraphRequest -Uri $uri -Method Post -Body $JSON -ContentType "application/json"
 
         Write-Log -Message "Successfully cleared all assignments"
         return $true
@@ -8014,71 +8990,6 @@ function New-IntuneWin32AppIcon {
     }
     catch [System.Exception] {
         Write-Warning -Message "Failed to encode image file to Base64 encoded string. Error message: $($_.Exception.Message)"
-    }
-}
-
-####################################################
-
-function Test-AuthToken() {
-
-
-    [cmdletbinding()]
-
-    param
-    (
-        [Parameter(Mandatory = $true,
-            HelpMessage = 'Please specify your user principal name for Azure Authentication')]
-        $User
-    )
-
-    # Checking if authToken exists before running authentication
-    if ($global:authToken) {
-
-        # Setting DateTime to Universal time to work in all timezones
-        $DateTime = (Get-Date).ToUniversalTime()
-
-        # If the authToken exists checking when it expires
-        $TokenExpires = ($authToken.ExpiresOn.datetime - $DateTime).Minutes
-
-        if ($TokenExpires -le 0) {
-
-            Write-Host "Authentication Token expired" $TokenExpires "minutes ago" -ForegroundColor Yellow
-            Write-Host
-
-            # Defining Azure AD tenant name, this is the name of your Azure Active Directory (do not use the verified domain name)
-
-            if ($null -eq $User -or $User -eq "") {
-
-                $script:User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-                Write-Host
-
-            }
-
-            $global:authToken = Get-AuthToken -User $User
-            $null = Remove-Module AzureAD -Force -ErrorAction SilentlyContinue | Out-Null
-            Import-Module AzureADPreview -Force
-            Connect-AzureAD -AccountId $Username
-
-        }
-    }
-
-    # Authentication doesn't exist, calling Get-AuthToken function
-
-    else {
-
-        if ($null -eq $User -or $User -eq "") {
-
-            $script:User = Read-Host -Prompt "Please specify your user principal name for Azure Authentication"
-            Write-Host
-
-        }
-
-        # Getting the authorization token
-        $global:authToken = Get-AuthToken -User $User
-        $null = Remove-Module AzureAD -Force -ErrorAction SilentlyContinue | Out-Null
-        Import-Module AzureADPreview -Force
-        Connect-AzureAD -AccountId $Username
-
     }
 }
 
@@ -8304,10 +9215,69 @@ function Invoke-Cleanup {
 ####################################################
 
 Start-Log -FilePath $logFile -DeleteExistingFile
+# Rotate older logs in the Logs subfolder, keeping the most recent runs.
+Remove-OldLogFiles -LogDirectory $logPath -LogPrefix $logPrefix -KeepCount 10
 Write-Host
 Write-Host "Script log file path is [$logFile]" -f Cyan
 Write-Host
 Write-Log -Message "Starting $ScriptName version $BuildVer" -WriteEventLog
+
+####################################################
+# Proxy initialization (opt-in via -ProxyUri or $env:INTUNEWIN_PROXY_URI).
+# Must run BEFORE -DeleteApp mode AND BEFORE the regular #region auth so that
+# every downstream Invoke-MgGraphRequest / Invoke-WebRequest / MSAL token call
+# inherits the proxy from the start.
+####################################################
+
+# -TestProxyConnectivity: alternate path. Validate direct vs proxy connectivity
+# to Microsoft Graph + Entra ID, print a report, exit with 0/1/2.
+if ($TestProxyConnectivity) {
+    try {
+        $proxyTestArgs = @{}
+        if ($ProxyUri) { $proxyTestArgs['ProxyUri'] = $ProxyUri }
+        if ($ProxyCredential) { $proxyTestArgs['ProxyCredential'] = $ProxyCredential }
+        if ($ProxyUseDefaultCredentials) { $proxyTestArgs['UseDefaultCredentials'] = $true }
+        if ($PSBoundParameters.ContainsKey('ProxyBypassList')) { $proxyTestArgs['BypassList'] = $ProxyBypassList }
+        if ($NoProxyBypassLocal) { $proxyTestArgs['BypassOnLocal'] = $false }
+        $proxyTestResult = Invoke-IntuneWinProxyTest @proxyTestArgs
+        Write-Host ''
+        if ($proxyTestResult.Success) {
+            Write-Host '  Overall: PASS' -ForegroundColor Green
+            exit 0
+        }
+        else {
+            Write-Host '  Overall: FAIL' -ForegroundColor Red
+            exit 1
+        }
+    }
+    catch {
+        Write-Host "Proxy connectivity test failed: $($_.Exception.Message)" -ForegroundColor Red
+        exit 2
+    }
+}
+
+if ($ProxyUri -or $env:INTUNEWIN_PROXY_URI) {
+    try {
+        $proxyInitArgs = @{ OnlyIfNeeded = $true }
+        if ($ProxyUri) { $proxyInitArgs['ProxyUri'] = $ProxyUri }
+        if ($ProxyCredential) { $proxyInitArgs['ProxyCredential'] = $ProxyCredential }
+        if ($ProxyUseDefaultCredentials) { $proxyInitArgs['UseDefaultCredentials'] = $true }
+        if ($PSBoundParameters.ContainsKey('ProxyBypassList')) { $proxyInitArgs['BypassList'] = $ProxyBypassList }
+        if ($NoProxyBypassLocal) { $proxyInitArgs['BypassOnLocal'] = $false }
+        Initialize-IntuneWinProxy @proxyInitArgs | Out-Null
+        $proxyCfg = Get-IntuneWinProxyConfiguration
+        if ($proxyCfg) {
+            Write-Log -Message "Proxy configured: $($proxyCfg.ProxyAddress) | BypassOnLocal=$($proxyCfg.BypassOnLocal) | UseDefaultCredentials=$($proxyCfg.UseDefaultCredentials) | BypassList=[$($proxyCfg.BypassList -join ';')]" -WriteHost Green
+        }
+        else {
+            Write-Log -Message 'Direct connectivity to Microsoft Graph / Entra ID OK - proxy not activated (auto-fallback).'
+        }
+    }
+    catch {
+        Write-Log -Message "Proxy configuration failed: $($_.Exception.Message)" -LogLevel 3 -WriteHost Red
+        throw "Proxy configuration failed: $($_.Exception.Message)"
+    }
+}
 
 #endregion Initialisation...
 ##########################################################################################################
@@ -8456,10 +9426,13 @@ if ($DeleteApp) {
             Client_Secret = $ClientSecret
         }
 
-        $connection = Invoke-RestMethod `
-            -Uri https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token `
-            -Method POST `
-            -Body $body
+        $tokenParams = @{
+            Uri    = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
+            Method = 'POST'
+            Body   = $body
+        }
+        Add-IntuneWinProxyParameter -Parameters $tokenParams
+        $connection = Invoke-RestMethod @tokenParams
 
         $token = $connection.access_token
 
@@ -8675,9 +9648,6 @@ if ($overlapAvailUninst) {
     return 1
 }
 
-if ($Username) {
-    Write-Log -Message "Username: [$Username]"
-}
 Write-Log -Message "baseUrl: [$baseUrl]" -WriteHost Magenta
 Write-Log -Message "logRequestUris: [$logRequestUris]"
 Write-Log -Message "logHeaders: [$logHeaders]"
@@ -8743,14 +9713,6 @@ if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroup
 }
 Write-Log -Message "Path to IntuneWinAppUtil: [$IntuneWinAppUtil]"
 Write-Log -Message "SourcePath: [$SourcePath]"
-
-<#
-If (Test-Null($Username)) {
-    Write-Log -Message "Username not found in XML file, prompt user to enter one..."
-    $Username = Read-Host -Prompt "Please specify an Azure admin user name"
-    Write-Log -Message "Admin user account: $Username"
-}
-#>
 
 #region auth
 if ($IntuneWinPackageOnly) {
@@ -8822,10 +9784,6 @@ else {
         # Store connection params for 401 re-auth in Invoke-GraphRequestWithRetry
         $script:MgGraphConnectParams = $connectParams
     }
-    elseif ($userName) {
-        Write-Log -Message "Authenticate to AzureAD..."
-        Test-AuthToken -User $Username
-    }
     elseif ($CertName) {
         Write-Host "Using certname: $CertName"
         if ($CertName -match "CN=") {
@@ -8857,12 +9815,62 @@ else {
             Client_Secret = $ClientSecret
         }
 
-        $connection = Invoke-RestMethod `
-            -Uri https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token `
-            -Method POST `
-            -Body $body
+        $tokenParams = @{
+            Uri    = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
+            Method = 'POST'
+            Body   = $body
+        }
+        Add-IntuneWinProxyParameter -Parameters $tokenParams
+
+        $proxyHelp = @(
+            "The machine is routing outbound traffic through a proxy that requires authentication."
+            "Re-run with one of the following:"
+            "  -ProxyUri 'http://your-proxy:8080' -ProxyUseDefaultCredentials    (Windows-integrated proxy auth)"
+            "  -ProxyUri 'http://your-proxy:8080' -ProxyCredential (Get-Credential)   (explicit proxy account)"
+            "Or set the proxy once for the session with:  `$env:INTUNEWIN_PROXY_URI = 'http://your-proxy:8080'"
+            "Diagnose with:  .\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri 'http://your-proxy:8080'"
+        ) -join [Environment]::NewLine
+
+        $connection = $null
+        try {
+            $connection = Invoke-RestMethod @tokenParams -ErrorAction Stop
+        }
+        catch {
+            $statusCode = $null
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { $statusCode = $null }
+
+            if ($statusCode -eq 407) {
+                Write-Log -Message "Token request rejected with HTTP 407 Proxy Authentication Required" -LogLevel 2
+
+                # A system proxy needing Windows-integrated auth is the common cause; retry once with the caller's credentials
+                if (-not (Test-IntuneWinProxyEnabled) -and (Enable-SystemProxyDefaultCredential)) {
+                    Write-Host "Proxy returned HTTP 407 - retrying with your Windows credentials..." -ForegroundColor Yellow
+                    try {
+                        $connection = Invoke-RestMethod @tokenParams -ErrorAction Stop
+                        Write-Log -Message "Token acquired after attaching default proxy credentials"
+                    }
+                    catch {
+                        Invoke-Cleanup -ForceDisconnect
+                        throw "Proxy authentication failed (HTTP 407) even with your Windows credentials.$([Environment]::NewLine)$proxyHelp"
+                    }
+                }
+                else {
+                    Invoke-Cleanup -ForceDisconnect
+                    throw "Proxy authentication required (HTTP 407) when requesting a token from Entra ID.$([Environment]::NewLine)$proxyHelp"
+                }
+            }
+            else {
+                Invoke-Cleanup -ForceDisconnect
+                $detail = if ($statusCode) { "HTTP $statusCode - $($_.Exception.Message)" } else { $_.Exception.Message }
+                throw "Failed to acquire an access token from Entra ID: $detail"
+            }
+        }
 
         $token = $connection.access_token
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            Invoke-Cleanup -ForceDisconnect
+            throw "The Entra ID token endpoint returned no access_token. Verify -TenantID, -ClientID and -ClientSecret are correct and the secret has not expired."
+        }
 
         # Creating header for Authorization token
         $global:authToken = @{
@@ -9044,7 +10052,7 @@ if ($IntuneAdmin) {
         Write-Log -Message "Preserving Microsoft Graph connection for subsequent runs. Use -DisconnectGraph to explicitly disconnect."
     }
 }
-elseif (-not($Username)) {
+elseif (-not $IntuneWinPackageOnly) {
     # For other auth methods (ClientSecret, CertName), always disconnect
     Invoke-Cleanup -ForceDisconnect
 }

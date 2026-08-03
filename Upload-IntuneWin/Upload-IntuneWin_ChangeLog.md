@@ -6,6 +6,213 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
 
 ---
 
+## Version 1.96 (August 2026)
+
+### PowerShell Script Installer Type
+
+Adds support for Intune's new Win32 app **Program** tab options `Installer type: PowerShell script` and `Uninstaller type: PowerShell script`, using the Graph beta `win32LobAppInstallPowerShellScript` / `win32LobAppUninstallPowerShellScript` resources.
+
+Install and uninstall are configured independently, so every combination the portal offers is supported:
+
+| Install      | Uninstall    | Configuration              |
+| ------------ | ------------ | -------------------------- |
+| Command line | Command line | Default — unchanged        |
+| Script       | Command line | `InstallScriptFile` only   |
+| Command line | Script       | `UninstallScriptFile` only |
+| Script       | Script       | Both                       |
+
+New configuration keys (`Config.xml`, with camelCase equivalents in `Config.json`):
+
+| Key                                                                           | Default  | Description                                                      |
+| ----------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------- |
+| `InstallScriptFile` / `UninstallScriptFile`                                   | *(none)* | Path to the `.ps1` — absolute, or relative to the package folder |
+| `InstallScriptRunAs32Bit` / `UninstallScriptRunAs32Bit`                       | `false`  | Run the script in a 32-bit PowerShell host                       |
+| `InstallScriptEnforceSignatureCheck` / `UninstallScriptEnforceSignatureCheck` | `false`  | Require the script to be signed                                  |
+
+Implementation details:
+
+- Scripts are uploaded to the app's **committed content version** (`POST .../contentVersions/{id}/scripts`) and then activated by pointing the app's `activeInstallScript` / `activeUninstallScript` at the returned script ID
+- Because scripts belong to the content version rather than the app, they are **automatically re-applied whenever content is replaced** — a content update no longer silently drops them
+- Where a script is configured, Intune ignores the matching command line. Graph still requires both command lines to be populated, so a placeholder is generated when only a script is supplied
+- Script content is capped at **100 KB** by the service; oversized scripts are rejected locally before upload, reporting both the raw and base64 sizes
+- `commitFailed` responses and upload failures raise an error rather than leaving the app half-configured
+- `-WhatIf` previews the uploads without creating anything
+- The `scripts` endpoint is attempted with the `microsoft.graph.win32LobApp` cast first (consistent with every other content-version call) and falls back to the documented uncast path, so it works whichever form the service accepts
+
+---
+
+## Version 1.95 (July 2026)
+
+### Per-App Dependency and Supersedence Types
+
+A single `<DependencyType>` previously governed the whole `<Dependencies>` list, so every app in a package shared one type. Repeating the element pair to get different types did not work — PowerShell's XML adapter returns repeated elements as an array, and the script cast that array to a single string, silently joining the app names with a space and producing lookups for apps that do not exist.
+
+Each referenced app can now carry its own type. Three styles are supported and can be mixed:
+
+- **Repeated element pairs**, matched by position — the form most people reach for first:
+
+  ```xml
+  <Dependencies>Application 1.0</Dependencies>
+  <DependencyType>autoInstall</DependencyType>
+  <Dependencies>Application 2.0</Dependencies>
+  <DependencyType>detect</DependencyType>
+  ```
+
+- **Inline `Name:Type`**, using the same convention as `CustomReturnCodes`:
+
+  ```xml
+  <Dependencies>Application 1.0:autoInstall,Application 2.0:detect</Dependencies>
+  ```
+
+- **Shared type** — the original behaviour, unchanged, so existing configs keep working
+
+An inline type always overrides the element type, so the common case can be set once with only the exceptions called out:
+
+```xml
+<Dependencies>Application 1.0,Application 2.0,Application 3.0:detect</Dependencies>
+<DependencyType>autoInstall</DependencyType>
+```
+
+`<Supersedence>` / `<SupersedenceType>` accept exactly the same styles for `update` and `replace`. `Config.json` additionally accepts an array of objects — `[{ "name": "...", "type": "..." }]`.
+
+Supporting details:
+
+- A trailing `:suffix` is only treated as a type when it is genuinely one of the valid types, so app display names containing a colon are unaffected
+- Types are normalised to their canonical casing before being sent to Graph, which rejects a mis-cased `dependencyType` / `supersedenceType`
+- An invalid type logs a warning and falls back to the default (`autoInstall` / `update`) rather than failing the upload
+- When the number of type elements does not match the number of list elements, types are applied by position and the mismatch is reported
+
+### Proxy Authentication (HTTP 407) Handling
+
+- **Failed token requests are now fatal.** The client-credentials token call was not error-handled, so a proxy returning `407 Proxy Authentication Required` left `$token` null, produced two further parameter-binding errors, and the script still printed `Successfully authenticated to Microsoft Graph` before continuing. The request is now wrapped, the returned token is validated, and any failure throws immediately
+- **Automatic retry with Windows credentials.** On a `407` where no explicit `-ProxyUri` was supplied, the script attaches the caller's credentials to the system default proxy and retries once — this resolves the common NTLM/Negotiate corporate proxy without any parameter changes
+- **Actionable guidance on failure.** If the retry does not succeed, the error names the exact switches to use (`-ProxyUri` with `-ProxyUseDefaultCredentials` or `-ProxyCredential`), the `$env:INTUNEWIN_PROXY_URI` alternative, and the `-TestProxyConnectivity` diagnostic
+- Distinct token-endpoint failures are reported with their HTTP status instead of surfacing as downstream null-binding errors
+
+---
+
+## Version 1.94 (July 2026)
+
+### Application Dependency and Supersedence Fixes
+
+Dependencies and supersedence declared via `<Dependencies>` / `<Supersedence>` in `Config.xml` (or `dependencies` / `supersedence` in `Config.json`) were never applied to the uploaded app. Four separate defects were involved:
+
+- **Parameter mismatch**: `Set-IntuneAppDependency` and `Set-IntuneAppSupersedence` were being called with `-SourceAppId` / `-TargetAppDisplayName`, but the functions declared `-ApplicationId` / `-DependencyAppId` / `-SupersededAppId`, so every call failed with a parameter-binding error. The call sites now use the canonical names, and the old names are retained as parameter **aliases** so either spelling binds correctly
+- **Application name passed where an ID was required**: config supplies display names, but the Graph relationship payload needs an application ID. New `Resolve-IntuneAppReference` helper accepts either form — a GUID passes straight through, anything else is resolved via `Get-IntuneAppByDisplayName`, and an unresolvable name logs a warning and skips the relationship without posting
+- **Unsupported Graph endpoint**: `POST /deviceAppManagement/mobileApps/{id}/relationships` is not supported for Win32 apps. Replaced with the `updateRelationships` action that the Intune portal itself uses
+- **`@odata.type` annotation ordering**: the request body was built with an unordered hashtable, so `ConvertTo-Json` could emit `targetId` before `@odata.type`. Graph requires the annotation to be the **first** property of each relationship object and otherwise returns `HTTP 400 ModelValidationFailure` — *"The annotation 'odata.type' was found. This annotation is either not recognized or not expected at the current position."* The payload is now built with ordered dictionaries
+
+### Relationship Merge Semantics
+
+- **`updateRelationships` replaces the entire child relationship set**, so posting a single relationship silently discarded all the others. New `Set-IntuneAppRelationship` function reads the existing relationships, keeps only `targetType = 'child'` entries (`parent` entries are owned by the other app and must not be echoed back), merges in the requested relationship, and posts the complete set — adding a dependency no longer wipes supersedence, and vice versa
+
+### Additional Hardening
+
+- **Self-reference guard**: an application can no longer be given a dependency or supersedence on itself
+- **OData single-quote escaping**: `Get-IntuneAppByDisplayName` now doubles embedded single quotes in the `$filter` string literal, so app names such as `Bob's App` produce a valid query instead of a malformed one
+- **`-WhatIf` is now genuinely read-only** for relationship operations — no `updateRelationships` POST is issued, and the script no longer reports a dependency as "added successfully" during a preview run
+
+---
+
+## Version 1.93 (March 2026)
+
+### DelegatedImport Feature Parity
+
+- **Automatic 401 token refresh**: `Invoke-GraphRequestWithRetry` now traps `HTTP 401 Unauthorized`, disconnects the current Graph session, re-authenticates using the cached `$script:MgGraphConnectParams`, and retries the original request — long-running uploads survive access-token expiry without operator intervention
+- **Expanded transient network error detection**: Retry filter now also matches `forcibly closed`, `Error while copying content to a stream`, `ResponseEnded`, `response ended prematurely`, `ended prematurely`, `request was canceled`, and `send the request` in addition to the existing `network` / `timeout` / `connection` triggers
+- **Per-chunk HTTP 5xx backoff in Azure Storage upload**: `Send-FileToAzureStorage` retries each block PUT up to 5 times on `500` / `502` / `503` / `504` with exponential backoff (`10s × 2^(attempt-1)`)
+- **`Wait-AppPublishingState` helper**: Polls an app's `publishingState` after upload (default 6 attempts × 10 s)
+- **Stuck-app recovery**: If `Wait-AppPublishingState` confirms an app is stuck in `notPublished` after a failed upload, `Send-Win32Lob` deletes the stale `mobileApp` record, waits 5 seconds, recreates it, and retries the upload with a fresh app object
+- **Escalating upload-attempt backoff**: Delay between full upload attempts is now `30 s × attempt` (30 s → 60 s → 90 s) instead of a flat 10 s
+- **OrigSource → Source robocopy mirror**: When a package folder contains both `OrigSource\` and `Source\`, the script mirrors `OrigSource\` into `Source\` at the start of every run via `robocopy /MIR /MT:4 /NJH /NJS /NP` — eliminates drift while preserving the immutable golden copy
+
+### Interactive Authentication via Custom App Registration
+
+- **New parameter set** for interactive sign-in against a custom Entra ID app registration: supply `-IntuneAdmin` plus `-ClientID` (and optionally `-TenantID`) without `-ClientSecret` to use device-code / interactive auth with a tenant-specific app registration instead of the built-in Microsoft Graph PowerShell first-party app
+
+### Corporate Proxy Support
+
+- **Embedded proxy module** (no external dependency): seven internal helpers — `Test-IntuneWinProxyEnabled`, `Get-IntuneWinProxyConfiguration`, `Add-IntuneWinProxyParameter`, `Set-IntuneWinProxyConfiguration`, `Test-IntuneWinGraphConnectivity`, `Initialize-IntuneWinProxy`, `Invoke-IntuneWinProxyTest` — drive a single proxy configuration across every outbound HTTP/S call (MSAL.NET, Microsoft.Graph SDK `HttpClient`, Azure Storage block-blob SAS upload, GitHub `IntuneWinAppUtil.exe` download, and in-script `Invoke-WebRequest` / `Invoke-RestMethod` calls)
+- **Six new opt-in parameters**: `-ProxyUri` (aliases `Proxy` / `HttpsProxy`), `-ProxyCredential`, `-ProxyUseDefaultCredentials`, `-ProxyBypassList`, `-NoProxyBypassLocal`, and `-TestProxyConnectivity` (alternate diagnostic execution path)
+- **Environment-variable fallbacks**: `$env:INTUNEWIN_PROXY_URI`, `$env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS`, `$env:INTUNEWIN_PROXY_BYPASS` (semicolon-separated wildcards), `$env:INTUNEWIN_PROXY_BYPASS_ON_LOCAL` — allows zero-CLI-flag activation
+- **Auto-fallback to direct**: main flow calls `Initialize-IntuneWinProxy -OnlyIfNeeded`, which probes direct Graph / Entra ID connectivity first and only configures the proxy if direct fails — safe to set `$env:INTUNEWIN_PROXY_URI` globally on a mixed-egress fleet
+- **Single-prompt credential reuse**: when `-ProxyUri` is set without a credential the script prompts once via `Get-Credential` and reuses the captured `[PSCredential]` for every downstream call; on a non-interactive host it gracefully falls back to Windows-integrated auth and logs a warning
+- **CI / non-interactive detection**: auto-detects `$env:TF_BUILD`, `$env:GITHUB_ACTIONS`, `$env:CI`, and `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` and throws a descriptive error rather than hanging on a credential prompt when a credential is required in a CI run
+- **ConstrainedLanguage (CLM) fallback**: `Add-IntuneWinProxyParameter` splats `-Proxy` / `-ProxyCredential` / `-ProxyUseDefaultCredentials` onto per-call `Invoke-WebRequest` / `Invoke-RestMethod` invocations when the .NET default proxy cannot be set under CLM
+- **Configured layers**: `System.Net.WebRequest.DefaultWebProxy`, `System.Net.Http.HttpClient.DefaultProxy` (PS 7+), and `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` process env vars; all prior values are saved at activation and restored when the script ends
+- **`-TestProxyConnectivity` diagnostic**: alternate execution path that runs a two-phase (direct, then proxy if configured) connectivity report against `graph.microsoft.com:443` and `login.microsoftonline.com:443`, prints a coloured per-endpoint table, and exits `0 = PASS`, `1 = FAIL`, `2 = init error`. TCP probe is reported as `SKIP` in proxy mode (raw TCP cannot traverse an HTTP `CONNECT` proxy)
+
+### Documentation Fixes
+
+- **Multiple categories now correctly documented**: the README previously claimed "Only the first category is currently sent to Graph" — corrected to reflect actual behaviour (the script loops over every comma-separated category and calls `Set-IntuneAppCategory` for each). No code change, doc-only correction
+
+### Bundled Microsoft.Graph.Authentication Module Precedence
+
+- **Bundled module takes precedence**: at startup the script looks for `<ScriptRoot>\Modules\Microsoft.Graph.Authentication` and, when present, prepends `<ScriptRoot>\Modules` to `$env:PSModulePath` so the bundled copy wins over any machine- or user-installed copy — the script now runs with **zero module installation** (mirrors the precedence model in `Invoke-DelegatedImport.ps1`)
+- **Fail-closed Authenticode enforcement**: the prepend only happens when every `*.psm1` under the bundled folder has a `Valid` signature from a trusted publisher (default `CN=Microsoft Corporation`, `CN=Microsoft Code Signing`, `CN=Microsoft 3rd Party Application Component`, `CN=GitHub`). Any unsigned, invalid, or untrusted-publisher file skips the prepend (with a warning) and falls back to the installed copy — preventing a counterfeit module dropped into `Modules\` from exfiltrating Graph tokens
+- **Configurable trust list**: override the trusted-publisher allow-list via `$env:INTUNEWIN_TRUSTED_PUBLISHERS` (semicolon-separated subject substrings)
+- **Layered fallback**: if no bundled copy is trusted/available, the script falls back to an installed module, then to `<ScriptRoot>\Microsoft.Graph.Authentication`, then to `<ScriptRoot>\Modules\Microsoft.Graph.Authentication`, and finally exits with `Install-Module` guidance if none resolve
+
+---
+
+## Version 1.92 (March 2026)
+
+### Upload Resilience
+
+- **SAS readiness probing**: Before chunked upload begins, `Send-FileToAzureStorage` issues a `GET ?comp=blocklist` against the SAS URI to confirm token propagation. `403` triggers a 10 s wait and re-probe (up to 6 retries); `404` is treated as "blob does not exist yet — proceed"
+- **Per-chunk upload retry × 5 with SAS renewal**: Each block PUT is retried up to 5 times. `HTTP 403` calls `Update-AzureStorageUpload` to renew the SAS token (also proactively renewed every ~7 minutes during long uploads). `HTTP 500 / 502 / 503 / 504` uses exponential backoff
+- **File commit retry × 6**: Calls to the `commit` endpoint are retried up to 6 times with a 15 s wait when Azure Storage returns `HTTP 400` or "SAS request" errors
+- **Full upload-attempt retry × 3 with fresh content versions**: Each attempt creates a brand-new `contentVersion` so it starts from a clean state
+- **HTTP 412 Precondition Failed is now retryable**: `Invoke-GraphRequestWithRetry` treats `412` as a normal retry case (typically a content-version optimistic-concurrency conflict that resolves on retry)
+
+### Smart Logo Handling
+
+- **Auto-detection**: When `logoFile` is omitted from the config, the script picks the first `*.png` / `*.jpg` / `*.jpeg` file from the package folder root
+- **MIME type detection**: Sets `image/jpeg` for `.jpg` / `.jpeg` and `image/png` for `.png` instead of hard-coding `image/png`
+- **Persistence PATCH**: After content commit, a dedicated PATCH writes `largeIcon` so the logo survives content-replacement on existing apps that had no icon
+
+### App Deletion
+
+- **New `-DeleteApp` switch**: Removes one or more Win32 applications without building an `.intunewin`, applying assignments, or touching scope tags
+- **New `-AppNameToDelete` parameter** (`String[]`, aliases `DisplayName` / `Name`): Accepts one or many app display names, including via pipeline input — `"App1","App2" | .\Upload-IntuneWin.ps1 -IntuneAdmin "…" -DeleteApp`
+- **Combine with `-PackagePath`**: When `-PackagePath` is supplied alone, the `displayName` from the package's config file is used; when supplied together with `-AppNameToDelete`, the union is deleted
+- **Full `ShouldProcess` integration**: `-WhatIf` previews the deletes; `-Confirm` prompts per app
+- **Returns structured result per app**: `{ Status = Deleted | NotFound | Error; Message; AppId }` — failures do not abort the batch
+
+### Configurable User Uninstall
+
+- **New `allowAvailableUninstall` config property** (Config.json / Config.xml): Controls whether the Company Portal "Uninstall" button is exposed to users for available assignments. Accepts `true` / `false` / `yes` / `no` (defaults to `true`)
+
+### Multi-Value Category and Scope Tag Parsing
+
+- `category` and `scopetag` now accept comma-separated strings or JSON arrays in the config file (per existing schema conventions for assignment groups)
+
+---
+
+## Version 1.91 (March 2026)
+
+### Config File Support for Upload Parameters
+
+- **Assignment groups in config files**: `-RequiredAADGroupName` / `-RequiredEntraGroupName`, `-AvailableAADGroupName` / `-AvailableEntraGroupName`, and `-UninstallAADGroupName` / `-UninstallEntraGroupName` can now be specified in Config.json or Config.xml
+  - Config.json supports both string (comma-separated) and array formats
+  - Config.xml supports comma-separated values
+  - Both formats support `EntraGroupName` (preferred) and `AADGroupName` (legacy) naming
+- **Upload switches in config files**: `-ReplaceExistingContent`, `-SkipPackageRemoval`, and `-NewTagPath` can now be specified in Config.json or Config.xml
+  - Accepts `true`/`false` or `yes`/`no` values (Config.json also accepts native booleans)
+- **Precedence**: Command-line parameters always take precedence over config file values, which take precedence over defaults
+
+### NewTagPath Enabled by Default
+
+- `-NewTagPath` is now **enabled by default** — the tagfile detection path always uses `%PROGRAMDATA%\Microsoft\IntuneManagementExtension\Logs` unless explicitly overridden in the config file
+- The `-NewTagPath` switch can still be specified on the command line for backward compatibility (no breaking change)
+- Config files can set `newTagPath` to `false` to revert to the legacy path if needed
+
+### Validation Improvements
+
+- Targeting group overlap validation now runs **after** config file loading, so config-sourced group names are also validated against command-line group names
+
+---
+
 ## Version 1.9 (December 2025)
 
 ### Graph API Retry Logic
@@ -252,3 +459,28 @@ For detailed information about features and usage, refer to [Upload-IntuneWin_Re
 3. **WhatIf support** - Use `-WhatIf` to preview operations before execution
 4. **Improved reliability** - Better error handling throughout the script
 5. **No action required** - All optimizations are internal improvements
+
+### Upgrading from v1.9 to v1.91
+
+1. **NewTagPath now defaults to enabled** - The tagfile detection path now defaults to `%PROGRAMDATA%\Microsoft\IntuneManagementExtension\Logs` without needing to specify `-NewTagPath` on the command line. If you relied on the legacy path (`%PROGRAMDATA%\Microsoft\IntuneApps\<PackageName>`), set `newTagPath` to `false` in your config file.
+2. **Config file upload parameters** - You can now move `-RequiredAADGroupName`, `-AvailableAADGroupName`, `-UninstallAADGroupName`, `-ReplaceExistingContent`, `-SkipPackageRemoval`, and `-NewTagPath` from the command line into Config.json or Config.xml for simpler automation scripts.
+3. **No breaking changes** - All existing command-line usage remains fully compatible. Command-line parameters always take precedence over config file values.
+
+### Upgrading from v1.91 to v1.92
+
+1. **No breaking changes** - All existing config files and command-line parameters remain fully compatible.
+2. **Upload resilience is automatic** - SAS readiness probing, per-chunk retry × 5, file-commit retry × 6, and full upload-attempt retry × 3 require no configuration. Long-running uploads previously prone to transient Azure Storage failures should now succeed without manual intervention.
+3. **`allowAvailableUninstall` is opt-out** - Defaults to `true`, matching the previous behaviour. Set `allowAvailableUninstall` to `false` (or `no`) in Config.json / Config.xml to hide the Company Portal Uninstall button for available assignments of a specific app.
+4. **New `-DeleteApp` mode** - Use `-DeleteApp` together with `-AppNameToDelete` (and/or `-PackagePath`) to remove apps without building or assigning anything. Always preview with `-WhatIf` first.
+5. **Smart logo handling** - If you previously needed to set `logoFile` explicitly to a `.png` for the upload to succeed, you can now drop a `.png` / `.jpg` / `.jpeg` file in the package folder root and omit `logoFile`; the script auto-detects it and uses the correct MIME type.
+
+### Upgrading from v1.92 to v1.93
+
+1. **No breaking changes** - All existing config files and command-line parameters remain fully compatible.
+2. **Long-running uploads survive token expiry** - The automatic 401 token refresh in `Invoke-GraphRequestWithRetry` removes the previous failure mode where uploads longer than the access-token lifetime aborted with a 401 partway through.
+3. **Stuck apps now self-heal** - If an upload attempt fails and the app is left in `notPublished`, the script automatically deletes the stale `mobileApp` record, waits 5 seconds, recreates it, and retries the upload. No manual cleanup required.
+4. **Robocopy of `OrigSource\` → `Source\`** - If your package folder contains both `OrigSource\` (immutable golden copy) and `Source\` (build staging folder), the script now mirrors `OrigSource\` into `Source\` at the start of every run using `robocopy /MIR /MT:4 /NJH /NJS /NP`. Files that exist in `Source\` but not in `OrigSource\` will be removed. If you intentionally place build artefacts in `Source\` that are not present in `OrigSource\`, either remove `OrigSource\` from the package or move those artefacts into `OrigSource\`.
+5. **Custom-app-registration interactive auth** - You can now run interactive sign-in against a custom Entra ID app registration by supplying `-IntuneAdmin` plus `-ClientID` (and optionally `-TenantID`) without `-ClientSecret`. The previous `-IntuneAdmin`-only flow (built-in Microsoft Graph PowerShell app) continues to work unchanged.
+6. **Corporate proxy support is opt-in** - When neither `-ProxyUri` nor `$env:INTUNEWIN_PROXY_URI` is set, the proxy layer is completely inactive and existing behaviour is unchanged. To activate, supply `-ProxyUri "http://proxy.contoso.com:443"` (or set `$env:INTUNEWIN_PROXY_URI`) and choose a credential mode: `-ProxyCredential`, `-ProxyUseDefaultCredentials`, or leave both unset to be prompted once. Direct connectivity is probed first via `-OnlyIfNeeded`, so the proxy is auto-skipped on machines with direct egress — it is safe to set the env var globally on a mixed-egress fleet. Use `-TestProxyConnectivity` to validate the proxy configuration without running an upload.
+7. **Documentation correction — categories** - The README previously stated "Only the first category is currently sent to Graph"; this was incorrect. The script has always iterated every comma-separated category in the config file and called `Set-IntuneAppCategory` for each one. README updated accordingly.
+8. **Bundled Microsoft.Graph.Authentication module** - You no longer need to `Install-Module Microsoft.Graph.Authentication`. Ship the script with its `Modules\Microsoft.Graph.Authentication` subfolder and the script prepends `Modules\` to `$env:PSModulePath` automatically, preferring the bundled (signed) copy. The prepend is fail-closed: if the bundled `*.psm1` files are unsigned or signed by an untrusted publisher, the script skips the bundled copy and falls back to an installed module. Installing the module remains fully supported and is used as the fallback. Override the trusted-publisher list with `$env:INTUNEWIN_TRUSTED_PUBLISHERS` if you re-sign the bundled module with your own certificate.
