@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Start</title>
+<style>
+:root{
+  --bg:#ffffff; --bg-alt:#f6f8fa; --bg-sunken:#eef1f4;
+  --fg:#1f2328; --fg-muted:#59636e; --fg-faint:#818b98;
+  --border:#d8dee4; --border-soft:#e6eaef;
+  --accent:#0b5cab; --accent-soft:#e7f0fa;
+  --green:#1a7f37; --amber:#9a6700; --red:#cf222e; --purple:#6639ba;
+  --code-bg:#f6f8fa; --code-fg:#24292f;
+  --shadow:0 1px 3px rgba(31,35,40,.08),0 8px 24px rgba(31,35,40,.06);
+  --sidebar:300px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --bg-alt:#161b22; --bg-sunken:#1c2128;
+    --fg:#e6edf3; --fg-muted:#9198a1; --fg-faint:#6e7681;
+    --border:#30363d; --border-soft:#21262d;
+    --accent:#6cb0ff; --accent-soft:#132b45;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#a371f7;
+    --code-bg:#161b22; --code-fg:#e6edf3;
+    --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:1.5rem}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---------- layout ---------- */
+.layout{display:flex; align-items:flex-start; min-height:100vh}
+.sidebar{
+  width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0;
+  height:100vh; overflow-y:auto; background:var(--bg-alt);
+  border-right:1px solid var(--border); padding:1.5rem 0 3rem;
+}
+.sidebar .brand{padding:0 1.5rem 1rem; border-bottom:1px solid var(--border-soft); margin-bottom:.75rem}
+.sidebar .brand h1{font-size:.95rem; margin:0 0 .3rem; letter-spacing:-.01em}
+.sidebar .brand .ver{
+  display:inline-block; font-size:.7rem; font-weight:600; letter-spacing:.02em;
+  background:var(--accent-soft); color:var(--accent); padding:.15rem .5rem; border-radius:999px;
+}
+.sidebar nav{display:flex; flex-direction:column; padding:0 .75rem}
+.sidebar nav a{
+  display:block; padding:.34rem .75rem; border-radius:6px; color:var(--fg-muted);
+  font-size:.85rem; line-height:1.4; border-left:2px solid transparent;
+}
+.sidebar nav a:hover{background:var(--bg-sunken); color:var(--fg); text-decoration:none}
+.sidebar nav a.lvl3{padding-left:1.6rem; font-size:.8rem; color:var(--fg-faint)}
+.sidebar nav a.active{color:var(--accent); background:var(--accent-soft); font-weight:600; border-left-color:var(--accent)}
+.sidebar .sibling{margin:1rem 1.5rem 0; padding-top:1rem; border-top:1px solid var(--border-soft); font-size:.82rem}
+.sidebar .guides{margin:0 1.5rem 1rem; padding-bottom:1rem; border-bottom:1px solid var(--border-soft)}
+.sidebar .guides .glabel{display:block; font-size:.68rem; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin-bottom:.45rem}
+.sidebar .guides a,.sidebar .guides span{display:block; padding:.3rem .55rem; border-radius:5px; font-size:.83rem; text-decoration:none; line-height:1.35}
+.sidebar .guides a{color:var(--accent)}
+.sidebar .guides a:hover{background:var(--surface-alt)}
+.sidebar .guides .current{background:var(--accent); color:#fff; font-weight:600}
+
+main{flex:1 1 auto; min-width:0; padding:3rem 3.5rem 6rem; max-width:1000px}
+.doc-header{margin-bottom:2.5rem; padding-bottom:1.5rem; border-bottom:1px solid var(--border)}
+.doc-header h1{font-size:2.1rem; margin:0 0 .4rem; letter-spacing:-.02em; line-height:1.2}
+.doc-header p{margin:0; color:var(--fg-muted); font-size:1.02rem}
+
+/* ---------- content ---------- */
+h2,h3,h4,h5,h6{line-height:1.3; letter-spacing:-.01em; scroll-margin-top:1.5rem; position:relative}
+h2{font-size:1.55rem; margin:2.75rem 0 1rem; padding-bottom:.4rem; border-bottom:1px solid var(--border-soft)}
+h3{font-size:1.2rem; margin:2rem 0 .75rem}
+h4{font-size:1.02rem; margin:1.5rem 0 .5rem; color:var(--fg-muted); text-transform:none}
+p{margin:0 0 1rem}
+ul,ol{margin:0 0 1rem; padding-left:1.5rem}
+li{margin:.3rem 0}
+li>ul,li>ol{margin:.3rem 0}
+hr{border:0; border-top:1px solid var(--border); margin:2.5rem 0}
+strong{font-weight:650}
+
+.anchor{
+  opacity:0; margin-left:.4rem; color:var(--fg-faint); font-weight:400;
+  text-decoration:none; transition:opacity .12s;
+}
+h2:hover .anchor,h3:hover .anchor,h4:hover .anchor{opacity:1}
+
+/* ---------- code ---------- */
+code{
+  font-family:"Cascadia Code","Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+  font-size:.875em; background:var(--bg-sunken); padding:.15em .38em;
+  border-radius:5px; border:1px solid var(--border-soft);
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+  padding:1rem 1.1rem; overflow-x:auto; margin:0 0 1.25rem; position:relative; box-shadow:var(--shadow);
+}
+pre code{background:none; border:0; padding:0; font-size:.87rem; line-height:1.65; color:var(--code-fg)}
+.copy{
+  position:absolute; top:.55rem; right:.55rem; font:inherit; font-size:.7rem; font-weight:600;
+  padding:.25rem .55rem; border-radius:6px; cursor:pointer; opacity:0; transition:opacity .12s;
+  background:var(--bg); color:var(--fg-muted); border:1px solid var(--border);
+}
+pre:hover .copy{opacity:1}
+.copy:hover{color:var(--accent); border-color:var(--accent)}
+.copy.done{color:var(--green); border-color:var(--green)}
+
+/* very light, conservative token colouring */
+.tok-str{color:var(--green)}
+.tok-com{color:var(--fg-faint); font-style:italic}
+.tok-var{color:var(--purple)}
+.tok-par{color:var(--accent)}
+.tok-key{color:var(--red)}
+.tok-num{color:var(--amber)}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto; margin:0 0 1.25rem; border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow)}
+table{border-collapse:collapse; width:100%; font-size:.9rem}
+thead th{
+  background:var(--bg-alt); text-align:left; font-weight:650; color:var(--fg);
+  padding:.65rem .9rem; border-bottom:1px solid var(--border); white-space:nowrap;
+}
+tbody td{padding:.6rem .9rem; border-bottom:1px solid var(--border-soft); vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:nth-child(even){background:var(--bg-alt)}
+
+/* ---------- callouts ---------- */
+blockquote{
+  margin:0 0 1.25rem; padding:.9rem 1.1rem; background:var(--bg-alt);
+  border-left:4px solid var(--accent); border-radius:0 8px 8px 0; color:var(--fg-muted);
+}
+blockquote p:last-child{margin-bottom:0}
+blockquote strong{color:var(--fg)}
+blockquote.warn{border-left-color:var(--amber)}
+blockquote.tip{border-left-color:var(--green)}
+
+/* ---------- misc ---------- */
+.totop{
+  position:fixed; right:1.5rem; bottom:1.5rem; width:2.5rem; height:2.5rem; border-radius:50%;
+  background:var(--bg); border:1px solid var(--border); color:var(--fg-muted); cursor:pointer;
+  display:none; align-items:center; justify-content:center; box-shadow:var(--shadow); font-size:1rem;
+}
+.totop.show{display:flex}
+.totop:hover{color:var(--accent); border-color:var(--accent)}
+footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--border); color:var(--fg-faint); font-size:.82rem}
+
+.menu-btn{display:none}
+
+@media (max-width:1000px){
+  .layout{flex-direction:column}
+  .sidebar{
+    position:static; width:100%; flex:none; height:auto; max-height:none;
+    border-right:0; border-bottom:1px solid var(--border); padding-bottom:1rem;
+  }
+  .sidebar nav{max-height:16rem; overflow-y:auto}
+  main{padding:2rem 1.25rem 4rem}
+  .doc-header h1{font-size:1.6rem}
+}
+
+@media print{
+  .sidebar,.totop,.copy,.anchor{display:none !important}
+  .layout{display:block}
+  main{max-width:none; padding:0}
+  pre,.table-wrap{box-shadow:none; break-inside:avoid}
+  h2,h3{break-after:avoid}
+  a{color:inherit; text-decoration:none}
+  body{font-size:11pt}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>Quick start</h1>
+      <span class="ver">v1.97</span>
+    </div>
+    <nav id="toc">
+<a class="lvl2" href="#what-you-need-first">What you need first</a>
+<a class="lvl2" href="#the-five-minute-version">The five-minute version</a>
+<a class="lvl2" href="#step-1-copy-the-template">Step 1: Copy the template</a>
+<a class="lvl2" href="#step-2-drop-your-installer-in">Step 2: Drop your installer in</a>
+<a class="lvl2" href="#step-3-edit-configxml">Step 3: Edit Config.xml</a>
+<a class="lvl3" href="#prefer-json">Prefer JSON?</a>
+<a class="lvl2" href="#step-4-run-the-script">Step 4: Run the script</a>
+<a class="lvl2" href="#worked-example-an-exe-installer">Worked example: an EXE installer</a>
+<a class="lvl2" href="#worked-example-an-msi-installer">Worked example: an MSI installer</a>
+<a class="lvl2" href="#worked-example-a-powershell-script-app">Worked example: a PowerShell script app</a>
+<a class="lvl2" href="#choosing-a-detection-rule">Choosing a detection rule</a>
+<a class="lvl2" href="#assigning-the-app-to-groups">Assigning the app to groups</a>
+<a class="lvl2" href="#signing-in">Signing in</a>
+<a class="lvl2" href="#common-mistakes">Common mistakes</a>
+<a class="lvl2" href="#what-to-read-next">What to read next</a>
+    </nav>
+    <div class="guides"><span class="glabel">Guides</span><span class="current">Quick start</span>
+<a href="Upload-IntuneWin_ReadMe.html">Upload-IntuneWin</a>
+<a href="Export-IntunePolicy_ReadMe.html">Export-IntunePolicy</a>
+<a href="Upload-IntuneWin_ChangeLog.html">Change log</a></div>
+  </aside>
+
+  <main>
+    <div class="doc-header">
+      <h1>Quick Start</h1>
+      <p>Package and upload your first Win32 app to Intune, start to finish.</p>
+    </div>
+<!-- TIP: In VS Code, press Ctrl+Shift+V to open the Markdown preview and render this document properly. -->
+<p>New to this? Start here. By the end of this guide you will have taken a plain installer, wrapped it into an Intune package, and uploaded it — without needing to understand the whole tool.</p>
+<p>Everything is driven by <strong>one file you edit: <code>Config.xml</code></strong>. The script reads that file, builds the <code>.intunewin</code> package, and creates the app in Intune for you.</p>
+<hr />
+<h2 id="what-you-need-first">What you need first<a class="anchor" href="#what-you-need-first" aria-label="Link to this section">#</a></h2>
+<table>
+<thead>
+<tr>
+<th>You need</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows with PowerShell 5.1 or PowerShell 7</td>
+<td>Both work. Nothing to install.</td>
+</tr>
+<tr>
+<td>An installer file</td>
+<td>An <code>.exe</code>, <code>.msi</code>, or a <code>.ps1</code> script</td>
+</tr>
+<tr>
+<td>Permission to add apps in Intune</td>
+<td>An account with the Intune Administrator role, or an app registration</td>
+</tr>
+</tbody>
+</table>
+<p><code>IntuneWinAppUtil.exe</code> (Microsoft's packaging tool) is <strong>downloaded automatically</strong> the first time you run the script — you do not need to fetch it yourself.</p>
+<hr />
+<h2 id="the-five-minute-version">The five-minute version<a class="anchor" href="#the-five-minute-version" aria-label="Link to this section">#</a></h2>
+<p>If you just want the shape of it:</p>
+<pre><code class="language-powershell"># 1. Copy the template folder and rename it
+Copy-Item &quot;.\_Template\CopyMeAsStartingPointForNewPackages&quot; &quot;.\MyApp&quot; -Recurse
+
+# 2. Put your installer in .\MyApp\Source\
+
+# 3. Edit .\MyApp\Config.xml  (four fields is usually enough)
+
+# 4. Upload it
+.\Upload-IntuneWin.ps1 -PackagePath &quot;.\MyApp&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<p>That is the whole workflow. The rest of this guide explains each step properly.</p>
+<hr />
+<h2 id="step-1-copy-the-template">Step 1: Copy the template<a class="anchor" href="#step-1-copy-the-template" aria-label="Link to this section">#</a></h2>
+<p>The download includes a ready-made folder to copy:</p>
+<pre><code class="language-text">_Template\CopyMeAsStartingPointForNewPackages\
+</code></pre>
+<p>Copy it, and rename the copy to something meaningful — the folder name is yours to choose and does not have to match the app name:</p>
+<pre><code class="language-powershell">Copy-Item &quot;.\_Template\CopyMeAsStartingPointForNewPackages&quot; &quot;.\7-Zip&quot; -Recurse
+</code></pre>
+<p>You now have this:</p>
+<pre><code class="language-text">7-Zip\
+├── Config.xml        &lt;- the only file you must edit
+├── MSLogo.png        &lt;- optional icon shown in Company Portal
+└── Source\           &lt;- your installer goes in here
+</code></pre>
+<blockquote>
+<p><strong>Why a <code>Source</code> folder?</strong> Everything inside <code>Source</code> is compressed into the <code>.intunewin</code> package and delivered to the device. Anything outside it (like <code>Config.xml</code>) is used by the script but never shipped.</p>
+</blockquote>
+<hr />
+<h2 id="step-2-drop-your-installer-in">Step 2: Drop your installer in<a class="anchor" href="#step-2-drop-your-installer-in" aria-label="Link to this section">#</a></h2>
+<p>Put the installer — and anything it needs — into the <code>Source</code> folder:</p>
+<pre><code class="language-text">7-Zip\
+├── Config.xml
+└── Source\
+    └── 7z2408-x64.msi
+</code></pre>
+<p>Multiple files are fine. If your installer needs a config file, a transform, or supporting binaries, put them all in <code>Source</code> together.</p>
+<hr />
+<h2 id="step-3-edit-configxml">Step 3: Edit Config.xml<a class="anchor" href="#step-3-edit-configxml" aria-label="Link to this section">#</a></h2>
+<p>Open <code>Config.xml</code>. It is heavily commented, and <strong>most of it you can leave alone</strong>. For a first app you normally only need these:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>What to put</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AppType</code></td>
+<td><code>MSI</code>, <code>EXE</code>, or <code>PS1</code></td>
+<td><code>MSI</code></td>
+</tr>
+<tr>
+<td><code>PackageName</code></td>
+<td>Your installer's filename <strong>without the extension</strong></td>
+<td><code>7z2408-x64</code></td>
+</tr>
+<tr>
+<td><code>displayName</code></td>
+<td>The name users and admins see in Intune</td>
+<td><code>7-Zip 24.08</code></td>
+</tr>
+<tr>
+<td><code>displayVersion</code></td>
+<td>Version number</td>
+<td><code>24.08</code></td>
+</tr>
+</tbody>
+</table>
+<p>For <code>EXE</code> apps you also need <code>installCmdLine</code> and <code>uninstallCmdLine</code>. For <code>MSI</code> these are generated for you.</p>
+<p>Here is a minimal working <code>Config.xml</code> for an MSI:</p>
+<pre><code class="language-xml">&lt;CONFIG&gt;
+    &lt;Azure_Settings&gt;
+        &lt;baseUrl&gt;https://graph.microsoft.com/beta/deviceAppManagement/&lt;/baseUrl&gt;
+        &lt;logRequestUris&gt;$true&lt;/logRequestUris&gt;
+        &lt;logHeaders&gt;$false&lt;/logHeaders&gt;
+        &lt;logContent&gt;$true&lt;/logContent&gt;
+        &lt;azureStorageUploadChunkSizeInMb&gt;6&lt;/azureStorageUploadChunkSizeInMb&gt;
+        &lt;sleep&gt;5&lt;/sleep&gt;
+    &lt;/Azure_Settings&gt;
+    &lt;IntuneWin_Settings&gt;
+        &lt;AppType&gt;MSI&lt;/AppType&gt;
+        &lt;PackageName&gt;7z2408-x64&lt;/PackageName&gt;
+        &lt;displayName&gt;7-Zip 24.08&lt;/displayName&gt;
+        &lt;displayVersion&gt;24.08&lt;/displayVersion&gt;
+        &lt;Description&gt;7-Zip file archiver&lt;/Description&gt;
+        &lt;Publisher&gt;Igor Pavlov&lt;/Publisher&gt;
+        &lt;Category&gt;Productivity&lt;/Category&gt;
+        &lt;LogoFile&gt;MSLogo.png&lt;/LogoFile&gt;
+        &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+        &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+    &lt;/IntuneWin_Settings&gt;
+&lt;/CONFIG&gt;
+</code></pre>
+<blockquote>
+<p><strong>Leave <code>Azure_Settings</code> alone</strong> unless you have a reason to change it, and never edit <code>ReturnCodeType</code>.</p>
+</blockquote>
+<h3 id="prefer-json">Prefer JSON?<a class="anchor" href="#prefer-json" aria-label="Link to this section">#</a></h3>
+<p>A <code>Config.json</code> works too, using the same names in camelCase. If both files exist, <strong><code>Config.json</code> wins</strong>.</p>
+<pre><code class="language-json">{
+  &quot;appType&quot;: &quot;MSI&quot;,
+  &quot;packageName&quot;: &quot;7z2408-x64&quot;,
+  &quot;displayName&quot;: &quot;7-Zip 24.08&quot;,
+  &quot;displayVersion&quot;: &quot;24.08&quot;,
+  &quot;publisher&quot;: &quot;Igor Pavlov&quot;
+}
+</code></pre>
+<hr />
+<h2 id="step-4-run-the-script">Step 4: Run the script<a class="anchor" href="#step-4-run-the-script" aria-label="Link to this section">#</a></h2>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;.\7-Zip&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<p>The script will:</p>
+<ol>
+<li>Download <code>IntuneWinAppUtil.exe</code> if it is missing</li>
+<li>Compress <code>Source\</code> into a <code>.intunewin</code> package</li>
+<li>Sign you in to Microsoft Graph</li>
+<li>Create the app in Intune and upload the package</li>
+<li>Apply the icon, detection rule and any group assignments</li>
+<li>Delete the <code>.intunewin</code> file afterwards (keep it with <code>-SkipPackageRemoval</code>)</li>
+</ol>
+<p><strong>Try it safely first.</strong> Add <code>-WhatIf</code> to see exactly what would happen without changing anything in Intune:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;.\7-Zip&quot; -IntuneAdmin &quot;admin@contoso.com&quot; -WhatIf
+</code></pre>
+<hr />
+<h2 id="worked-example-an-exe-installer">Worked example: an EXE installer<a class="anchor" href="#worked-example-an-exe-installer" aria-label="Link to this section">#</a></h2>
+<p>EXE apps need you to supply the install and uninstall command lines, because the script cannot infer them.</p>
+<pre><code class="language-text">NotepadPlusPlus\
+├── Config.xml
+└── Source\
+    └── npp.8.6.9.Installer.x64.exe
+</code></pre>
+<pre><code class="language-xml">&lt;IntuneWin_Settings&gt;
+    &lt;AppType&gt;EXE&lt;/AppType&gt;
+    &lt;PackageName&gt;npp.8.6.9.Installer.x64&lt;/PackageName&gt;
+    &lt;installCmdLine&gt;npp.8.6.9.Installer.x64.exe /S&lt;/installCmdLine&gt;
+    &lt;uninstallCmdLine&gt;&quot;C:\Program Files\Notepad++\uninstall.exe&quot; /S&lt;/uninstallCmdLine&gt;
+    &lt;displayName&gt;Notepad++ 8.6.9&lt;/displayName&gt;
+    &lt;displayVersion&gt;8.6.9&lt;/displayVersion&gt;
+    &lt;Publisher&gt;Notepad++ Team&lt;/Publisher&gt;
+    &lt;RuleType&gt;FILE&lt;/RuleType&gt;
+    &lt;FilePath&gt;C:\Program Files\Notepad++\notepad++.exe&lt;/FilePath&gt;
+    &lt;FileDetectionType&gt;exists&lt;/FileDetectionType&gt;
+    &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+    &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+&lt;/IntuneWin_Settings&gt;
+</code></pre>
+<p>Note the silent-install switch (<code>/S</code> here). Every installer is different — check the vendor's documentation. Without it, the install will hang waiting for a click that nobody can make.</p>
+<hr />
+<h2 id="worked-example-an-msi-installer">Worked example: an MSI installer<a class="anchor" href="#worked-example-an-msi-installer" aria-label="Link to this section">#</a></h2>
+<p>MSI is the easiest case. The script reads the product code and version straight out of the MSI, and builds the detection rule for you.</p>
+<pre><code class="language-xml">&lt;IntuneWin_Settings&gt;
+    &lt;AppType&gt;MSI&lt;/AppType&gt;
+    &lt;PackageName&gt;7z2408-x64&lt;/PackageName&gt;
+    &lt;displayName&gt;7-Zip 24.08&lt;/displayName&gt;
+    &lt;Publisher&gt;Igor Pavlov&lt;/Publisher&gt;
+    &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+    &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+&lt;/IntuneWin_Settings&gt;
+</code></pre>
+<p>You can leave <code>displayVersion</code> out — it is detected from the MSI and you will be asked to confirm it.</p>
+<p><code>RuleType</code> is ignored for MSI apps; MSI product-code detection is always used.</p>
+<hr />
+<h2 id="worked-example-a-powershell-script-app">Worked example: a PowerShell script app<a class="anchor" href="#worked-example-a-powershell-script-app" aria-label="Link to this section">#</a></h2>
+<p>Use <code>PS1</code> when there is no installer — you are running a script to make a change.</p>
+<pre><code class="language-text">Set-CorporateWallpaper\
+├── Config.xml
+└── Source\
+    └── Set-CorporateWallpaper.ps1
+</code></pre>
+<pre><code class="language-xml">&lt;IntuneWin_Settings&gt;
+    &lt;AppType&gt;PS1&lt;/AppType&gt;
+    &lt;PackageName&gt;Set-CorporateWallpaper&lt;/PackageName&gt;
+    &lt;displayName&gt;Corporate Wallpaper&lt;/displayName&gt;
+    &lt;displayVersion&gt;1.0&lt;/displayVersion&gt;
+    &lt;RuleType&gt;TAGFILE&lt;/RuleType&gt;
+    &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+    &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+&lt;/IntuneWin_Settings&gt;
+</code></pre>
+<p><code>TAGFILE</code> detection means the script writes a marker when it finishes, and Intune looks for that marker. It saves you inventing a detection rule for something that does not install a file.</p>
+<hr />
+<h2 id="choosing-a-detection-rule">Choosing a detection rule<a class="anchor" href="#choosing-a-detection-rule" aria-label="Link to this section">#</a></h2>
+<p>Intune needs a way to tell whether the app is already installed. Pick whichever is easiest to describe:</p>
+<table>
+<thead>
+<tr>
+<th><code>RuleType</code></th>
+<th>Use when</th>
+<th>You must also set</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MSI</code></td>
+<td>The app is an MSI</td>
+<td>Nothing — automatic</td>
+</tr>
+<tr>
+<td><code>FILE</code></td>
+<td>Installation leaves a known file or folder</td>
+<td><code>FilePath</code>, <code>FileDetectionType</code></td>
+</tr>
+<tr>
+<td><code>REGISTRY</code></td>
+<td>Installation leaves a known registry value</td>
+<td><code>RegistryKeyPath</code>, <code>RegistryValue</code>, <code>RegistryDetectionType</code></td>
+</tr>
+<tr>
+<td><code>TAGFILE</code></td>
+<td>Nothing reliable to detect, typically a <code>PS1</code> app</td>
+<td>Nothing</td>
+</tr>
+</tbody>
+</table>
+<p><code>FileDetectionType</code> and <code>RegistryDetectionType</code> accept <code>exists</code> or <code>doesNotExist</code> on their own. For anything else — comparing a version, a size, a date — you must also supply the matching <code>...DetectionOperator</code> and <code>...DetectionValue</code>.</p>
+<pre><code class="language-xml">&lt;!-- Detect a specific version or newer --&gt;
+&lt;RuleType&gt;FILE&lt;/RuleType&gt;
+&lt;FilePath&gt;C:\Program Files\Contoso\App\app.exe&lt;/FilePath&gt;
+&lt;FileDetectionType&gt;version&lt;/FileDetectionType&gt;
+&lt;FileDetectionOperator&gt;greaterThanOrEqual&lt;/FileDetectionOperator&gt;
+&lt;FileDetectionValue&gt;3.1.0.0&lt;/FileDetectionValue&gt;
+</code></pre>
+<hr />
+<h2 id="assigning-the-app-to-groups">Assigning the app to groups<a class="anchor" href="#assigning-the-app-to-groups" aria-label="Link to this section">#</a></h2>
+<p>Add the group names to <code>Config.xml</code> and the assignments are created for you:</p>
+<pre><code class="language-xml">&lt;RequiredEntraGroupName&gt;Win-Devices-All&lt;/RequiredEntraGroupName&gt;
+&lt;AvailableEntraGroupName&gt;App-Users-SelfService&lt;/AvailableEntraGroupName&gt;
+</code></pre>
+<p>Separate multiple groups with commas. Or pass them on the command line, which overrides the file:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;.\7-Zip&quot; -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -RequiredAADGroupName &quot;Win-Devices-All&quot;
+</code></pre>
+<p>To upload without any assignment at all, use <code>-SkipGroupAssignment</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Intent</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Required</td>
+<td>Installed automatically</td>
+</tr>
+<tr>
+<td>Available</td>
+<td>Appears in Company Portal for users to install themselves</td>
+</tr>
+<tr>
+<td>Uninstall</td>
+<td>Removed from targeted devices</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="signing-in">Signing in<a class="anchor" href="#signing-in" aria-label="Link to this section">#</a></h2>
+<p>For a first run, signing in as yourself is simplest:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;.\7-Zip&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<p>The connection is kept between runs, so uploading several apps only prompts once.</p>
+<p>For unattended or scheduled runs, use an app registration. The secret never has to appear on the command line:</p>
+<pre><code class="language-powershell"># Store the secret once, encrypted, on this machine
+.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile &quot;C:\Secure\app.dpapi&quot;
+
+# Then use it
+.\Upload-IntuneWin.ps1 -PackagePath &quot;.\7-Zip&quot; `
+    -ClientID &quot;&lt;app-guid&gt;&quot; -TenantID &quot;&lt;tenant-guid&gt;&quot; `
+    -ClientSecretFile &quot;C:\Secure\app.dpapi&quot;
+</code></pre>
+<p>Azure Key Vault and certificate authentication are also supported. See <a href="Upload-IntuneWin_ReadMe.html#secure-client-secret-sources-v197">Secure Client Secret Sources</a>.</p>
+<p>Behind a corporate proxy, add <code>-ProxyUri</code> and test it first with <code>-TestProxyConnectivity</code>.</p>
+<hr />
+<h2 id="common-mistakes">Common mistakes<a class="anchor" href="#common-mistakes" aria-label="Link to this section">#</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install hangs forever on the device</td>
+<td>No silent switch in <code>installCmdLine</code></td>
+<td>Add the vendor's silent flag (<code>/S</code>, <code>/quiet</code>, <code>/silent</code>)</td>
+</tr>
+<tr>
+<td>&quot;PackageName not found&quot;</td>
+<td><code>PackageName</code> includes the file extension</td>
+<td>Remove <code>.exe</code> / <code>.msi</code> — use the name only</td>
+</tr>
+<tr>
+<td>App uploads but never shows as installed</td>
+<td>Detection rule does not match reality</td>
+<td>Check the path or registry value exists on a test device after install</td>
+</tr>
+<tr>
+<td>Nothing is uploaded</td>
+<td><code>-IntuneWinPackageOnly</code> was used</td>
+<td>That switch builds the package without uploading</td>
+</tr>
+<tr>
+<td>Config changes seem ignored</td>
+<td>A <code>Config.json</code> exists alongside <code>Config.xml</code></td>
+<td>JSON wins — edit that one, or delete it</td>
+</tr>
+<tr>
+<td>Sign-in prompt on a scheduled run</td>
+<td>Interactive authentication</td>
+<td>Use an app registration with <code>-ClientSecretFile</code> or <code>-KeyVaultName</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every run writes a log file next to the script. When something fails, the log usually names the reason directly.</p>
+<hr />
+<h2 id="what-to-read-next">What to read next<a class="anchor" href="#what-to-read-next" aria-label="Link to this section">#</a></h2>
+<table>
+<thead>
+<tr>
+<th>Guide</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="Upload-IntuneWin_ReadMe.html">Upload-IntuneWin documentation</a></td>
+<td>Every parameter and configuration option in full</td>
+</tr>
+<tr>
+<td><a href="Export-IntunePolicy_ReadMe.html">Export-IntunePolicy documentation</a></td>
+<td>Snapshotting existing Intune configuration to JSON</td>
+</tr>
+<tr>
+<td><a href="Upload-IntuneWin_ChangeLog.html">Change log</a></td>
+<td>What changed in each release</td>
+</tr>
+</tbody>
+</table>
+<p>Useful things to explore once the basics work:</p>
+<ul>
+<li><strong>Dependencies and supersedence</strong> — chain apps together, or replace an older package</li>
+<li><strong>PowerShell script installers</strong> — use a script instead of a command line</li>
+<li><strong>Scope tags</strong> — restrict visibility to a subset of administrators</li>
+<li><strong><code>-ReplaceExistingContent</code></strong> — update the payload of an app that already exists</li>
+</ul>
+
+    <footer>Generated 04 August 2026 &middot; Quick Start v1.97</footer>
+  </main>
+</div>
+
+<button class="totop" id="totop" title="Back to top" aria-label="Back to top">&uarr;</button>
+
+<script>
+(function(){
+  "use strict";
+
+  // Tables get a scroll container so wide ones don't break the layout
+  document.querySelectorAll("main table").forEach(function(t){
+    var w = document.createElement("div");
+    w.className = "table-wrap";
+    t.parentNode.insertBefore(w, t);
+    w.appendChild(t);
+  });
+
+  // Tint callouts by their leading keyword
+  document.querySelectorAll("main blockquote").forEach(function(b){
+    var s = (b.textContent || "").slice(0, 60).toLowerCase();
+    if (s.indexOf("warning") > -1 || s.indexOf("before v") > -1 || s.indexOf("caution") > -1) b.classList.add("warn");
+    else if (s.indexOf("tip") > -1) b.classList.add("tip");
+  });
+
+  function esc(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // One pass over the escaped text, so inserted markup can never be re-matched by a later rule.
+  var GRAMMAR = {
+    powershell: [
+      { re: "#[^\\n]*",                cls: "tok-com" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" },
+      { re: "'[^'\\n]*'",              cls: "tok-str" },
+      { re: "\\$[A-Za-z_][\\w:]*",     cls: "tok-var" },
+      { re: "\\B-[A-Za-z]\\w*",        cls: "tok-par" }
+    ],
+    json: [
+      { re: "\"[^\"\\n]*\"(?=\\s*:)",  cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" },
+      { re: "\\b(?:true|false|null)\\b", cls: "tok-key" },
+      { re: "-?\\b\\d+(?:\\.\\d+)?\\b", cls: "tok-num" }
+    ],
+    xml: [
+      { re: "&lt;!--[\\s\\S]*?--&gt;", cls: "tok-com" },
+      { re: "&lt;\\/?[A-Za-z_][\\w.:-]*", cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" }
+    ],
+    http: [
+      { re: "^(?:GET|POST|PATCH|PUT|DELETE)\\b", cls: "tok-key" },
+      { re: "\"[^\"\\n]*\"(?=\\s*:)",  cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" }
+    ]
+  };
+  GRAMMAR.ps1 = GRAMMAR.powershell;
+  GRAMMAR.html = GRAMMAR.xml;
+
+  function highlight(code, lang){
+    var out = esc(code);
+    var rules = GRAMMAR[lang];
+    if (!rules) { return out; }
+    var re = new RegExp(rules.map(function(r){ return "(" + r.re + ")"; }).join("|"), "gm");
+    return out.replace(re, function(){
+      for (var i = 1; i <= rules.length; i++){
+        if (arguments[i] !== undefined){
+          return '<span class="' + rules[i-1].cls + '">' + arguments[i] + '</span>';
+        }
+      }
+      return arguments[0];
+    });
+  }
+
+  document.querySelectorAll("main pre > code").forEach(function(c){
+    var cls = c.className || "";
+    var m = cls.match(/language-([\w-]+)/);
+    var lang = m ? m[1].toLowerCase() : "";
+    var raw = c.textContent;
+    if (lang) { c.innerHTML = highlight(raw, lang); }
+
+    var btn = document.createElement("button");
+    btn.className = "copy";
+    btn.type = "button";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", function(){
+      navigator.clipboard.writeText(raw).then(function(){
+        btn.textContent = "Copied";
+        btn.classList.add("done");
+        setTimeout(function(){ btn.textContent = "Copy"; btn.classList.remove("done"); }, 1400);
+      });
+    });
+    c.parentNode.appendChild(btn);
+  });
+
+  // Highlight the section currently in view
+  var links = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+  var byId = {};
+  links.forEach(function(a){ byId[a.getAttribute("href").slice(1)] = a; });
+  var targets = Object.keys(byId).map(function(id){ return document.getElementById(id); }).filter(Boolean);
+
+  if ("IntersectionObserver" in window && targets.length){
+    var visible = new Set();
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) visible.add(e.target.id); else visible.delete(e.target.id);
+      });
+      var first = targets.filter(function(t){ return visible.has(t.id); })[0];
+      if (first){
+        links.forEach(function(a){ a.classList.remove("active"); });
+        var a = byId[first.id];
+        if (a){ a.classList.add("active"); }
+      }
+    }, { rootMargin: "0px 0px -75% 0px", threshold: 0 });
+    targets.forEach(function(t){ io.observe(t); });
+  }
+
+  var top = document.getElementById("totop");
+  window.addEventListener("scroll", function(){
+    top.classList.toggle("show", window.scrollY > 600);
+  }, { passive: true });
+  top.addEventListener("click", function(){ window.scrollTo({ top: 0, behavior: "smooth" }); });
+})();
+</script>
+</body>
+</html>

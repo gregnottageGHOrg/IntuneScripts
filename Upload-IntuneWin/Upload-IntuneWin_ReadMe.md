@@ -4,6 +4,10 @@
 
 A comprehensive PowerShell script for creating and uploading Win32 application packages (.intunewin) to Microsoft Intune.
 
+> **New to this?** Start with the [Quick Start guide](Upload-IntuneWin_QuickStart.html) — it walks through packaging and uploading your first app without needing any of the detail below.
+
+**Related guides:** [Quick Start](Upload-IntuneWin_QuickStart.html) · [Export-IntunePolicy](Export-IntunePolicy_ReadMe.html) · [Change log](Upload-IntuneWin_ChangeLog.html)
+
 ---
 
 ## 📋 Table of Contents
@@ -17,6 +21,9 @@ A comprehensive PowerShell script for creating and uploading Win32 application p
 - [Configuration Files](#configuration-files)
   - [Config.json Format](#configjson-format)
   - [Config.xml Format](#configxml-format)
+- [Caller-Supplied Authentication (v1.97)](#caller-supplied-authentication-v197)
+- [Secure Client Secret Sources (v1.97)](#secure-client-secret-sources-v197)
+- [Multi-Tenant Configuration File (v1.97)](#multi-tenant-configuration-file-v197)
 - [PowerShell Script Installer Type (v1.96)](#powershell-script-installer-type-v196)
 - [Dependency and Supersedence Fixes (v1.94)](#dependency-and-supersedence-fixes-v194)
 - [DelegatedImport Parity Enhancements (v1.93)](#delegatedimport-parity-enhancements-v193)
@@ -173,13 +180,37 @@ For manual download, visit: [Microsoft Win32 Content Prep Tool](https://github.c
 
 ### Authentication Parameters
 
-| Parameter       | Type   | Required | Description                                    |
-| --------------- | ------ | -------- | ---------------------------------------------- |
-| `-IntuneAdmin`  | String | No       | Admin UPN for interactive authentication       |
-| `-ClientID`     | String | No       | App Registration Application (client) ID       |
-| `-TenantID`     | String | No       | Azure Tenant ID                                |
-| `-ClientSecret` | String | No       | App Registration Client Secret                 |
-| `-CertName`     | String | No       | Certificate name for cert-based authentication |
+| Parameter             | Type             | Required | Description                                                        |
+| --------------------- | ---------------- | -------- | ------------------------------------------------------------------ |
+| `-IntuneAdmin`        | String           | No       | Admin UPN for interactive authentication                           |
+| `-ClientID`           | String           | No       | App Registration Application (client) ID                           |
+| `-TenantID`           | String           | No       | Azure Tenant ID                                                    |
+| `-ClientSecret`       | String           | No       | App Registration Client Secret                                     |
+| `-CertName`           | String           | No       | Certificate name for cert-based authentication                     |
+| `-AccessToken`        | `[SecureString]` | No       | Pre-acquired Graph token. Aliases: `Token`, `GraphToken` *(v1.97)* |
+| `-TokenRefreshScript` | `[ScriptBlock]`  | No       | Invoked on HTTP 401 to obtain a fresh token *(v1.97)*              |
+
+### Secure Secret Source Parameters (v1.97)
+
+Supply the client secret without putting it on the command line. See [Secure Client Secret Sources (v1.97)](#secure-client-secret-sources-v197).
+
+| Parameter                  | Type   | Description                                                                             |
+| -------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `-ClientSecretFile`        | String | Path to a DPAPI-protected secret file created by `-ProtectSecret`                       |
+| `-ProtectSecret`           | Switch | Alternate path: prompt for a secret, DPAPI-encrypt it to `-ClientSecretFile`, exit      |
+| `-KeyVaultName`            | String | Key Vault name to retrieve the secret from. Requires `-KeyVaultSecretName`              |
+| `-KeyVaultSecretName`      | String | Name of the Key Vault secret holding the client secret                                  |
+| `-KeyVaultAuth`            | String | `ManagedIdentity` (default) or `Certificate` — how the vault itself is authenticated    |
+| `-ManagedIdentityClientId` | String | Client ID of a user-assigned managed identity. Omit to use the system-assigned identity |
+
+### Multi-Tenant Configuration Parameters (v1.97)
+
+Hold each environment's settings in one file instead of passing them every time. See [Multi-Tenant Configuration File (v1.97)](#multi-tenant-configuration-file-v197).
+
+| Parameter           | Type   | Description                                                                                                  |
+| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| `-TenantConfigFile` | String | Path to an SPN configuration file with one `<spn>` entry per environment. Aliases: `SpnFile`, `TenantConfig` |
+| `-EnvironmentName`  | String | Which environment to select, matched on `<tenantname>`. Aliases: `TenantName`, `Environment`                 |
 
 ### Proxy Parameters (v1.93)
 
@@ -187,7 +218,7 @@ All proxy parameters are **opt-in**. When neither `-ProxyUri` nor `$env:INTUNEWI
 
 | Parameter                     | Type           | Description                                                                                                                                                                                   |
 | ----------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-ProxyUri`                   | `[uri]`        | Absolute URI of the outbound HTTP/HTTPS proxy (e.g., `http://saas-proxy.contoso.com:443`). Falls back to `$env:INTUNEWIN_PROXY_URI`. Aliases: `Proxy`, `HttpsProxy`.                               |
+| `-ProxyUri`                   | `[uri]`        | Absolute URI of the outbound HTTP/HTTPS proxy (e.g., `http://proxy.contoso.com:443`). Falls back to `$env:INTUNEWIN_PROXY_URI`. Aliases: `Proxy`, `HttpsProxy`.                                    |
 | `-ProxyCredential`            | `PSCredential` | Credential used to authenticate against the proxy server. If `-ProxyUri` is supplied but no credential is, the script prompts once via `Get-Credential` and reuses the result.                |
 | `-ProxyUseDefaultCredentials` | Switch         | Use Windows-integrated authentication (Kerberos / NTLM) for the proxy instead of explicit credentials — skips the credential prompt. Falls back to `$env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS`. |
 | `-ProxyBypassList`            | `String[]`     | Wildcard hostname patterns to bypass the proxy for (e.g., `*.contoso.com`). Falls back to `$env:INTUNEWIN_PROXY_BYPASS` (semicolon-separated).                                                     |
@@ -471,6 +502,246 @@ The traditional XML format is still fully supported for backward compatibility.
 
 ---
 
+## Caller-Supplied Authentication (v1.97)
+
+The script can run against a Microsoft Graph token that something else acquired. Authentication, proxy negotiation and secret retrieval then live outside this script entirely, which makes it callable from an orchestrating script, a build pipeline, or any host that already holds a token — a managed identity, a certificate flow, or a secret store.
+
+| Parameter             | Type             | Purpose                                     |
+| --------------------- | ---------------- | ------------------------------------------- |
+| `-AccessToken`        | `[SecureString]` | Pre-acquired Graph access token             |
+| `-TokenRefreshScript` | `[ScriptBlock]`  | Invoked on HTTP 401 to obtain a fresh token |
+
+`-AccessToken` takes precedence over `-IntuneAdmin`, `-CertName` and `-ClientSecret`, and works for both uploads and `-DeleteApp`.
+
+### Why pass a token instead of a secret
+
+`-ClientSecret` is a plain string, so it appears in the process list and in shell history. Acquiring the token in the calling script and passing `-AccessToken` keeps the secret out of this script's invocation entirely.
+
+```powershell
+$token = $myToken | ConvertTo-SecureString -AsPlainText -Force
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -AccessToken $token
+```
+
+### Surviving token expiry
+
+Win32 uploads can outlast a token. Supply `-TokenRefreshScript` and a 401 will invoke the scriptblock, re-seed the session with the returned token, and retry the request — so a large package is not lost part-way through:
+
+```powershell
+$getToken = {
+    $body = @{
+        grant_type    = 'client_credentials'
+        scope         = 'https://graph.microsoft.com/.default'
+        client_id     = $env:APP_CLIENT_ID
+        client_secret = $env:APP_CLIENT_SECRET
+    }
+    (Invoke-RestMethod -Method POST -Body $body `
+        -Uri "https://login.microsoftonline.com/$env:APP_TENANT_ID/oauth2/v2.0/token").access_token
+}
+
+$token = & $getToken | ConvertTo-SecureString -AsPlainText -Force
+
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -AccessToken $token `
+    -TokenRefreshScript $getToken
+```
+
+The scriptblock may return a `String` or a `SecureString`. If it returns nothing, or throws, the failure is logged and the run ends rather than retrying indefinitely.
+
+### Behaviour without a refresh script
+
+Where `-AccessToken` is supplied on its own, an expired token ends the run with an actionable message. It deliberately never falls back to an interactive sign-in prompt — an unattended run cannot hang waiting for input.
+
+| Supplied                                       | On token expiry                                          |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| `-AccessToken` + `-TokenRefreshScript`         | Token renewed automatically, request retried             |
+| `-AccessToken` only                            | Run ends with guidance to re-run or add a refresh script |
+| `-IntuneAdmin` / `-ClientSecret` / `-CertName` | Existing re-authentication behaviour, unchanged          |
+
+---
+
+## Secure Client Secret Sources (v1.97)
+
+Three ways to supply a client secret without putting it on the command line, where it would otherwise be visible in the process list and shell history. All are self-contained — no `Az` or `SecretManagement` modules are required, so the script stays a single file with one bundled dependency.
+
+Precedence, highest first:
+
+| Source               | Parameters                             | Secret stored on the machine? |
+| -------------------- | -------------------------------------- | ----------------------------- |
+| Azure Key Vault      | `-KeyVaultName`, `-KeyVaultSecretName` | No                            |
+| DPAPI-protected file | `-ClientSecretFile`                    | Yes, encrypted                |
+| Literal string       | `-ClientSecret`                        | No, but exposed on the CLI    |
+
+### DPAPI-protected file
+
+Create the file once, as the identity that will run the uploads:
+
+```powershell
+.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile "C:\Secure\app-secret.dpapi"
+```
+
+You are prompted for the secret, so it never reaches the command line. Then use it:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -ClientID "12345678-1234-1234-1234-123456789012" `
+    -TenantID "87654321-4321-4321-4321-210987654321" `
+    -ClientSecretFile "C:\Secure\app-secret.dpapi"
+```
+
+> **Important:** DPAPI binds the ciphertext to **the current user on the current machine**. A file you create interactively will **not** decrypt under a build agent's service account, or on another host. That is the security property, but it is also the most common cause of failure — create the file as the identity that runs the script. On shared build agents, prefer Key Vault.
+
+If decryption fails the script says so explicitly, naming the account and machine it is running as.
+
+### Azure Key Vault
+
+Nothing secret is stored on the machine at all. The vault is read over REST at `https://<vault>.vault.azure.net/secrets/<name>?api-version=7.4`.
+
+**Managed identity (default)** — for Azure VMs, Scale Sets, App Service, Functions and Container Apps:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -ClientID "12345678-1234-1234-1234-123456789012" `
+    -TenantID "87654321-4321-4321-4321-210987654321" `
+    -KeyVaultName "my-vault" -KeyVaultSecretName "intune-app-secret"
+```
+
+Both managed identity endpoints are supported automatically — `IDENTITY_ENDPOINT` where present (App Service, Functions, Container Apps), otherwise IMDS at `169.254.169.254`. The IMDS call deliberately bypasses any configured proxy, because routing a link-local address through a corporate proxy always fails.
+
+For a host carrying several user-assigned identities, name the one to use:
+
+```powershell
+    -ManagedIdentityClientId "11111111-2222-3333-4444-555555555555"
+```
+
+**Certificate** — for hosts outside Azure, where no managed identity exists:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -ClientID "12345678-1234-1234-1234-123456789012" `
+    -TenantID "87654321-4321-4321-4321-210987654321" `
+    -KeyVaultName "my-vault" -KeyVaultSecretName "intune-app-secret" `
+    -KeyVaultAuth Certificate -CertName "IntuneAutomation"
+```
+
+The certificate signs an RS256 JWT client assertion, so no secret is needed in order to fetch the secret. The certificate is looked up in `CurrentUser\My` then `LocalMachine\My`, must have a private key, and is rejected if expired.
+
+### Required vault permissions
+
+The identity reading the vault needs **Key Vault Secrets User** (RBAC) or a **Get** access policy on secrets. An HTTP 403 is reported with that guidance inline, and a 404 names the missing secret.
+
+### Proxy behaviour
+
+Every outbound call in the credential paths honours the proxy configuration, with two deliberate exceptions:
+
+| Call                                 | Proxy treatment                          |
+| ------------------------------------ | ---------------------------------------- |
+| Key Vault secret retrieval           | Routed through the configured proxy      |
+| Certificate token exchange           | Routed through the configured proxy      |
+| Graph connection from `-AccessToken` | Inherits the proxy set at initialisation |
+| IMDS (`169.254.169.254`)             | **Bypasses** the proxy                   |
+| `IDENTITY_ENDPOINT` (loopback)       | **Bypasses** the proxy                   |
+
+The managed identity endpoints are link-local and loopback addresses — routing them through a corporate proxy always fails. They are also added to the proxy bypass list automatically, so they stay reachable even when a proxy is configured globally.
+
+### PowerShell version support
+
+Everything runs on **Windows PowerShell 5.1** and **PowerShell 7**. Two paths branch to use a better PowerShell 7 facility, falling back cleanly on 5.1:
+
+| Operation                    | PowerShell 7                            | Windows PowerShell 5.1                |
+| ---------------------------- | --------------------------------------- | ------------------------------------- |
+| `SecureString` → plain text  | `ConvertFrom-SecureString -AsPlainText` | Marshals the value                    |
+| Bypassing the proxy for IMDS | `Invoke-RestMethod -NoProxy`            | `HttpWebRequest` with `Proxy = $null` |
+
+Both paths are verified on each version, including RSA JWT signing for certificate authentication, which produces a validating signature identically on both.
+
+### Constrained Language Mode
+
+The credential functions avoid restricted .NET APIs wherever it costs nothing — file access uses cmdlets rather than `System.IO.File`, and secret handling uses the PowerShell 7 native conversion. Three things remain restricted:
+
+- the two PowerShell 5.1 fallbacks in the table above
+- `-KeyVaultAuth Certificate`, because RSA signing needs cryptography APIs that CLM blocks
+
+> **Be aware:** the script *as a whole* cannot run under Constrained Language Mode regardless of the above. Building `.intunewin` packages requires file, path and compression APIs that CLM does not permit, and those calls predate this work. Reducing the credential surface lowers exposure — it does not make the script CLM-ready.
+
+---
+
+## Multi-Tenant Configuration File (v1.97)
+
+Where apps are pushed to several tenants — Dev, Test and Production, or separate customer tenants — each environment's IDs and secret source can live in one file rather than being retyped on every run.
+
+The file holds one `<spn>` element per environment, identified by `<tenantname>`:
+
+```xml
+<root>
+  <spn>
+    <tenantname>Production</tenantname>
+    <tenantid>11111111-1111-1111-1111-111111111111</tenantid>
+    <clientid>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</clientid>
+    <keyvaultname>prod-vault</keyvaultname>
+    <keyvaultsecretname>intune-app-secret</keyvaultsecretname>
+    <keyvaultauth>ManagedIdentity</keyvaultauth>
+    <scopetag>Production</scopetag>
+  </spn>
+  <spn>
+    <tenantname>Test</tenantname>
+    <tenantid>22222222-2222-2222-2222-222222222222</tenantid>
+    <clientid>bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb</clientid>
+    <clientsecretfile>C:\Secure\test-secret.dpapi</clientsecretfile>
+  </spn>
+  <spn>
+    <tenantname>Dev</tenantname>
+    <tenantid>33333333-3333-3333-3333-333333333333</tenantid>
+    <clientid>cccccccc-cccc-cccc-cccc-cccccccccccc</clientid>
+    <certname>DevAutomation</certname>
+  </spn>
+</root>
+```
+
+Select an environment by name:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -TenantConfigFile ".\tenants.xml" -EnvironmentName "Production"
+```
+
+Each environment can use a **different** secret source — the example above has Production on Key Vault, Test on a DPAPI file and Dev on a certificate.
+
+### Recognised elements
+
+| Element                              | Purpose                                                        |
+| ------------------------------------ | -------------------------------------------------------------- |
+| `tenantname`                         | Lookup key for `-EnvironmentName` *(required)*                 |
+| `tenantid`, `clientid`               | Entra ID identifiers *(required)*                              |
+| `certname`                           | Certificate subject for certificate authentication             |
+| `clientsecretfile`                   | Path to a DPAPI-protected secret file                          |
+| `keyvaultname`, `keyvaultsecretname` | Key Vault retrieval                                            |
+| `keyvaultauth`                       | `ManagedIdentity` (default) or `Certificate`                   |
+| `managedidentityclientid`            | User-assigned managed identity                                 |
+| `proxyserver`                        | Outbound proxy URI (informational — pass `-ProxyUri` to apply) |
+| `scopetag`                           | Default Intune scope tag                                       |
+| `encrpytedsecret`                    | Legacy obfuscated secret — see the warning below               |
+
+### Behaviour
+
+- **Explicit parameters always win.** Anything passed on the command line overrides the file, so a single environment can be varied without editing it.
+- `-EnvironmentName` may be **omitted** when the file holds exactly one entry.
+- Omitting it with several entries is an error that **lists the available names**, as is naming one that does not exist.
+- A missing file or malformed XML is reported explicitly rather than failing later during authentication.
+
+### Legacy `encrpytedsecret` values
+
+Older SPN files stored the secret in an `<encrpytedsecret>` element, encrypted with an AES key derived from the `clientid` — **which sits in plain text in the same file**. Anyone holding the file can recover the secret offline, so this is obfuscation, not encryption.
+
+Such files are still read so existing setups keep working, but a warning is printed every run. To migrate:
+
+```powershell
+.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile "C:\Secure\prod-secret.dpapi"
+```
+
+Then replace `<encrpytedsecret>` with `<clientsecretfile>`, or move the secret to Key Vault. Rotate the secret afterwards — the old value should be treated as compromised.
+
+---
+
 ## PowerShell Script Installer Type (v1.96)
 
 Intune's Win32 app **Program** tab now offers `Installer type: PowerShell script` and
@@ -731,7 +1002,7 @@ All previous proxy / env-var values are saved at activation and restored when th
 
 | Env var                              | Maps to                          | Example                                 |
 | ------------------------------------ | -------------------------------- | --------------------------------------- |
-| `INTUNEWIN_PROXY_URI`                     | `-ProxyUri`                      | `http://saas-proxy.contoso.com:443`     |
+| `INTUNEWIN_PROXY_URI`                     | `-ProxyUri`                      | `http://proxy.contoso.com:443`          |
 | `INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS` | `-ProxyUseDefaultCredentials`    | `true` / `1` / `yes` / `on`             |
 | `INTUNEWIN_PROXY_BYPASS`                  | `-ProxyBypassList`               | `*.contoso.com;*.local`                 |
 | `INTUNEWIN_PROXY_BYPASS_ON_LOCAL`         | inverse of `-NoProxyBypassLocal` | `false` / `0` / `no` / `off` to disable |
@@ -900,8 +1171,8 @@ When a parameter is specified in multiple places, the following precedence appli
   "entraGroupName": "App-MyApp-Install",
   "scopetag": "Production",
 
-  "requiredEntraGroupName": ["MDM_Gold-Win-Devices", "MDM_Gold-CPC-Devices"],
-  "availableEntraGroupName": "MDM_Gold-CPC-Users-Microsoft-All",
+  "requiredEntraGroupName": ["Win-Devices-All", "CloudPC-Devices-All"],
+  "availableEntraGroupName": "CloudPC-Users-All",
   "replaceExistingContent": true,
   "skipPackageRemoval": true,
   "newTagPath": true
@@ -913,8 +1184,8 @@ When a parameter is specified in multiple places, the following precedence appli
 ```xml
 <IntuneWin_Settings>
     <!-- ... other settings ... -->
-    <RequiredEntraGroupName>MDM_Gold-Win-Devices, MDM_Gold-CPC-Devices</RequiredEntraGroupName>
-    <AvailableEntraGroupName>MDM_Gold-CPC-Users-Microsoft-All</AvailableEntraGroupName>
+    <RequiredEntraGroupName>Win-Devices-All, CloudPC-Devices-All</RequiredEntraGroupName>
+    <AvailableEntraGroupName>CloudPC-Users-All</AvailableEntraGroupName>
     <ReplaceExistingContent>true</ReplaceExistingContent>
     <SkipPackageRemoval>true</SkipPackageRemoval>
     <NewTagPath>true</NewTagPath>
@@ -1761,7 +2032,7 @@ When using `-IntuneAdmin`, the Graph connection is preserved by default, enablin
 ```powershell
 .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
     -IntuneAdmin "admin@contoso.com" `
-    -ProxyUri "http://saas-proxy.contoso.com:443"
+    -ProxyUri "http://proxy.contoso.com:443"
 ```
 
 The script prompts once for the proxy credential and reuses it for MSAL, Graph SDK, Azure Storage upload, and the GitHub `IntuneWinAppUtil.exe` download.
@@ -1773,14 +2044,14 @@ The script prompts once for the proxy credential and reuses it for MSAL, Graph S
     -ClientID "12345678-1234-1234-1234-123456789012" `
     -TenantID "87654321-4321-4321-4321-210987654321" `
     -ClientSecret "YourClientSecret" `
-    -ProxyUri "http://saas-proxy.contoso.com:443" `
+    -ProxyUri "http://proxy.contoso.com:443" `
     -ProxyUseDefaultCredentials
 ```
 
 #### Env-Var-Only Proxy Configuration (No CLI Flags)
 
 ```powershell
-[Environment]::SetEnvironmentVariable("INTUNEWIN_PROXY_URI", "http://saas-proxy.contoso.com:443", "User")
+[Environment]::SetEnvironmentVariable("INTUNEWIN_PROXY_URI", "http://proxy.contoso.com:443", "User")
 [Environment]::SetEnvironmentVariable("INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS", "true", "User")
 
 .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -IntuneAdmin "admin@contoso.com"
@@ -1791,7 +2062,7 @@ Because `Initialize-IntuneWinProxy -OnlyIfNeeded` probes the direct path first, 
 #### Proxy Connectivity Diagnostic
 
 ```powershell
-.\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri "http://saas-proxy.contoso.com:443"
+.\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri "http://proxy.contoso.com:443"
 ```
 
 Runs the direct-vs-proxy connectivity report against Graph and Entra ID. Exit code `0` = PASS, `1` = FAIL, `2` = init error. No upload or modification occurs.
@@ -1952,7 +2223,7 @@ Combine `-ReplaceExistingContent` with `-ReplaceExistingAssignments` to update b
     -ClientSecret $env:INTUNE_SECRET `
     -RequiredEntraGroupName "All-CloudPC-Devices" `
     -AvailableEntraGroupName "Office-SelfService" `
-    -ScopeTagName "EUD-CloudPC" `
+    -ScopeTagName "CloudPC-Apps" `
     -SkipPackageRemoval
 ```
 

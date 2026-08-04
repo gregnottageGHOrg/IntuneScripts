@@ -4,6 +4,119 @@
 
 For detailed information about features and usage, refer to [Upload-IntuneWin_ReadMe.md](Upload-IntuneWin_ReadMe.md).
 
+**Related guides:** [Quick Start](Upload-IntuneWin_QuickStart.html) · [Upload-IntuneWin](Upload-IntuneWin_ReadMe.html) · [Export-IntunePolicy](Export-IntunePolicy_ReadMe.html)
+
+---
+
+## Version 1.97 (August 2026)
+
+### Caller-Supplied Authentication
+
+The script can now run against a Graph token that something else acquired, so authentication, proxy negotiation and secret retrieval can live outside this script entirely. This makes it callable from an orchestrating script, a pipeline, or any host that already holds a token — a managed identity, a certificate flow, or a secret store.
+
+| Parameter             | Type             | Purpose                                                         |
+| --------------------- | ---------------- | --------------------------------------------------------------- |
+| `-AccessToken`        | `[SecureString]` | Pre-acquired Graph access token. Aliases: `Token`, `GraphToken` |
+| `-TokenRefreshScript` | `[ScriptBlock]`  | Invoked on HTTP 401 to obtain a fresh token                     |
+
+`-AccessToken` takes precedence over `-IntuneAdmin`, `-CertName` and `-ClientSecret`, and is honoured by both the upload and the `-DeleteApp` paths.
+
+Passing a token instead of `-ClientSecret` also keeps the secret off the command line, where it would otherwise be visible in the process list and shell history.
+
+#### Surviving token expiry
+
+Win32 uploads can outlast a token. Where `-TokenRefreshScript` is supplied, a 401 triggers the scriptblock, the returned token re-seeds the session, and the request retries — so a large package is not lost to expiry part-way through:
+
+```powershell
+$getToken = {
+    $body = @{
+        grant_type    = 'client_credentials'
+        scope         = 'https://graph.microsoft.com/.default'
+        client_id     = $env:APP_CLIENT_ID
+        client_secret = $env:APP_CLIENT_SECRET
+    }
+    (Invoke-RestMethod -Method POST -Body $body `
+        -Uri "https://login.microsoftonline.com/$env:APP_TENANT_ID/oauth2/v2.0/token").access_token
+}
+
+$token = & $getToken | ConvertTo-SecureString -AsPlainText -Force
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -AccessToken $token -TokenRefreshScript $getToken
+```
+
+The scriptblock may return either a `String` or a `SecureString`. If it returns nothing, or throws, the failure is logged and the run ends rather than retrying indefinitely.
+
+Where `-AccessToken` is supplied **without** `-TokenRefreshScript`, an expired token ends the run with an actionable message. It deliberately never falls back to an interactive sign-in prompt, so an unattended run cannot hang waiting for input.
+
+### Sanitised examples
+
+Example group names, scope tags and proxy hostnames throughout the script and documentation were replaced with generic equivalents, so nothing in the published solution reflects any particular environment's naming.
+
+### Secure Client Secret Sources
+
+Three ways to supply the client secret without exposing it on the command line, where it would otherwise be visible in the process list and shell history. All are self-contained — no `Az` or `SecretManagement` modules — so the script remains a single file with one bundled dependency.
+
+Precedence, highest first:
+
+| Source               | Parameters                             | Secret on the machine?     |
+| -------------------- | -------------------------------------- | -------------------------- |
+| Azure Key Vault      | `-KeyVaultName`, `-KeyVaultSecretName` | No                         |
+| DPAPI-protected file | `-ClientSecretFile`                    | Yes, encrypted             |
+| Literal string       | `-ClientSecret`                        | No, but exposed on the CLI |
+
+#### DPAPI-protected file
+
+`-ProtectSecret` prompts for the secret, encrypts it with Windows DPAPI and writes it to `-ClientSecretFile`:
+
+```powershell
+.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile "C:\Secure\app-secret.dpapi"
+```
+
+DPAPI binds the ciphertext to the **current user on the current machine**, so a file created interactively will not decrypt under a build agent's service account or on another host. Create it as the identity that runs the upload; on shared agents prefer Key Vault. A decryption failure reports the account and machine it is running as, rather than a generic error.
+
+#### Azure Key Vault
+
+Read over REST at `https://<vault>.vault.azure.net/secrets/<name>?api-version=7.4`, with `-KeyVaultAuth` selecting how the vault itself is authenticated:
+
+- **`ManagedIdentity`** (default) — uses `IDENTITY_ENDPOINT` where present (App Service, Functions, Container Apps), otherwise IMDS at `169.254.169.254`. `-ManagedIdentityClientId` selects a user-assigned identity. The IMDS call deliberately bypasses any configured proxy, since routing a link-local address through a corporate proxy always fails.
+- **`Certificate`** — signs an RS256 JWT client assertion (RFC 7523) with `-CertName`, for hosts outside Azure with no managed identity. No secret is needed in order to fetch the secret. The certificate is located in `CurrentUser\My` then `LocalMachine\My`, must have a private key, and is rejected if expired.
+
+HTTP 403 from the vault is reported with the required permission named (`Key Vault Secrets User`), and 404 names the missing secret.
+
+### Multi-Tenant Configuration File
+
+Where apps are pushed to several tenants, each environment's IDs and secret source can now live in one file rather than being retyped on every run. The file holds one `<spn>` element per environment, identified by `<tenantname>`:
+
+```powershell
+.\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+    -TenantConfigFile ".\tenants.xml" -EnvironmentName "Production"
+```
+
+| Parameter           | Aliases                     | Purpose                        |
+| ------------------- | --------------------------- | ------------------------------ |
+| `-TenantConfigFile` | `SpnFile`, `TenantConfig`   | Path to the configuration file |
+| `-EnvironmentName`  | `TenantName`, `Environment` | Which `<spn>` entry to use     |
+
+Each environment may use a **different** secret source — one on Key Vault, another on a DPAPI file, another on a certificate. Recognised elements are `tenantname`, `tenantid`, `clientid`, `certname`, `clientsecretfile`, `keyvaultname`, `keyvaultsecretname`, `keyvaultauth`, `managedidentityclientid`, `proxyserver` and `scopetag`.
+
+Behaviour:
+
+- **Explicit parameters always win** — anything passed on the command line overrides the file
+- `-EnvironmentName` may be omitted when the file holds exactly one entry
+- Omitting it with several entries errors and **lists the available names**, as does naming one that does not exist
+- A missing file or malformed XML is reported immediately rather than failing later during authentication
+
+#### Legacy `encrpytedsecret` values
+
+Older SPN files encrypted the secret with an AES key derived from the `clientid` stored in plain text in the same file, so anyone holding the file can recover the secret offline. These files are still read for backwards compatibility, but every run prints a warning and points at `-ProtectSecret` for migration. Rotate any secret that has been stored this way.
+
+### Documentation
+
+A [Quick Start guide](Upload-IntuneWin_QuickStart.html) was added for people packaging their first app — it covers copying the template, editing `Config.xml`, and running the upload, with worked examples for MSI, EXE and PowerShell script apps.
+
+`Export-IntunePolicy.ps1` ships alongside the upload script, with [its own guide](Export-IntunePolicy_ReadMe.html). It snapshots Intune configuration and assignments to JSON, and shares this script's authentication, proxy and secret handling — so one tenant configuration file drives both.
+
+All four guides are self-contained HTML with a sidebar table of contents and cross-guide navigation, and are also provided as Markdown.
+
 ---
 
 ## Version 1.96 (August 2026)
@@ -86,7 +199,7 @@ Supporting details:
 
 - **Failed token requests are now fatal.** The client-credentials token call was not error-handled, so a proxy returning `407 Proxy Authentication Required` left `$token` null, produced two further parameter-binding errors, and the script still printed `Successfully authenticated to Microsoft Graph` before continuing. The request is now wrapped, the returned token is validated, and any failure throws immediately
 - **Automatic retry with Windows credentials.** On a `407` where no explicit `-ProxyUri` was supplied, the script attaches the caller's credentials to the system default proxy and retries once — this resolves the common NTLM/Negotiate corporate proxy without any parameter changes
-- **Actionable guidance on failure.** If the retry does not succeed, the error names the exact switches to use (`-ProxyUri` with `-ProxyUseDefaultCredentials` or `-ProxyCredential`), the `$env:INTUNEWIN_PROXY_URI` alternative, and the `-TestProxyConnectivity` diagnostic
+- **Actionable guidance on failure.** If the retry does not succeed, the error names the exact switches to use (`-ProxyUri` with `-ProxyUseDefaultCredentials` or `-ProxyCredential`), the `$env:DMAC_PROXY_URI` alternative, and the `-TestProxyConnectivity` diagnostic
 - Distinct token-endpoint failures are reported with their HTTP status instead of surfacing as downstream null-binding errors
 
 ---
@@ -132,13 +245,13 @@ Dependencies and supersedence declared via `<Dependencies>` / `<Supersedence>` i
 
 ### Corporate Proxy Support
 
-- **Embedded proxy module** (no external dependency): seven internal helpers — `Test-IntuneWinProxyEnabled`, `Get-IntuneWinProxyConfiguration`, `Add-IntuneWinProxyParameter`, `Set-IntuneWinProxyConfiguration`, `Test-IntuneWinGraphConnectivity`, `Initialize-IntuneWinProxy`, `Invoke-IntuneWinProxyTest` — drive a single proxy configuration across every outbound HTTP/S call (MSAL.NET, Microsoft.Graph SDK `HttpClient`, Azure Storage block-blob SAS upload, GitHub `IntuneWinAppUtil.exe` download, and in-script `Invoke-WebRequest` / `Invoke-RestMethod` calls)
+- **Embedded DMAC proxy module** (no external dependency): seven internal helpers — `Test-DmacProxyEnabled`, `Get-DmacProxyConfiguration`, `Add-DmacProxyParameter`, `Set-DmacProxyConfiguration`, `Test-DmacGraphConnectivity`, `Initialize-DmacProxy`, `Invoke-DmacProxyTest` — drive a single proxy configuration across every outbound HTTP/S call (MSAL.NET, Microsoft.Graph SDK `HttpClient`, Azure Storage block-blob SAS upload, GitHub `IntuneWinAppUtil.exe` download, and in-script `Invoke-WebRequest` / `Invoke-RestMethod` calls)
 - **Six new opt-in parameters**: `-ProxyUri` (aliases `Proxy` / `HttpsProxy`), `-ProxyCredential`, `-ProxyUseDefaultCredentials`, `-ProxyBypassList`, `-NoProxyBypassLocal`, and `-TestProxyConnectivity` (alternate diagnostic execution path)
-- **Environment-variable fallbacks**: `$env:INTUNEWIN_PROXY_URI`, `$env:INTUNEWIN_PROXY_USE_DEFAULT_CREDENTIALS`, `$env:INTUNEWIN_PROXY_BYPASS` (semicolon-separated wildcards), `$env:INTUNEWIN_PROXY_BYPASS_ON_LOCAL` — allows zero-CLI-flag activation
-- **Auto-fallback to direct**: main flow calls `Initialize-IntuneWinProxy -OnlyIfNeeded`, which probes direct Graph / Entra ID connectivity first and only configures the proxy if direct fails — safe to set `$env:INTUNEWIN_PROXY_URI` globally on a mixed-egress fleet
+- **Environment-variable fallbacks**: `$env:DMAC_PROXY_URI`, `$env:DMAC_PROXY_USE_DEFAULT_CREDENTIALS`, `$env:DMAC_PROXY_BYPASS` (semicolon-separated wildcards), `$env:DMAC_PROXY_BYPASS_ON_LOCAL` — allows zero-CLI-flag activation
+- **Auto-fallback to direct**: main flow calls `Initialize-DmacProxy -OnlyIfNeeded`, which probes direct Graph / Entra ID connectivity first and only configures the proxy if direct fails — safe to set `$env:DMAC_PROXY_URI` globally on a mixed-egress fleet
 - **Single-prompt credential reuse**: when `-ProxyUri` is set without a credential the script prompts once via `Get-Credential` and reuses the captured `[PSCredential]` for every downstream call; on a non-interactive host it gracefully falls back to Windows-integrated auth and logs a warning
 - **CI / non-interactive detection**: auto-detects `$env:TF_BUILD`, `$env:GITHUB_ACTIONS`, `$env:CI`, and `$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` and throws a descriptive error rather than hanging on a credential prompt when a credential is required in a CI run
-- **ConstrainedLanguage (CLM) fallback**: `Add-IntuneWinProxyParameter` splats `-Proxy` / `-ProxyCredential` / `-ProxyUseDefaultCredentials` onto per-call `Invoke-WebRequest` / `Invoke-RestMethod` invocations when the .NET default proxy cannot be set under CLM
+- **ConstrainedLanguage (CLM) fallback**: `Add-DmacProxyParameter` splats `-Proxy` / `-ProxyCredential` / `-ProxyUseDefaultCredentials` onto per-call `Invoke-WebRequest` / `Invoke-RestMethod` invocations when the .NET default proxy cannot be set under CLM
 - **Configured layers**: `System.Net.WebRequest.DefaultWebProxy`, `System.Net.Http.HttpClient.DefaultProxy` (PS 7+), and `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` process env vars; all prior values are saved at activation and restored when the script ends
 - **`-TestProxyConnectivity` diagnostic**: alternate execution path that runs a two-phase (direct, then proxy if configured) connectivity report against `graph.microsoft.com:443` and `login.microsoftonline.com:443`, prints a coloured per-endpoint table, and exits `0 = PASS`, `1 = FAIL`, `2 = init error`. TCP probe is reported as `SKIP` in proxy mode (raw TCP cannot traverse an HTTP `CONNECT` proxy)
 
@@ -150,7 +263,7 @@ Dependencies and supersedence declared via `<Dependencies>` / `<Supersedence>` i
 
 - **Bundled module takes precedence**: at startup the script looks for `<ScriptRoot>\Modules\Microsoft.Graph.Authentication` and, when present, prepends `<ScriptRoot>\Modules` to `$env:PSModulePath` so the bundled copy wins over any machine- or user-installed copy — the script now runs with **zero module installation** (mirrors the precedence model in `Invoke-DelegatedImport.ps1`)
 - **Fail-closed Authenticode enforcement**: the prepend only happens when every `*.psm1` under the bundled folder has a `Valid` signature from a trusted publisher (default `CN=Microsoft Corporation`, `CN=Microsoft Code Signing`, `CN=Microsoft 3rd Party Application Component`, `CN=GitHub`). Any unsigned, invalid, or untrusted-publisher file skips the prepend (with a warning) and falls back to the installed copy — preventing a counterfeit module dropped into `Modules\` from exfiltrating Graph tokens
-- **Configurable trust list**: override the trusted-publisher allow-list via `$env:INTUNEWIN_TRUSTED_PUBLISHERS` (semicolon-separated subject substrings)
+- **Configurable trust list**: override the trusted-publisher allow-list via `$env:DMAC_TRUSTED_PUBLISHERS` (semicolon-separated subject substrings)
 - **Layered fallback**: if no bundled copy is trusted/available, the script falls back to an installed module, then to `<ScriptRoot>\Microsoft.Graph.Authentication`, then to `<ScriptRoot>\Modules\Microsoft.Graph.Authentication`, and finally exits with `Install-Module` guidance if none resolve
 
 ---
@@ -481,6 +594,6 @@ Dependencies and supersedence declared via `<Dependencies>` / `<Supersedence>` i
 3. **Stuck apps now self-heal** - If an upload attempt fails and the app is left in `notPublished`, the script automatically deletes the stale `mobileApp` record, waits 5 seconds, recreates it, and retries the upload. No manual cleanup required.
 4. **Robocopy of `OrigSource\` → `Source\`** - If your package folder contains both `OrigSource\` (immutable golden copy) and `Source\` (build staging folder), the script now mirrors `OrigSource\` into `Source\` at the start of every run using `robocopy /MIR /MT:4 /NJH /NJS /NP`. Files that exist in `Source\` but not in `OrigSource\` will be removed. If you intentionally place build artefacts in `Source\` that are not present in `OrigSource\`, either remove `OrigSource\` from the package or move those artefacts into `OrigSource\`.
 5. **Custom-app-registration interactive auth** - You can now run interactive sign-in against a custom Entra ID app registration by supplying `-IntuneAdmin` plus `-ClientID` (and optionally `-TenantID`) without `-ClientSecret`. The previous `-IntuneAdmin`-only flow (built-in Microsoft Graph PowerShell app) continues to work unchanged.
-6. **Corporate proxy support is opt-in** - When neither `-ProxyUri` nor `$env:INTUNEWIN_PROXY_URI` is set, the proxy layer is completely inactive and existing behaviour is unchanged. To activate, supply `-ProxyUri "http://proxy.contoso.com:443"` (or set `$env:INTUNEWIN_PROXY_URI`) and choose a credential mode: `-ProxyCredential`, `-ProxyUseDefaultCredentials`, or leave both unset to be prompted once. Direct connectivity is probed first via `-OnlyIfNeeded`, so the proxy is auto-skipped on machines with direct egress — it is safe to set the env var globally on a mixed-egress fleet. Use `-TestProxyConnectivity` to validate the proxy configuration without running an upload.
+6. **Corporate proxy support is opt-in** - When neither `-ProxyUri` nor `$env:DMAC_PROXY_URI` is set, the proxy layer is completely inactive and existing behaviour is unchanged. To activate, supply `-ProxyUri "http://proxy.contoso.com:443"` (or set `$env:DMAC_PROXY_URI`) and choose a credential mode: `-ProxyCredential`, `-ProxyUseDefaultCredentials`, or leave both unset to be prompted once. Direct connectivity is probed first via `-OnlyIfNeeded`, so the proxy is auto-skipped on machines with direct egress — it is safe to set the env var globally on a mixed-egress fleet. Use `-TestProxyConnectivity` to validate the proxy configuration without running an upload.
 7. **Documentation correction — categories** - The README previously stated "Only the first category is currently sent to Graph"; this was incorrect. The script has always iterated every comma-separated category in the config file and called `Set-IntuneAppCategory` for each one. README updated accordingly.
-8. **Bundled Microsoft.Graph.Authentication module** - You no longer need to `Install-Module Microsoft.Graph.Authentication`. Ship the script with its `Modules\Microsoft.Graph.Authentication` subfolder and the script prepends `Modules\` to `$env:PSModulePath` automatically, preferring the bundled (signed) copy. The prepend is fail-closed: if the bundled `*.psm1` files are unsigned or signed by an untrusted publisher, the script skips the bundled copy and falls back to an installed module. Installing the module remains fully supported and is used as the fallback. Override the trusted-publisher list with `$env:INTUNEWIN_TRUSTED_PUBLISHERS` if you re-sign the bundled module with your own certificate.
+8. **Bundled Microsoft.Graph.Authentication module** - You no longer need to `Install-Module Microsoft.Graph.Authentication`. Ship the script with its `Modules\Microsoft.Graph.Authentication` subfolder and the script prepends `Modules\` to `$env:PSModulePath` automatically, preferring the bundled (signed) copy. The prepend is fail-closed: if the bundled `*.psm1` files are unsigned or signed by an untrusted publisher, the script skips the bundled copy and falls back to an installed module. Installing the module remains fully supported and is used as the fallback. Override the trusted-publisher list with `$env:DMAC_TRUSTED_PUBLISHERS` if you re-sign the bundled module with your own certificate.

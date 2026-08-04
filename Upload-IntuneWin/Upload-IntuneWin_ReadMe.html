@@ -1,0 +1,3543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload-IntuneWin.ps1</title>
+<style>
+:root{
+  --bg:#ffffff; --bg-alt:#f6f8fa; --bg-sunken:#eef1f4;
+  --fg:#1f2328; --fg-muted:#59636e; --fg-faint:#818b98;
+  --border:#d8dee4; --border-soft:#e6eaef;
+  --accent:#0b5cab; --accent-soft:#e7f0fa;
+  --green:#1a7f37; --amber:#9a6700; --red:#cf222e; --purple:#6639ba;
+  --code-bg:#f6f8fa; --code-fg:#24292f;
+  --shadow:0 1px 3px rgba(31,35,40,.08),0 8px 24px rgba(31,35,40,.06);
+  --sidebar:300px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --bg-alt:#161b22; --bg-sunken:#1c2128;
+    --fg:#e6edf3; --fg-muted:#9198a1; --fg-faint:#6e7681;
+    --border:#30363d; --border-soft:#21262d;
+    --accent:#6cb0ff; --accent-soft:#132b45;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#a371f7;
+    --code-bg:#161b22; --code-fg:#e6edf3;
+    --shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:1.5rem}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---------- layout ---------- */
+.layout{display:flex; align-items:flex-start; min-height:100vh}
+.sidebar{
+  width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0;
+  height:100vh; overflow-y:auto; background:var(--bg-alt);
+  border-right:1px solid var(--border); padding:1.5rem 0 3rem;
+}
+.sidebar .brand{padding:0 1.5rem 1rem; border-bottom:1px solid var(--border-soft); margin-bottom:.75rem}
+.sidebar .brand h1{font-size:.95rem; margin:0 0 .3rem; letter-spacing:-.01em}
+.sidebar .brand .ver{
+  display:inline-block; font-size:.7rem; font-weight:600; letter-spacing:.02em;
+  background:var(--accent-soft); color:var(--accent); padding:.15rem .5rem; border-radius:999px;
+}
+.sidebar nav{display:flex; flex-direction:column; padding:0 .75rem}
+.sidebar nav a{
+  display:block; padding:.34rem .75rem; border-radius:6px; color:var(--fg-muted);
+  font-size:.85rem; line-height:1.4; border-left:2px solid transparent;
+}
+.sidebar nav a:hover{background:var(--bg-sunken); color:var(--fg); text-decoration:none}
+.sidebar nav a.lvl3{padding-left:1.6rem; font-size:.8rem; color:var(--fg-faint)}
+.sidebar nav a.active{color:var(--accent); background:var(--accent-soft); font-weight:600; border-left-color:var(--accent)}
+.sidebar .sibling{margin:1rem 1.5rem 0; padding-top:1rem; border-top:1px solid var(--border-soft); font-size:.82rem}
+.sidebar .guides{margin:0 1.5rem 1rem; padding-bottom:1rem; border-bottom:1px solid var(--border-soft)}
+.sidebar .guides .glabel{display:block; font-size:.68rem; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); margin-bottom:.45rem}
+.sidebar .guides a,.sidebar .guides span{display:block; padding:.3rem .55rem; border-radius:5px; font-size:.83rem; text-decoration:none; line-height:1.35}
+.sidebar .guides a{color:var(--accent)}
+.sidebar .guides a:hover{background:var(--surface-alt)}
+.sidebar .guides .current{background:var(--accent); color:#fff; font-weight:600}
+
+main{flex:1 1 auto; min-width:0; padding:3rem 3.5rem 6rem; max-width:1000px}
+.doc-header{margin-bottom:2.5rem; padding-bottom:1.5rem; border-bottom:1px solid var(--border)}
+.doc-header h1{font-size:2.1rem; margin:0 0 .4rem; letter-spacing:-.02em; line-height:1.2}
+.doc-header p{margin:0; color:var(--fg-muted); font-size:1.02rem}
+
+/* ---------- content ---------- */
+h2,h3,h4,h5,h6{line-height:1.3; letter-spacing:-.01em; scroll-margin-top:1.5rem; position:relative}
+h2{font-size:1.55rem; margin:2.75rem 0 1rem; padding-bottom:.4rem; border-bottom:1px solid var(--border-soft)}
+h3{font-size:1.2rem; margin:2rem 0 .75rem}
+h4{font-size:1.02rem; margin:1.5rem 0 .5rem; color:var(--fg-muted); text-transform:none}
+p{margin:0 0 1rem}
+ul,ol{margin:0 0 1rem; padding-left:1.5rem}
+li{margin:.3rem 0}
+li>ul,li>ol{margin:.3rem 0}
+hr{border:0; border-top:1px solid var(--border); margin:2.5rem 0}
+strong{font-weight:650}
+
+.anchor{
+  opacity:0; margin-left:.4rem; color:var(--fg-faint); font-weight:400;
+  text-decoration:none; transition:opacity .12s;
+}
+h2:hover .anchor,h3:hover .anchor,h4:hover .anchor{opacity:1}
+
+/* ---------- code ---------- */
+code{
+  font-family:"Cascadia Code","Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+  font-size:.875em; background:var(--bg-sunken); padding:.15em .38em;
+  border-radius:5px; border:1px solid var(--border-soft);
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+  padding:1rem 1.1rem; overflow-x:auto; margin:0 0 1.25rem; position:relative; box-shadow:var(--shadow);
+}
+pre code{background:none; border:0; padding:0; font-size:.87rem; line-height:1.65; color:var(--code-fg)}
+.copy{
+  position:absolute; top:.55rem; right:.55rem; font:inherit; font-size:.7rem; font-weight:600;
+  padding:.25rem .55rem; border-radius:6px; cursor:pointer; opacity:0; transition:opacity .12s;
+  background:var(--bg); color:var(--fg-muted); border:1px solid var(--border);
+}
+pre:hover .copy{opacity:1}
+.copy:hover{color:var(--accent); border-color:var(--accent)}
+.copy.done{color:var(--green); border-color:var(--green)}
+
+/* very light, conservative token colouring */
+.tok-str{color:var(--green)}
+.tok-com{color:var(--fg-faint); font-style:italic}
+.tok-var{color:var(--purple)}
+.tok-par{color:var(--accent)}
+.tok-key{color:var(--red)}
+.tok-num{color:var(--amber)}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto; margin:0 0 1.25rem; border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow)}
+table{border-collapse:collapse; width:100%; font-size:.9rem}
+thead th{
+  background:var(--bg-alt); text-align:left; font-weight:650; color:var(--fg);
+  padding:.65rem .9rem; border-bottom:1px solid var(--border); white-space:nowrap;
+}
+tbody td{padding:.6rem .9rem; border-bottom:1px solid var(--border-soft); vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:nth-child(even){background:var(--bg-alt)}
+
+/* ---------- callouts ---------- */
+blockquote{
+  margin:0 0 1.25rem; padding:.9rem 1.1rem; background:var(--bg-alt);
+  border-left:4px solid var(--accent); border-radius:0 8px 8px 0; color:var(--fg-muted);
+}
+blockquote p:last-child{margin-bottom:0}
+blockquote strong{color:var(--fg)}
+blockquote.warn{border-left-color:var(--amber)}
+blockquote.tip{border-left-color:var(--green)}
+
+/* ---------- misc ---------- */
+.totop{
+  position:fixed; right:1.5rem; bottom:1.5rem; width:2.5rem; height:2.5rem; border-radius:50%;
+  background:var(--bg); border:1px solid var(--border); color:var(--fg-muted); cursor:pointer;
+  display:none; align-items:center; justify-content:center; box-shadow:var(--shadow); font-size:1rem;
+}
+.totop.show{display:flex}
+.totop:hover{color:var(--accent); border-color:var(--accent)}
+footer{margin-top:4rem; padding-top:1.5rem; border-top:1px solid var(--border); color:var(--fg-faint); font-size:.82rem}
+
+.menu-btn{display:none}
+
+@media (max-width:1000px){
+  .layout{flex-direction:column}
+  .sidebar{
+    position:static; width:100%; flex:none; height:auto; max-height:none;
+    border-right:0; border-bottom:1px solid var(--border); padding-bottom:1rem;
+  }
+  .sidebar nav{max-height:16rem; overflow-y:auto}
+  main{padding:2rem 1.25rem 4rem}
+  .doc-header h1{font-size:1.6rem}
+}
+
+@media print{
+  .sidebar,.totop,.copy,.anchor{display:none !important}
+  .layout{display:block}
+  main{max-width:none; padding:0}
+  pre,.table-wrap{box-shadow:none; break-inside:avoid}
+  h2,h3{break-after:avoid}
+  a{color:inherit; text-decoration:none}
+  body{font-size:11pt}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>Upload-IntuneWin</h1>
+      <span class="ver">v1.97</span>
+    </div>
+    <nav id="toc">
+<a class="lvl2" href="#overview">Overview</a>
+<a class="lvl3" href="#key-features">Key Features</a>
+<a class="lvl2" href="#prerequisites">Prerequisites</a>
+<a class="lvl3" href="#install-required-modules">Install Required Modules</a>
+<a class="lvl3" href="#microsoftgraphauthentication-module-resolution">Microsoft.Graph.Authentication Module Resolution</a>
+<a class="lvl3" href="#win32-content-prep-tool-auto-download">Win32 Content Prep Tool (Auto-Download)</a>
+<a class="lvl2" href="#what-the-script-does">What the Script Does</a>
+<a class="lvl3" href="#complete-upload-workflow">Complete Upload Workflow</a>
+<a class="lvl2" href="#parameters">Parameters</a>
+<a class="lvl3" href="#authentication-parameters">Authentication Parameters</a>
+<a class="lvl3" href="#secure-secret-source-parameters-v197">Secure Secret Source Parameters (v1.97)</a>
+<a class="lvl3" href="#multi-tenant-configuration-parameters-v197">Multi-Tenant Configuration Parameters (v1.97)</a>
+<a class="lvl3" href="#proxy-parameters-v193">Proxy Parameters (v1.93)</a>
+<a class="lvl3" href="#package-parameters">Package Parameters</a>
+<a class="lvl3" href="#mode-switches">Mode Switches</a>
+<a class="lvl3" href="#delete-parameters-v192">Delete Parameters (v1.92)</a>
+<a class="lvl3" href="#assignment-parameters">Assignment Parameters</a>
+<a class="lvl2" href="#authentication-methods">Authentication Methods</a>
+<a class="lvl3" href="#method-1-interactive-authentication-recommended-for-testing">Method 1: Interactive Authentication (Recommended for Testing)</a>
+<a class="lvl3" href="#method-2-interactive-authentication-via-custom-app-registration-v193">Method 2: Interactive Authentication via Custom App Registration (v1.93)</a>
+<a class="lvl3" href="#method-3-client-secret-authentication-for-automation">Method 3: Client Secret Authentication (For Automation)</a>
+<a class="lvl3" href="#method-4-certificate-authentication-most-secure">Method 4: Certificate Authentication (Most Secure)</a>
+<a class="lvl2" href="#package-folder-structure">Package Folder Structure</a>
+<a class="lvl2" href="#configuration-files">Configuration Files</a>
+<a class="lvl3" href="#configjson-format">Config.json Format</a>
+<a class="lvl3" href="#configxml-format">Config.xml Format</a>
+<a class="lvl2" href="#caller-supplied-authentication-v197">Caller-Supplied Authentication (v1.97)</a>
+<a class="lvl3" href="#why-pass-a-token-instead-of-a-secret">Why pass a token instead of a secret</a>
+<a class="lvl3" href="#surviving-token-expiry">Surviving token expiry</a>
+<a class="lvl3" href="#behaviour-without-a-refresh-script">Behaviour without a refresh script</a>
+<a class="lvl2" href="#secure-client-secret-sources-v197">Secure Client Secret Sources (v1.97)</a>
+<a class="lvl3" href="#dpapi-protected-file">DPAPI-protected file</a>
+<a class="lvl3" href="#azure-key-vault">Azure Key Vault</a>
+<a class="lvl3" href="#required-vault-permissions">Required vault permissions</a>
+<a class="lvl3" href="#proxy-behaviour">Proxy behaviour</a>
+<a class="lvl3" href="#powershell-version-support">PowerShell version support</a>
+<a class="lvl3" href="#constrained-language-mode">Constrained Language Mode</a>
+<a class="lvl2" href="#multi-tenant-configuration-file-v197">Multi-Tenant Configuration File (v1.97)</a>
+<a class="lvl3" href="#recognised-elements">Recognised elements</a>
+<a class="lvl3" href="#behaviour">Behaviour</a>
+<a class="lvl3" href="#legacy-encrpytedsecret-values">Legacy encrpytedsecret values</a>
+<a class="lvl2" href="#powershell-script-installer-type-v196">PowerShell Script Installer Type (v1.96)</a>
+<a class="lvl3" href="#configuration">Configuration</a>
+<a class="lvl3" href="#behaviour-1">Behaviour</a>
+<a class="lvl3" href="#how-it-works">How It Works</a>
+<a class="lvl2" href="#dependency-and-supersedence-fixes-v194">Dependency and Supersedence Fixes (v1.94)</a>
+<a class="lvl3" href="#what-was-broken">What Was Broken</a>
+<a class="lvl3" href="#the-supported-graph-call">The Supported Graph Call</a>
+<a class="lvl3" href="#relationships-are-merged-not-overwritten">Relationships Are Merged, Not Overwritten</a>
+<a class="lvl3" href="#names-or-ids">Names or IDs</a>
+<a class="lvl3" href="#other-fixes">Other Fixes</a>
+<a class="lvl2" href="#delegatedimport-parity-enhancements-v193">DelegatedImport Parity Enhancements (v1.93)</a>
+<a class="lvl3" href="#automatic-401-token-refresh">Automatic 401 Token Refresh</a>
+<a class="lvl3" href="#expanded-transient-network-error-detection">Expanded Transient Network Error Detection</a>
+<a class="lvl3" href="#per-chunk-transient-http-5xx-handling">Per-Chunk Transient HTTP 5xx Handling</a>
+<a class="lvl3" href="#wait-apppublishingstate-helper-and-stuck-app-recovery">Wait-AppPublishingState Helper and Stuck App Recovery</a>
+<a class="lvl3" href="#escalating-upload-retry-backoff">Escalating Upload Retry Backoff</a>
+<a class="lvl3" href="#origsource-source-robocopy-mirror">OrigSource → Source Robocopy Mirror</a>
+<a class="lvl2" href="#corporate-proxy-support-v193">Corporate Proxy Support (v1.93)</a>
+<a class="lvl3" href="#when-to-use-it">When To Use It</a>
+<a class="lvl3" href="#activation-modes">Activation Modes</a>
+<a class="lvl3" href="#auto-fallback-to-direct-connectivity">Auto-Fallback to Direct Connectivity</a>
+<a class="lvl3" href="#ci-non-interactive-detection">CI / Non-Interactive Detection</a>
+<a class="lvl3" href="#what-gets-configured-under-the-hood">What Gets Configured Under The Hood</a>
+<a class="lvl3" href="#bypass-list">Bypass List</a>
+<a class="lvl3" href="#environment-variable-reference">Environment Variable Reference</a>
+<a class="lvl3" href="#diagnostic-mode--testproxyconnectivity">Diagnostic Mode — -TestProxyConnectivity</a>
+<a class="lvl2" href="#upload-resilience-and-feature-parity-v192">Upload Resilience and Feature Parity (v1.92)</a>
+<a class="lvl3" href="#sas-readiness-probing">SAS Readiness Probing</a>
+<a class="lvl3" href="#per-chunk-upload-retry-with-sas-renewal">Per-Chunk Upload Retry with SAS Renewal</a>
+<a class="lvl3" href="#file-commit-retry-loop">File Commit Retry Loop</a>
+<a class="lvl3" href="#full-upload-attempt-retry-with-fresh-content-versions">Full Upload Attempt Retry with Fresh Content Versions</a>
+<a class="lvl3" href="#http-412-precondition-failed-is-now-retryable">HTTP 412 Precondition Failed Is Now Retryable</a>
+<a class="lvl3" href="#smart-logo-handling">Smart Logo Handling</a>
+<a class="lvl2" href="#app-deletion-v192">App Deletion (v1.92)</a>
+<a class="lvl3" href="#parameter-reference">Parameter Reference</a>
+<a class="lvl3" href="#behavior">Behavior</a>
+<a class="lvl3" href="#examples">Examples</a>
+<a class="lvl2" href="#config-file-upload-parameters-v191">Config File Upload Parameters (v1.91)</a>
+<a class="lvl3" href="#parameter-precedence">Parameter Precedence</a>
+<a class="lvl3" href="#newtagpath-default-behavior">NewTagPath Default Behavior</a>
+<a class="lvl3" href="#configjson-example-with-upload-parameters">Config.json Example with Upload Parameters</a>
+<a class="lvl3" href="#configxml-example-with-upload-parameters">Config.xml Example with Upload Parameters</a>
+<a class="lvl3" href="#supported-upload-parameters-in-config-files">Supported Upload Parameters in Config Files</a>
+<a class="lvl2" href="#script-optimizations-v19">Script Optimizations (v1.9)</a>
+<a class="lvl3" href="#automatic-graph-api-retry-logic">Automatic Graph API Retry Logic</a>
+<a class="lvl3" href="#enhanced-configuration-validation">Enhanced Configuration Validation</a>
+<a class="lvl3" href="#whatif-support">WhatIf Support</a>
+<a class="lvl3" href="#improved-error-handling">Improved Error Handling</a>
+<a class="lvl2" href="#automatic-tool-download-and-update-v17">Automatic Tool Download and Update (v1.7)</a>
+<a class="lvl3" href="#tool-download-process">Tool Download Process</a>
+<a class="lvl3" href="#tool-download-examples">Tool Download Examples</a>
+<a class="lvl2" href="#exe-file-validation-v17">EXE File Validation (v1.7)</a>
+<a class="lvl3" href="#validation-process">Validation Process</a>
+<a class="lvl3" href="#exe-validation-examples">EXE Validation Examples</a>
+<a class="lvl2" href="#automatic-version-detection-v16">Automatic Version Detection (v1.6)</a>
+<a class="lvl3" href="#version-detection-process">Version Detection Process</a>
+<a class="lvl3" href="#version-detection-example">Version Detection Example</a>
+<a class="lvl2" href="#extended-settings-v15">Extended Settings (v1.5)</a>
+<a class="lvl3" href="#extended-settings-overview">Extended Settings Overview</a>
+<a class="lvl3" href="#app-information-settings">App Information Settings</a>
+<a class="lvl3" href="#install-experience-settings">Install Experience Settings</a>
+<a class="lvl3" href="#system-requirements-settings">System Requirements Settings</a>
+<a class="lvl3" href="#custom-return-codes">Custom Return Codes</a>
+<a class="lvl3" href="#dependencies">Dependencies</a>
+<a class="lvl3" href="#supersedence">Supersedence</a>
+<a class="lvl3" href="#powershell-script-detection">PowerShell Script Detection</a>
+<a class="lvl3" href="#complete-configjson-example-with-extended-settings">Complete Config.json Example with Extended Settings</a>
+<a class="lvl3" href="#complete-configxml-example-with-extended-settings">Complete Config.xml Example with Extended Settings</a>
+<a class="lvl2" href="#assignment-behavior-v17">Assignment Behavior (v1.7)</a>
+<a class="lvl3" href="#delivery-optimization-priority">Delivery Optimization Priority</a>
+<a class="lvl3" href="#user-notification-settings">User Notification Settings</a>
+<a class="lvl3" href="#assignment-settings-summary">Assignment Settings Summary</a>
+<a class="lvl2" href="#graph-connection-management-v17">Graph Connection Management (v1.7)</a>
+<a class="lvl3" href="#connection-behavior-by-authentication-method">Connection Behavior by Authentication Method</a>
+<a class="lvl3" href="#benefits-of-preserved-connections">Benefits of Preserved Connections</a>
+<a class="lvl3" href="#connection-management-examples">Connection Management Examples</a>
+<a class="lvl2" href="#usage-examples">Usage Examples</a>
+<a class="lvl3" href="#basic-package-upload">Basic Package Upload</a>
+<a class="lvl3" href="#package-creation-only">Package Creation Only</a>
+<a class="lvl3" href="#group-assignments">Group Assignments</a>
+<a class="lvl3" href="#scope-tags">Scope Tags</a>
+<a class="lvl3" href="#multiple-packages">Multiple Packages</a>
+<a class="lvl3" href="#custom-intunewinapputil-path">Custom IntuneWinAppUtil Path</a>
+<a class="lvl3" href="#diagnostics-mode">Diagnostics Mode</a>
+<a class="lvl3" href="#corporate-proxy">Corporate Proxy</a>
+<a class="lvl3" href="#replace-existing-application-content">Replace Existing Application Content</a>
+<a class="lvl3" href="#replace-existing-assignments">Replace Existing Assignments</a>
+<a class="lvl3" href="#app-deletion-examples-v192">App Deletion Examples (v1.92)</a>
+<a class="lvl3" href="#complete-production-example">Complete Production Example</a>
+<a class="lvl2" href="#supported-application-types">Supported Application Types</a>
+<a class="lvl3" href="#msi-applications">MSI Applications</a>
+<a class="lvl3" href="#exe-applications">EXE Applications</a>
+<a class="lvl3" href="#ps1-powershell-script-applications">PS1 (PowerShell Script) Applications</a>
+<a class="lvl3" href="#edge-browser">Edge Browser</a>
+<a class="lvl2" href="#detection-rules">Detection Rules</a>
+<a class="lvl3" href="#available-detection-types">Available Detection Types</a>
+<a class="lvl3" href="#detection-rule-examples">Detection Rule Examples</a>
+<a class="lvl2" href="#group-assignment-details">Group Assignment Details</a>
+<a class="lvl3" href="#assignment-intent-types">Assignment Intent Types</a>
+<a class="lvl3" href="#available-uninstall-feature">Available Uninstall Feature</a>
+<a class="lvl3" href="#group-creation">Group Creation</a>
+<a class="lvl2" href="#scope-tag-configuration">Scope Tag Configuration</a>
+<a class="lvl3" href="#how-scope-tags-work">How Scope Tags Work</a>
+<a class="lvl3" href="#scope-tag-best-practices">Scope Tag Best Practices</a>
+<a class="lvl2" href="#troubleshooting">Troubleshooting</a>
+<a class="lvl3" href="#common-issues">Common Issues</a>
+<a class="lvl3" href="#log-file-location">Log File Location</a>
+<a class="lvl3" href="#getting-help">Getting Help</a>
+<a class="lvl2" href="#related-resources">Related Resources</a>
+    </nav>
+    <div class="guides"><span class="glabel">Guides</span><a href="Upload-IntuneWin_QuickStart.html">Quick start</a>
+<span class="current">Upload-IntuneWin</span>
+<a href="Export-IntunePolicy_ReadMe.html">Export-IntunePolicy</a>
+<a href="Upload-IntuneWin_ChangeLog.html">Change log</a></div>
+  </aside>
+
+  <main>
+    <div class="doc-header">
+      <h1>Upload-IntuneWin.ps1</h1>
+      <p>A comprehensive PowerShell script for creating and uploading Win32 application packages (.intunewin) to Microsoft Intune.</p>
+    </div>
+<!-- TIP: In VS Code, press Ctrl+Shift+V to open the Markdown preview and render this document properly. -->
+<blockquote>
+<p><strong>New to this?</strong> Start with the <a href="Upload-IntuneWin_QuickStart.html">Quick Start guide</a> — it walks through packaging and uploading your first app without needing any of the detail below.</p>
+</blockquote>
+<p><strong>Related guides:</strong> <a href="Upload-IntuneWin_QuickStart.html">Quick Start</a> · <a href="Export-IntunePolicy_ReadMe.html">Export-IntunePolicy</a> · <a href="Upload-IntuneWin_ChangeLog.html">Change log</a></p>
+<hr />
+<h2 id="overview">Overview<a class="anchor" href="#overview" aria-label="Link to this section">#</a></h2>
+<p><code>Upload-IntuneWin.ps1</code> automates the complete workflow of packaging and deploying Win32 applications to Microsoft Intune. It handles everything from creating <code>.intunewin</code> packages using the Microsoft Win32 Content Prep Tool to uploading them via Microsoft Graph API and configuring group assignments.</p>
+<h3 id="key-features">Key Features<a class="anchor" href="#key-features" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>✅ <strong>Dual configuration format support</strong> - Config.json (preferred) or Config.xml</li>
+<li>✅ Create <code>.intunewin</code> packages using IntuneWinAppUtil.exe</li>
+<li>✅ Upload packages to Intune via Microsoft Graph API</li>
+<li>✅ Support for MSI, EXE, PS1, and Edge application types</li>
+<li>✅ Configurable detection rules (File, Registry, MSI, PowerShell script)</li>
+<li>✅ Create and assign Entra ID groups for Required, Available, and Uninstall targeting</li>
+<li>✅ <strong>Configurable &quot;Allow available uninstall&quot;</strong> — enabled by default, can be disabled per-app via <code>allowAvailableUninstall</code> config property</li>
+<li>✅ Apply custom Intune scope tags for RBAC management (supports multiple, comma-separated)</li>
+<li>✅ Multiple authentication methods (Interactive, Certificate, Client Secret)</li>
+<li>✅ <strong>Custom app registration with delegated auth</strong> — pass <code>-ClientID</code> with <code>-IntuneAdmin</code> to route interactive sign-in through your own app registration</li>
+<li>✅ <strong>Multiple app categories</strong> — <code>category</code> config property accepts a comma-separated list (e.g., <code>&quot;Communication,Productivity&quot;</code>)</li>
+<li>✅ Automatic return code configuration</li>
+<li>✅ <strong>ESP/Core app designation support</strong> (via Config.json)</li>
+<li>✅ <strong>Automatic logo detection and addition</strong> when updating existing apps</li>
+<li>✅ <strong>Automatic version detection</strong> for EXE and MSI installers (v1.6)</li>
+<li>✅ <strong>Auto-download and update of IntuneWinAppUtil.exe</strong> from GitHub (v1.7)</li>
+<li>✅ <strong>EXE file validation</strong> with fuzzy matching to detect mismatched installer filenames (v1.7)</li>
+<li>✅ <strong>Foreground delivery optimization</strong> for faster app downloads on all assignment types (v1.7)</li>
+<li>✅ <strong>Smart notification settings</strong> - hidden for Required/Available, shown for Uninstall (v1.7)</li>
+<li>✅ <strong>DisconnectGraph switch</strong> for preserving Graph connections across multiple runs (v1.7)</li>
+<li>✅ <strong>Automatic retry logic</strong> for Graph API calls with exponential backoff (v1.9)</li>
+<li>✅ <strong>Enhanced configuration validation</strong> with centralized error checking (v1.9)</li>
+<li>✅ <strong>WhatIf support</strong> to preview operations before execution (v1.9)</li>
+<li>✅ <strong>Improved error handling</strong> with proper control flow management (v1.9)</li>
+<li>✅ <strong>Config file support for upload parameters</strong> — assignment groups, content replacement, and package removal settings can be specified in Config.json or Config.xml (v1.91)</li>
+<li>✅ <strong>NewTagPath enabled by default</strong> — tagfile detection uses the diagnostics-compatible path without requiring the switch (v1.91)</li>
+<li>✅ <strong>App deletion via <code>-DeleteApp</code>/<code>-AppNameToDelete</code></strong> — delete one or many Intune apps from a config file, command line, or pipeline (v1.92)</li>
+<li>✅ <strong>Upload resilience</strong> — SAS readiness probing, per-chunk retry with automatic SAS renewal, file-commit retry loop, and full upload-attempt retry with fresh content versions (v1.92)</li>
+<li>✅ <strong>Smart logo handling</strong> — auto-scans the package folder for <code>PNG</code>/<code>JPG</code>/<code>JPEG</code> files, sets correct MIME type, and persists the logo via a dedicated PATCH after content commit (v1.92)</li>
+<li>✅ <strong>HTTP 412 Precondition Failed now retryable</strong> to handle content version conflicts (v1.92)</li>
+<li>✅ <strong>Automatic 401 token refresh</strong> — Graph requests transparently re-authenticate and retry when the token expires (v1.93)</li>
+<li>✅ <strong>Expanded transient-error detection</strong> — retries on <code>forcibly closed</code>, <code>ResponseEnded</code>, <code>response ended prematurely</code>, <code>request was canceled</code>, and similar network failures (v1.93)</li>
+<li>✅ <strong>Stuck app delete/recreate</strong> — detects apps stuck in <code>notPublished</code> state via <code>Wait-AppPublishingState</code> and recreates them on retry (v1.93)</li>
+<li>✅ <strong>Escalating upload retry backoff</strong> — 30 s × attempt number between full upload retries (v1.93)</li>
+<li>✅ <strong>OrigSource → Source robocopy</strong> — when <code>OrigSource\</code> exists, the script mirrors it into <code>Source\</code> with <code>robocopy /MIR /MT:4</code> for a clean, reproducible build (v1.93)</li>
+<li>✅ <strong>Corporate proxy support</strong> — opt-in routing of every outbound HTTP/S call (MSAL, Graph SDK, Azure Storage SAS upload, GitHub tool download) through a corporate proxy via <code>-ProxyUri</code> / <code>$env:DMAC_PROXY_URI</code>, with explicit credential, Windows-integrated, and bypass-list modes; built-in auto-fallback skips the proxy when direct connectivity already works (v1.93)</li>
+<li>✅ <strong><code>-TestProxyConnectivity</code> diagnostic switch</strong> — runs a direct-vs-proxy connectivity report against Graph and Entra ID and exits with <code>0 = PASS</code>, <code>1 = FAIL</code>, <code>2 = init error</code> (v1.93)</li>
+<li>✅ <strong>Bundled-module precedence</strong> — a signed <code>Microsoft.Graph.Authentication</code> copy shipped in the script's <code>Modules\</code> folder is prepended to <code>PSModulePath</code> and used in preference to any installed copy, so the script runs with zero module installation; the prepend is fail-closed and requires a trusted-publisher Authenticode signature (v1.93)</li>
+<li>✅ <strong>App dependencies and supersedence now actually apply</strong> — relationships declared in <code>Config.xml</code>/<code>Config.json</code> are created via the supported <code>updateRelationships</code> Graph action; previously every attempt failed silently (v1.94)</li>
+<li>✅ <strong>Relationship merge on write</strong> — existing relationships are read back and re-posted, so adding a dependency no longer wipes supersedence and vice versa (v1.94)</li>
+<li>✅ <strong>App names or IDs accepted</strong> — dependency and supersedence targets can be given as a display name or an application GUID; names are resolved automatically and unresolvable names are skipped with a warning instead of failing the upload (v1.94)</li>
+<li>✅ <strong>Per-app dependency and supersedence types</strong> — each referenced app can carry its own <code>autoInstall</code>/<code>detect</code> or <code>update</code>/<code>replace</code> type, via repeated element pairs or an inline <code>Name:Type</code> suffix, instead of one type governing the whole list (v1.95)</li>
+<li>✅ <strong>Proxy <code>407</code> handling</strong> — an authenticating proxy no longer leaves the run with a null token while reporting success; the script retries once with your Windows credentials and otherwise stops with actionable proxy guidance (v1.95)</li>
+<li>✅ <strong>PowerShell script installer type</strong> — install and/or uninstall can run from a <code>.ps1</code> instead of a command line, matching the portal's <code>Installer type: PowerShell script</code>, with per-script signature-check and 32-bit options; any combination of script and command line is supported (v1.96)</li>
+<li>✅ Detailed logging for troubleshooting</li>
+</ul>
+<hr />
+<h2 id="prerequisites">Prerequisites<a class="anchor" href="#prerequisites" aria-label="Link to this section">#</a></h2>
+<p>Before running the script, ensure you have:</p>
+<ol>
+<li><strong>PowerShell 5.1 or later</strong></li>
+<li><strong>Microsoft Graph PowerShell SDK module</strong>:
+<ul>
+<li><code>Microsoft.Graph.Authentication</code></li>
+<li><strong>Note:</strong> This module ships bundled inside the script's <code>Modules\</code> folder, so it does <strong>not</strong> need to be installed separately on the target machine (see <a href="#microsoftgraphauthentication-module-resolution">Microsoft.Graph.Authentication Module Resolution</a> below)</li>
+</ul>
+</li>
+<li><strong>Microsoft Win32 Content Prep Tool</strong>:
+<ul>
+<li><code>IntuneWinAppUtil.exe</code> (in the script directory or specified path)</li>
+<li><strong>Note:</strong> The script will automatically download the tool if not present, or update it if a newer version is available on GitHub</li>
+</ul>
+</li>
+<li><strong>Required Permissions</strong>:
+<ul>
+<li>Intune Administrator role or equivalent permissions</li>
+<li>Application permissions for Microsoft Graph API</li>
+</ul>
+</li>
+<li><strong>Package folder</strong> containing:
+<ul>
+<li><code>Config.json</code> or <code>Config.xml</code> configuration file (JSON takes precedence)</li>
+<li><code>Source</code> subfolder with application files</li>
+</ul>
+</li>
+</ol>
+<h3 id="install-required-modules">Install Required Modules<a class="anchor" href="#install-required-modules" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-powershell"># Install Microsoft Graph Authentication module
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> Installation is <strong>optional</strong>. The script ships a signed copy of <code>Microsoft.Graph.Authentication</code> in its <code>Modules\</code> subfolder and prefers it automatically — see the next section. Installing the module is only needed if you remove the bundled copy or the bundled copy fails signature validation.</p>
+</blockquote>
+<h3 id="microsoftgraphauthentication-module-resolution">Microsoft.Graph.Authentication Module Resolution<a class="anchor" href="#microsoftgraphauthentication-module-resolution" aria-label="Link to this section">#</a></h3>
+<p>The script resolves the <code>Microsoft.Graph.Authentication</code> module in the following order, so it can run with <strong>no prior module installation</strong> while still preferring a trusted bundled copy:</p>
+<ol>
+<li><strong>Bundled copy (preferred)</strong> — at startup the script looks for <code>&lt;ScriptRoot&gt;\Modules\Microsoft.Graph.Authentication</code>. If found, the <code>&lt;ScriptRoot&gt;\Modules</code> folder is <strong>prepended to <code>$env:PSModulePath</code></strong> so the bundled module takes precedence over any machine- or user-installed copy. This is the same precedence model used by <code>Invoke-DelegatedImport.ps1</code>.</li>
+<li><strong>Installed copy</strong> — if no bundled copy exists (or it fails the signature check below), the script falls back to a system- or user-installed <code>Microsoft.Graph.Authentication</code> discovered via the normal <code>Get-Module -ListAvailable</code>.</li>
+<li><strong>Script-root copies (legacy fallback)</strong> — if the module is still not available, the script then probes <code>&lt;ScriptRoot&gt;\Microsoft.Graph.Authentication</code> and finally <code>&lt;ScriptRoot&gt;\Modules\Microsoft.Graph.Authentication</code> and imports the first one found. If none of these resolve, the script exits with guidance to run <code>Install-Module Microsoft.Graph.Authentication -Scope CurrentUser</code>.</li>
+</ol>
+<h4 id="fail-closed-signature-enforcement">Fail-Closed Signature Enforcement<a class="anchor" href="#fail-closed-signature-enforcement" aria-label="Link to this section">#</a></h4>
+<p>Because <code>Microsoft.Graph.Authentication</code> handles authentication tokens, the bundled-module prepend is <strong>fail-closed</strong> — a counterfeit module dropped into <code>Modules\</code> could exfiltrate Graph tokens, so the prepend only happens when <strong>every</strong> <code>*.psm1</code> under the bundled folder is Authenticode-signed by a trusted publisher:</p>
+<ul>
+<li>Every <code>*.psm1</code> must have signature status <code>Valid</code>.</li>
+<li>The signing certificate subject must match one of the trusted publishers (default: <code>CN=Microsoft Corporation</code>, <code>CN=Microsoft Code Signing</code>, <code>CN=Microsoft 3rd Party Application Component</code>, <code>CN=GitHub</code>).</li>
+<li>If any file is unsigned, has an invalid signature, or is signed by an untrusted publisher, the prepend is <strong>skipped</strong> with a warning and the script falls back to the installed copy.</li>
+</ul>
+<p>Override the trusted-publisher allow-list with the <code>$env:DMAC_TRUSTED_PUBLISHERS</code> environment variable (semicolon-separated subject substrings).</p>
+<h3 id="win32-content-prep-tool-auto-download">Win32 Content Prep Tool (Auto-Download)<a class="anchor" href="#win32-content-prep-tool-auto-download" aria-label="Link to this section">#</a></h3>
+<p>The script <strong>automatically downloads and updates</strong> <code>IntuneWinAppUtil.exe</code> from GitHub:</p>
+<ul>
+<li>If the tool is not present, it will be downloaded automatically</li>
+<li>If the tool exists, the script checks GitHub for updates and downloads a newer version if available</li>
+<li>No manual download is required</li>
+</ul>
+<p>For manual download, visit: <a href="https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool">Microsoft Win32 Content Prep Tool</a></p>
+<hr />
+<h2 id="what-the-script-does">What the Script Does<a class="anchor" href="#what-the-script-does" aria-label="Link to this section">#</a></h2>
+<h3 id="complete-upload-workflow">Complete Upload Workflow<a class="anchor" href="#complete-upload-workflow" aria-label="Link to this section">#</a></h3>
+<ol>
+<li><strong>Validate Prerequisites</strong> - Checks for IntuneWinAppUtil.exe (auto-downloads or updates from GitHub if needed) and required modules</li>
+<li><strong>Read Configuration</strong> - Parses Config.json (preferred) or Config.xml settings</li>
+<li><strong>Create IntuneWin Package</strong> - Runs IntuneWinAppUtil.exe to create the encrypted package</li>
+<li><strong>Authenticate to Graph</strong> - Connects using specified authentication method</li>
+<li><strong>Upload to Intune</strong> - Creates the Win32 app and uploads the package content</li>
+<li><strong>Configure Detection Rules</strong> - Sets up application detection methods</li>
+<li><strong>Apply Return Codes</strong> - Configures installation return code handling</li>
+<li><strong>Create Entra ID Groups</strong> - Creates targeting groups if they don't exist</li>
+<li><strong>Assign Groups</strong> - Links groups to the application with appropriate intent</li>
+<li><strong>Apply Scope Tags</strong> - Assigns RBAC scope tags if specified</li>
+<li><strong>Cleanup</strong> - Removes temporary files (unless skipped)</li>
+</ol>
+<hr />
+<h2 id="parameters">Parameters<a class="anchor" href="#parameters" aria-label="Link to this section">#</a></h2>
+<h3 id="authentication-parameters">Authentication Parameters<a class="anchor" href="#authentication-parameters" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-IntuneAdmin</code></td>
+<td>String</td>
+<td>No</td>
+<td>Admin UPN for interactive authentication</td>
+</tr>
+<tr>
+<td><code>-ClientID</code></td>
+<td>String</td>
+<td>No</td>
+<td>App Registration Application (client) ID</td>
+</tr>
+<tr>
+<td><code>-TenantID</code></td>
+<td>String</td>
+<td>No</td>
+<td>Azure Tenant ID</td>
+</tr>
+<tr>
+<td><code>-ClientSecret</code></td>
+<td>String</td>
+<td>No</td>
+<td>App Registration Client Secret</td>
+</tr>
+<tr>
+<td><code>-CertName</code></td>
+<td>String</td>
+<td>No</td>
+<td>Certificate name for cert-based authentication</td>
+</tr>
+<tr>
+<td><code>-AccessToken</code></td>
+<td><code>[SecureString]</code></td>
+<td>No</td>
+<td>Pre-acquired Graph token. Aliases: <code>Token</code>, <code>GraphToken</code> <em>(v1.97)</em></td>
+</tr>
+<tr>
+<td><code>-TokenRefreshScript</code></td>
+<td><code>[ScriptBlock]</code></td>
+<td>No</td>
+<td>Invoked on HTTP 401 to obtain a fresh token <em>(v1.97)</em></td>
+</tr>
+</tbody>
+</table>
+<h3 id="secure-secret-source-parameters-v197">Secure Secret Source Parameters (v1.97)<a class="anchor" href="#secure-secret-source-parameters-v197" aria-label="Link to this section">#</a></h3>
+<p>Supply the client secret without putting it on the command line. See <a href="#secure-client-secret-sources-v197">Secure Client Secret Sources (v1.97)</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-ClientSecretFile</code></td>
+<td>String</td>
+<td>Path to a DPAPI-protected secret file created by <code>-ProtectSecret</code></td>
+</tr>
+<tr>
+<td><code>-ProtectSecret</code></td>
+<td>Switch</td>
+<td>Alternate path: prompt for a secret, DPAPI-encrypt it to <code>-ClientSecretFile</code>, exit</td>
+</tr>
+<tr>
+<td><code>-KeyVaultName</code></td>
+<td>String</td>
+<td>Key Vault name to retrieve the secret from. Requires <code>-KeyVaultSecretName</code></td>
+</tr>
+<tr>
+<td><code>-KeyVaultSecretName</code></td>
+<td>String</td>
+<td>Name of the Key Vault secret holding the client secret</td>
+</tr>
+<tr>
+<td><code>-KeyVaultAuth</code></td>
+<td>String</td>
+<td><code>ManagedIdentity</code> (default) or <code>Certificate</code> — how the vault itself is authenticated</td>
+</tr>
+<tr>
+<td><code>-ManagedIdentityClientId</code></td>
+<td>String</td>
+<td>Client ID of a user-assigned managed identity. Omit to use the system-assigned identity</td>
+</tr>
+</tbody>
+</table>
+<h3 id="multi-tenant-configuration-parameters-v197">Multi-Tenant Configuration Parameters (v1.97)<a class="anchor" href="#multi-tenant-configuration-parameters-v197" aria-label="Link to this section">#</a></h3>
+<p>Hold each environment's settings in one file instead of passing them every time. See <a href="#multi-tenant-configuration-file-v197">Multi-Tenant Configuration File (v1.97)</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-TenantConfigFile</code></td>
+<td>String</td>
+<td>Path to an SPN configuration file with one <code>&lt;spn&gt;</code> entry per environment. Aliases: <code>SpnFile</code>, <code>TenantConfig</code></td>
+</tr>
+<tr>
+<td><code>-EnvironmentName</code></td>
+<td>String</td>
+<td>Which environment to select, matched on <code>&lt;tenantname&gt;</code>. Aliases: <code>TenantName</code>, <code>Environment</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="proxy-parameters-v193">Proxy Parameters (v1.93)<a class="anchor" href="#proxy-parameters-v193" aria-label="Link to this section">#</a></h3>
+<p>All proxy parameters are <strong>opt-in</strong>. When neither <code>-ProxyUri</code> nor <code>$env:DMAC_PROXY_URI</code> is set the script runs without any proxy plumbing — existing usage is unaffected. See <a href="#corporate-proxy-support-v193">Corporate Proxy Support (v1.93)</a> for details.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-ProxyUri</code></td>
+<td><code>[uri]</code></td>
+<td>Absolute URI of the outbound HTTP/HTTPS proxy (e.g., <code>http://proxy.contoso.com:443</code>). Falls back to <code>$env:DMAC_PROXY_URI</code>. Aliases: <code>Proxy</code>, <code>HttpsProxy</code>.</td>
+</tr>
+<tr>
+<td><code>-ProxyCredential</code></td>
+<td><code>PSCredential</code></td>
+<td>Credential used to authenticate against the proxy server. If <code>-ProxyUri</code> is supplied but no credential is, the script prompts once via <code>Get-Credential</code> and reuses the result.</td>
+</tr>
+<tr>
+<td><code>-ProxyUseDefaultCredentials</code></td>
+<td>Switch</td>
+<td>Use Windows-integrated authentication (Kerberos / NTLM) for the proxy instead of explicit credentials — skips the credential prompt. Falls back to <code>$env:DMAC_PROXY_USE_DEFAULT_CREDENTIALS</code>.</td>
+</tr>
+<tr>
+<td><code>-ProxyBypassList</code></td>
+<td><code>String[]</code></td>
+<td>Wildcard hostname patterns to bypass the proxy for (e.g., <code>*.contoso.com</code>). Falls back to <code>$env:DMAC_PROXY_BYPASS</code> (semicolon-separated).</td>
+</tr>
+<tr>
+<td><code>-NoProxyBypassLocal</code></td>
+<td>Switch</td>
+<td>Disable the default behaviour of bypassing the proxy for local-name addresses. Falls back to <code>$env:DMAC_PROXY_BYPASS_ON_LOCAL=false</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="package-parameters">Package Parameters<a class="anchor" href="#package-parameters" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-PackagePath</code></td>
+<td>String[]</td>
+<td>Yes¹</td>
+<td>Path to package folder containing Config.json or Config.xml. Optional when used with <code>-DeleteApp</code> + <code>-AppNameToDelete</code>.</td>
+</tr>
+<tr>
+<td><code>-IntuneWinAppUtilPath</code></td>
+<td>String</td>
+<td>No</td>
+<td>Path to IntuneWinAppUtil.exe folder</td>
+</tr>
+</tbody>
+</table>
+<p>¹ <code>-PackagePath</code> becomes optional when deleting apps by display name via <code>-DeleteApp -AppNameToDelete</code>.</p>
+<h3 id="mode-switches">Mode Switches<a class="anchor" href="#mode-switches" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Switch</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-IntuneWinPackageOnly</code></td>
+<td>Create .intunewin file only, don't upload</td>
+</tr>
+<tr>
+<td><code>-AssignGroupsOnly</code></td>
+<td>Only assign groups to existing app</td>
+</tr>
+<tr>
+<td><code>-SkipGroupAssignment</code></td>
+<td>Upload without assigning groups</td>
+</tr>
+<tr>
+<td><code>-SkipPackageRemoval</code></td>
+<td>Keep .intunewin file after upload (can also be set in config file)</td>
+</tr>
+<tr>
+<td><code>-NewTagPath</code></td>
+<td>Enabled by default (v1.91). Uses diagnostics-compatible tagfile path. Can be set to <code>false</code> in config file</td>
+</tr>
+<tr>
+<td><code>-ReplaceExistingContent</code></td>
+<td>Replace IntuneWin content of existing app; applies assignments only if none exist</td>
+</tr>
+<tr>
+<td><code>-ReplaceExistingAssignments</code></td>
+<td>Clear and replace all assignments on existing app</td>
+</tr>
+<tr>
+<td><code>-DisconnectGraph</code></td>
+<td>Explicitly disconnect from Microsoft Graph after completion (connection is preserved by default with -IntuneAdmin)</td>
+</tr>
+<tr>
+<td><code>-DeleteApp</code></td>
+<td>Delete an app from Intune instead of uploading. Reads <code>displayName</code> from the config file unless <code>-AppNameToDelete</code> is supplied (v1.92)</td>
+</tr>
+<tr>
+<td><code>-TestProxyConnectivity</code></td>
+<td>Diagnostic mode (v1.93). Runs a direct-vs-proxy connectivity report against <code>graph.microsoft.com:443</code> and <code>login.microsoftonline.com:443</code>, prints the result, and exits with <code>0</code> (PASS), <code>1</code> (FAIL), or <code>2</code> (init error). Does not upload, modify, or delete anything.</td>
+</tr>
+<tr>
+<td><code>-WhatIf</code></td>
+<td>Preview operations (upload, update, delete, group create/assign) without making any changes</td>
+</tr>
+<tr>
+<td><code>-Confirm</code></td>
+<td>Prompt for confirmation before any operation that modifies Intune</td>
+</tr>
+</tbody>
+</table>
+<h3 id="delete-parameters-v192">Delete Parameters (v1.92)<a class="anchor" href="#delete-parameters-v192" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-AppNameToDelete</code></td>
+<td>String[]</td>
+<td>Display name(s) of app(s) to delete. Supports pipeline input. When supplied, <code>-PackagePath</code> becomes optional. Aliases: <code>DisplayName</code>, <code>Name</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="assignment-parameters">Assignment Parameters<a class="anchor" href="#assignment-parameters" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-RequiredAADGroupName</code> / <code>-RequiredEntraGroupName</code></td>
+<td>String[]</td>
+<td>Entra ID group(s) for required assignment (can also be set in config file)</td>
+</tr>
+<tr>
+<td><code>-AvailableAADGroupName</code> / <code>-AvailableEntraGroupName</code></td>
+<td>String[]</td>
+<td>Entra ID group(s) for available assignment (can also be set in config file)</td>
+</tr>
+<tr>
+<td><code>-UninstallAADGroupName</code> / <code>-UninstallEntraGroupName</code></td>
+<td>String[]</td>
+<td>Entra ID group(s) for uninstall assignment (can also be set in config file)</td>
+</tr>
+<tr>
+<td><code>-ScopeTagName</code></td>
+<td>String[]</td>
+<td>Intune scope tag(s) to apply</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="authentication-methods">Authentication Methods<a class="anchor" href="#authentication-methods" aria-label="Link to this section">#</a></h2>
+<h3 id="method-1-interactive-authentication-recommended-for-testing">Method 1: Interactive Authentication (Recommended for Testing)<a class="anchor" href="#method-1-interactive-authentication-recommended-for-testing" aria-label="Link to this section">#</a></h3>
+<p>Uses the default Microsoft Graph PowerShell app registration in your tenant.</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<h3 id="method-2-interactive-authentication-via-custom-app-registration-v193">Method 2: Interactive Authentication via Custom App Registration (v1.93)<a class="anchor" href="#method-2-interactive-authentication-via-custom-app-registration-v193" aria-label="Link to this section">#</a></h3>
+<p>Routes the interactive sign-in through your own Entra ID app registration by combining <code>-IntuneAdmin</code> with <code>-ClientID</code> (and optionally <code>-TenantID</code>). Useful when the default Microsoft Graph PowerShell app is blocked or when you need a specific consent / branding experience.</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -ClientID  &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID  &quot;87654321-4321-4321-4321-210987654321&quot;
+</code></pre>
+<p>The connection parameters used at sign-in are cached internally so the script can transparently re-authenticate if the access token expires mid-upload (see <a href="#delegatedimport-parity-enhancements-v193">DelegatedImport Parity Enhancements (v1.93)</a>).</p>
+<h3 id="method-3-client-secret-authentication-for-automation">Method 3: Client Secret Authentication (For Automation)<a class="anchor" href="#method-3-client-secret-authentication-for-automation" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret &quot;YourSecretValue&quot;
+</code></pre>
+<h3 id="method-4-certificate-authentication-most-secure">Method 4: Certificate Authentication (Most Secure)<a class="anchor" href="#method-4-certificate-authentication-most-secure" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -CertName &quot;MyCertificateName&quot;
+</code></pre>
+<hr />
+<h2 id="package-folder-structure">Package Folder Structure<a class="anchor" href="#package-folder-structure" aria-label="Link to this section">#</a></h2>
+<p>Each application package requires the following folder structure:</p>
+<pre><code class="language-text">MyApp/
+├── Config.json             # Preferred: JSON configuration (takes precedence)
+├── Config.xml              # Alternative: XML configuration
+├── Source/                 # Required: Application source files (or OrigSource/)
+│   ├── Setup.exe           # The installer file
+│   ├── install.ps1         # Optional: Install script
+│   └── [other files]       # Any additional required files
+├── OrigSource/             # Alternative: Used if Source/ doesn't exist
+│   └── [source files]      # Same structure as Source/
+├── IntuneWin/              # Created by script: Output folder
+│   └── MyApp.intunewin     # Generated package file
+└── Logo.png                # Optional: Application icon
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> If both <code>Config.json</code> and <code>Config.xml</code> exist in the package folder, <code>Config.json</code> takes precedence.</p>
+</blockquote>
+<blockquote>
+<p><strong>Note:</strong> If the <code>Source/</code> folder does not exist but <code>OrigSource/</code> exists, the script will automatically use <code>OrigSource/</code> as the source for creating the .intunewin package. From <strong>v1.93</strong>, when <code>OrigSource/</code> is present the script mirrors it into <code>Source/</code> using <code>robocopy /MIR /MT:4 /NJH /NJS /NP</code>, so each run starts from a clean, reproducible copy of the original payload.</p>
+</blockquote>
+<blockquote>
+<p><strong>Note:</strong> A logo image is auto-detected from the package folder root. If <code>logoFile</code> is not set in the config, the script picks the first <code>*.png</code>, <code>*.jpg</code>, or <code>*.jpeg</code> it finds and uploads it with the correct MIME type (<code>image/png</code> or <code>image/jpeg</code>).</p>
+</blockquote>
+<hr />
+<h2 id="configuration-files">Configuration Files<a class="anchor" href="#configuration-files" aria-label="Link to this section">#</a></h2>
+<p>The script supports two configuration file formats. <strong>Config.json is the preferred format</strong> and takes precedence if both files exist in the package folder.</p>
+<h3 id="configjson-format">Config.json Format<a class="anchor" href="#configjson-format" aria-label="Link to this section">#</a></h3>
+<p>The modern JSON format provides a cleaner syntax and supports additional properties for ESP/Core app designation.</p>
+<h4 id="sample-configjson">Sample Config.json<a class="anchor" href="#sample-configjson" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;./../pawintuneapp.schema.json&quot;,
+  &quot;appType&quot;: &quot;PS1&quot;,
+  &quot;ruleType&quot;: &quot;TAGFILE&quot;,
+  &quot;returnCodeType&quot;: &quot;DEFAULT&quot;,
+  &quot;installExperience&quot;: &quot;System&quot;,
+  &quot;packageName&quot;: &quot;Install-MyApp&quot;,
+  &quot;displayVersion&quot;: &quot;1.0.0&quot;,
+  &quot;displayName&quot;: &quot;My Application&quot;,
+  &quot;description&quot;: &quot;Application description here&quot;,
+  &quot;publisher&quot;: &quot;Contoso&quot;,
+  &quot;category&quot;: &quot;Business&quot;,
+  &quot;logoFile&quot;: &quot;Logo.png&quot;,
+  &quot;entraGroupName&quot;: &quot;App-MyApp-Required&quot;,
+  &quot;scopetag&quot;: &quot;CloudPC-Apps&quot;,
+  &quot;coreApp&quot;: false,
+  &quot;espApp&quot;: true
+}
+</code></pre>
+<h4 id="configjson-properties">Config.json Properties<a class="anchor" href="#configjson-properties" aria-label="Link to this section">#</a></h4>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Values</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>appType</code></td>
+<td><code>MSI</code>, <code>EXE</code>, <code>PS1</code>, <code>Edge</code></td>
+<td>Type of application</td>
+</tr>
+<tr>
+<td><code>ruleType</code></td>
+<td><code>TAGFILE</code>, <code>FILE</code>, <code>REGISTRY</code>, <code>MSI</code></td>
+<td>Detection rule type</td>
+</tr>
+<tr>
+<td><code>returnCodeType</code></td>
+<td><code>DEFAULT</code></td>
+<td>Return code configuration</td>
+</tr>
+<tr>
+<td><code>installExperience</code></td>
+<td><code>System</code>, <code>User</code></td>
+<td>Installation context</td>
+</tr>
+<tr>
+<td><code>packageName</code></td>
+<td>String</td>
+<td>Setup file name (without extension)</td>
+</tr>
+<tr>
+<td><code>displayName</code></td>
+<td>String</td>
+<td>Display name shown in Intune</td>
+</tr>
+<tr>
+<td><code>displayVersion</code></td>
+<td>String</td>
+<td>Version string to display</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>String</td>
+<td>Application description</td>
+</tr>
+<tr>
+<td><code>publisher</code></td>
+<td>String</td>
+<td>Publisher name</td>
+</tr>
+<tr>
+<td><code>category</code></td>
+<td>String (comma-separated for multiple)</td>
+<td>App category (e.g., <code>Business</code>, or <code>&quot;Communication,Productivity&quot;</code>). All listed categories are assigned to the app (loop over <code>Set-IntuneAppCategory</code>).</td>
+</tr>
+<tr>
+<td><code>logoFile</code></td>
+<td>String</td>
+<td>Path to logo file (PNG/JPG/JPEG). Auto-detected from the package folder root if omitted.</td>
+</tr>
+<tr>
+<td><code>allowAvailableUninstall</code></td>
+<td>Boolean / <code>yes</code> / <code>no</code></td>
+<td>Enables user-initiated uninstall from Company Portal (default: <code>true</code>)</td>
+</tr>
+<tr>
+<td><code>channel</code></td>
+<td>String (Edge only)</td>
+<td>Edge channel: <code>stable</code>, <code>beta</code>, <code>dev</code>, or <code>canary</code></td>
+</tr>
+<tr>
+<td><code>msiInstallCommandLine</code></td>
+<td>String</td>
+<td>Optional install command-line override for MSI apps</td>
+</tr>
+<tr>
+<td><code>msiUninstallCommandLine</code></td>
+<td>String</td>
+<td>Optional uninstall command-line override for MSI apps</td>
+</tr>
+<tr>
+<td><code>entraGroupName</code></td>
+<td>String</td>
+<td>Entra ID group name for assignments (preferred)</td>
+</tr>
+<tr>
+<td><code>aadGroupName</code></td>
+<td>String</td>
+<td>AAD group name (legacy, still supported)</td>
+</tr>
+<tr>
+<td><code>scopetag</code></td>
+<td>String</td>
+<td>Intune scope tag name (optional)</td>
+</tr>
+<tr>
+<td><code>coreApp</code></td>
+<td>Boolean</td>
+<td>Mark as core app (optional)</td>
+</tr>
+<tr>
+<td><code>espApp</code></td>
+<td>Boolean</td>
+<td>Include in ESP (optional)</td>
+</tr>
+<tr>
+<td><code>newTagPath</code></td>
+<td>Boolean</td>
+<td>Use diagnostics-compatible tagfile path (default: <code>true</code> if not specified)</td>
+</tr>
+<tr>
+<td><code>requiredEntraGroupName</code></td>
+<td>String or Array</td>
+<td>Entra ID group(s) for required assignment (also accepts <code>requiredAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>availableEntraGroupName</code></td>
+<td>String or Array</td>
+<td>Entra ID group(s) for available assignment (also accepts <code>availableAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>uninstallEntraGroupName</code></td>
+<td>String or Array</td>
+<td>Entra ID group(s) for uninstall assignment (also accepts <code>uninstallAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>replaceExistingContent</code></td>
+<td>Boolean</td>
+<td>Replace IntuneWin content of existing app (optional)</td>
+</tr>
+<tr>
+<td><code>skipPackageRemoval</code></td>
+<td>Boolean</td>
+<td>Keep .intunewin file after upload (optional)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="additional-configjson-properties-for-detection">Additional Config.json Properties for Detection<a class="anchor" href="#additional-configjson-properties-for-detection" aria-label="Link to this section">#</a></h4>
+<p>For <strong>FILE</strong> detection:</p>
+<pre><code class="language-json">{
+  &quot;ruleType&quot;: &quot;FILE&quot;,
+  &quot;filePath&quot;: &quot;C:\\Program Files\\MyApp&quot;,
+  &quot;fileDetectionType&quot;: &quot;exists&quot;,
+  &quot;fileDetectionOperator&quot;: &quot;notConfigured&quot;,
+  &quot;fileDetectionValue&quot;: &quot;&quot;
+}
+</code></pre>
+<p>For <strong>REGISTRY</strong> detection:</p>
+<pre><code class="language-json">{
+  &quot;ruleType&quot;: &quot;REGISTRY&quot;,
+  &quot;registryKeyPath&quot;: &quot;HKLM\\SOFTWARE\\MyApp&quot;,
+  &quot;registryValue&quot;: &quot;Version&quot;,
+  &quot;registryDetectionType&quot;: &quot;string&quot;,
+  &quot;registryDetectionOperator&quot;: &quot;equal&quot;,
+  &quot;registryDetectionValue&quot;: &quot;1.0.0&quot;
+}
+</code></pre>
+<p>For <strong>EXE/MSI</strong> app types with custom commands:</p>
+<pre><code class="language-json">{
+  &quot;appType&quot;: &quot;EXE&quot;,
+  &quot;installCmdLine&quot;: &quot;Setup.exe /quiet&quot;,
+  &quot;uninstallCmdLine&quot;: &quot;Setup.exe /uninstall /quiet&quot;
+}
+</code></pre>
+<hr />
+<h3 id="configxml-format">Config.xml Format<a class="anchor" href="#configxml-format" aria-label="Link to this section">#</a></h3>
+<p>The traditional XML format is still fully supported for backward compatibility.</p>
+<h4 id="sample-configxml">Sample Config.xml<a class="anchor" href="#sample-configxml" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;CONFIG&gt;
+    &lt;Azure_Settings&gt;
+        &lt;baseUrl&gt;https://graph.microsoft.com/beta/deviceAppManagement/&lt;/baseUrl&gt;
+        &lt;logRequestUris&gt;$true&lt;/logRequestUris&gt;
+        &lt;logHeaders&gt;$false&lt;/logHeaders&gt;
+        &lt;logContent&gt;$true&lt;/logContent&gt;
+        &lt;azureStorageUploadChunkSizeInMb&gt;6l&lt;/azureStorageUploadChunkSizeInMb&gt;
+        &lt;sleep&gt;5&lt;/sleep&gt;
+    &lt;/Azure_Settings&gt;
+    &lt;IntuneWin_Settings&gt;
+        &lt;AppType&gt;EXE&lt;/AppType&gt;
+        &lt;installCmdLine&gt;Setup.exe /quiet&lt;/installCmdLine&gt;
+        &lt;uninstallCmdLine&gt;Setup.exe /uninstall /quiet&lt;/uninstallCmdLine&gt;
+        &lt;RuleType&gt;FILE&lt;/RuleType&gt;
+        &lt;FilePath&gt;C:\Program Files\MyApp&lt;/FilePath&gt;
+        &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+        &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+        &lt;PackageName&gt;MyApp&lt;/PackageName&gt;
+        &lt;displayName&gt;My Application&lt;/displayName&gt;
+        &lt;displayVersion&gt;1.0.0&lt;/displayVersion&gt;
+        &lt;Description&gt;Application description here&lt;/Description&gt;
+        &lt;Publisher&gt;Contoso&lt;/Publisher&gt;
+        &lt;Category&gt;Productivity&lt;/Category&gt;
+        &lt;LogoFile&gt;Logo.png&lt;/LogoFile&gt;
+        &lt;EntraGroupName&gt;App-MyApp-Required&lt;/EntraGroupName&gt;
+        &lt;ScopeTag&gt;CloudPC-Apps&lt;/ScopeTag&gt;
+    &lt;/IntuneWin_Settings&gt;
+&lt;/CONFIG&gt;
+</code></pre>
+<h4 id="configxml-attributes">Config.xml Attributes<a class="anchor" href="#configxml-attributes" aria-label="Link to this section">#</a></h4>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Values</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AppType</code></td>
+<td><code>MSI</code>, <code>EXE</code>, <code>PS1</code>, <code>Edge</code></td>
+<td>Type of application</td>
+</tr>
+<tr>
+<td><code>RuleType</code></td>
+<td><code>TAGFILE</code>, <code>FILE</code>, <code>REGISTRY</code>, <code>MSI</code></td>
+<td>Detection rule type</td>
+</tr>
+<tr>
+<td><code>InstallExperience</code></td>
+<td><code>System</code>, <code>User</code></td>
+<td>Installation context</td>
+</tr>
+<tr>
+<td><code>ScopeTag</code></td>
+<td>String</td>
+<td>Intune scope tag name (optional)</td>
+</tr>
+<tr>
+<td><code>PackageName</code></td>
+<td>String</td>
+<td>Setup file name (without extension)</td>
+</tr>
+<tr>
+<td><code>displayName</code></td>
+<td>String</td>
+<td>Display name shown in Intune</td>
+</tr>
+<tr>
+<td><code>displayVersion</code></td>
+<td>String</td>
+<td>Version string to display</td>
+</tr>
+<tr>
+<td><code>Description</code></td>
+<td>String</td>
+<td>Application description</td>
+</tr>
+<tr>
+<td><code>Publisher</code></td>
+<td>String</td>
+<td>Publisher name</td>
+</tr>
+<tr>
+<td><code>Category</code></td>
+<td>String</td>
+<td>App category</td>
+</tr>
+<tr>
+<td><code>LogoFile</code></td>
+<td>String</td>
+<td>Path to logo file</td>
+</tr>
+<tr>
+<td><code>EntraGroupName</code></td>
+<td>String</td>
+<td>Entra ID group name for assignments (preferred)</td>
+</tr>
+<tr>
+<td><code>AADGroupName</code></td>
+<td>String</td>
+<td>AAD group name (legacy, still supported)</td>
+</tr>
+<tr>
+<td><code>NewTagPath</code></td>
+<td><code>true</code> / <code>false</code> / <code>yes</code> / <code>no</code></td>
+<td>Use diagnostics-compatible tagfile path (default: <code>true</code> if not specified)</td>
+</tr>
+<tr>
+<td><code>RequiredEntraGroupName</code></td>
+<td>String (comma-separated)</td>
+<td>Entra ID group(s) for required assignment (also accepts <code>RequiredAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>AvailableEntraGroupName</code></td>
+<td>String (comma-separated)</td>
+<td>Entra ID group(s) for available assignment (also accepts <code>AvailableAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>UninstallEntraGroupName</code></td>
+<td>String (comma-separated)</td>
+<td>Entra ID group(s) for uninstall assignment (also accepts <code>UninstallAADGroupName</code>)</td>
+</tr>
+<tr>
+<td><code>ReplaceExistingContent</code></td>
+<td><code>true</code> / <code>false</code> / <code>yes</code> / <code>no</code></td>
+<td>Replace IntuneWin content of existing app (optional)</td>
+</tr>
+<tr>
+<td><code>SkipPackageRemoval</code></td>
+<td><code>true</code> / <code>false</code> / <code>yes</code> / <code>no</code></td>
+<td>Keep .intunewin file after upload (optional)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="caller-supplied-authentication-v197">Caller-Supplied Authentication (v1.97)<a class="anchor" href="#caller-supplied-authentication-v197" aria-label="Link to this section">#</a></h2>
+<p>The script can run against a Microsoft Graph token that something else acquired. Authentication, proxy negotiation and secret retrieval then live outside this script entirely, which makes it callable from an orchestrating script, a build pipeline, or any host that already holds a token — a managed identity, a certificate flow, or a secret store.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-AccessToken</code></td>
+<td><code>[SecureString]</code></td>
+<td>Pre-acquired Graph access token</td>
+</tr>
+<tr>
+<td><code>-TokenRefreshScript</code></td>
+<td><code>[ScriptBlock]</code></td>
+<td>Invoked on HTTP 401 to obtain a fresh token</td>
+</tr>
+</tbody>
+</table>
+<p><code>-AccessToken</code> takes precedence over <code>-IntuneAdmin</code>, <code>-CertName</code> and <code>-ClientSecret</code>, and works for both uploads and <code>-DeleteApp</code>.</p>
+<h3 id="why-pass-a-token-instead-of-a-secret">Why pass a token instead of a secret<a class="anchor" href="#why-pass-a-token-instead-of-a-secret" aria-label="Link to this section">#</a></h3>
+<p><code>-ClientSecret</code> is a plain string, so it appears in the process list and in shell history. Acquiring the token in the calling script and passing <code>-AccessToken</code> keeps the secret out of this script's invocation entirely.</p>
+<pre><code class="language-powershell">$token = $myToken | ConvertTo-SecureString -AsPlainText -Force
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; -AccessToken $token
+</code></pre>
+<h3 id="surviving-token-expiry">Surviving token expiry<a class="anchor" href="#surviving-token-expiry" aria-label="Link to this section">#</a></h3>
+<p>Win32 uploads can outlast a token. Supply <code>-TokenRefreshScript</code> and a 401 will invoke the scriptblock, re-seed the session with the returned token, and retry the request — so a large package is not lost part-way through:</p>
+<pre><code class="language-powershell">$getToken = {
+    $body = @{
+        grant_type    = 'client_credentials'
+        scope         = 'https://graph.microsoft.com/.default'
+        client_id     = $env:APP_CLIENT_ID
+        client_secret = $env:APP_CLIENT_SECRET
+    }
+    (Invoke-RestMethod -Method POST -Body $body `
+        -Uri &quot;https://login.microsoftonline.com/$env:APP_TENANT_ID/oauth2/v2.0/token&quot;).access_token
+}
+
+$token = &amp; $getToken | ConvertTo-SecureString -AsPlainText -Force
+
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -AccessToken $token `
+    -TokenRefreshScript $getToken
+</code></pre>
+<p>The scriptblock may return a <code>String</code> or a <code>SecureString</code>. If it returns nothing, or throws, the failure is logged and the run ends rather than retrying indefinitely.</p>
+<h3 id="behaviour-without-a-refresh-script">Behaviour without a refresh script<a class="anchor" href="#behaviour-without-a-refresh-script" aria-label="Link to this section">#</a></h3>
+<p>Where <code>-AccessToken</code> is supplied on its own, an expired token ends the run with an actionable message. It deliberately never falls back to an interactive sign-in prompt — an unattended run cannot hang waiting for input.</p>
+<table>
+<thead>
+<tr>
+<th>Supplied</th>
+<th>On token expiry</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-AccessToken</code> + <code>-TokenRefreshScript</code></td>
+<td>Token renewed automatically, request retried</td>
+</tr>
+<tr>
+<td><code>-AccessToken</code> only</td>
+<td>Run ends with guidance to re-run or add a refresh script</td>
+</tr>
+<tr>
+<td><code>-IntuneAdmin</code> / <code>-ClientSecret</code> / <code>-CertName</code></td>
+<td>Existing re-authentication behaviour, unchanged</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="secure-client-secret-sources-v197">Secure Client Secret Sources (v1.97)<a class="anchor" href="#secure-client-secret-sources-v197" aria-label="Link to this section">#</a></h2>
+<p>Three ways to supply a client secret without putting it on the command line, where it would otherwise be visible in the process list and shell history. All are self-contained — no <code>Az</code> or <code>SecretManagement</code> modules are required, so the script stays a single file with one bundled dependency.</p>
+<p>Precedence, highest first:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Parameters</th>
+<th>Secret stored on the machine?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Azure Key Vault</td>
+<td><code>-KeyVaultName</code>, <code>-KeyVaultSecretName</code></td>
+<td>No</td>
+</tr>
+<tr>
+<td>DPAPI-protected file</td>
+<td><code>-ClientSecretFile</code></td>
+<td>Yes, encrypted</td>
+</tr>
+<tr>
+<td>Literal string</td>
+<td><code>-ClientSecret</code></td>
+<td>No, but exposed on the CLI</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dpapi-protected-file">DPAPI-protected file<a class="anchor" href="#dpapi-protected-file" aria-label="Link to this section">#</a></h3>
+<p>Create the file once, as the identity that will run the uploads:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile &quot;C:\Secure\app-secret.dpapi&quot;
+</code></pre>
+<p>You are prompted for the secret, so it never reaches the command line. Then use it:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecretFile &quot;C:\Secure\app-secret.dpapi&quot;
+</code></pre>
+<blockquote>
+<p><strong>Important:</strong> DPAPI binds the ciphertext to <strong>the current user on the current machine</strong>. A file you create interactively will <strong>not</strong> decrypt under a build agent's service account, or on another host. That is the security property, but it is also the most common cause of failure — create the file as the identity that runs the script. On shared build agents, prefer Key Vault.</p>
+</blockquote>
+<p>If decryption fails the script says so explicitly, naming the account and machine it is running as.</p>
+<h3 id="azure-key-vault">Azure Key Vault<a class="anchor" href="#azure-key-vault" aria-label="Link to this section">#</a></h3>
+<p>Nothing secret is stored on the machine at all. The vault is read over REST at <code>https://&lt;vault&gt;.vault.azure.net/secrets/&lt;name&gt;?api-version=7.4</code>.</p>
+<p><strong>Managed identity (default)</strong> — for Azure VMs, Scale Sets, App Service, Functions and Container Apps:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -KeyVaultName &quot;my-vault&quot; -KeyVaultSecretName &quot;intune-app-secret&quot;
+</code></pre>
+<p>Both managed identity endpoints are supported automatically — <code>IDENTITY_ENDPOINT</code> where present (App Service, Functions, Container Apps), otherwise IMDS at <code>169.254.169.254</code>. The IMDS call deliberately bypasses any configured proxy, because routing a link-local address through a corporate proxy always fails.</p>
+<p>For a host carrying several user-assigned identities, name the one to use:</p>
+<pre><code class="language-powershell">    -ManagedIdentityClientId &quot;11111111-2222-3333-4444-555555555555&quot;
+</code></pre>
+<p><strong>Certificate</strong> — for hosts outside Azure, where no managed identity exists:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -KeyVaultName &quot;my-vault&quot; -KeyVaultSecretName &quot;intune-app-secret&quot; `
+    -KeyVaultAuth Certificate -CertName &quot;IntuneAutomation&quot;
+</code></pre>
+<p>The certificate signs an RS256 JWT client assertion, so no secret is needed in order to fetch the secret. The certificate is looked up in <code>CurrentUser\My</code> then <code>LocalMachine\My</code>, must have a private key, and is rejected if expired.</p>
+<h3 id="required-vault-permissions">Required vault permissions<a class="anchor" href="#required-vault-permissions" aria-label="Link to this section">#</a></h3>
+<p>The identity reading the vault needs <strong>Key Vault Secrets User</strong> (RBAC) or a <strong>Get</strong> access policy on secrets. An HTTP 403 is reported with that guidance inline, and a 404 names the missing secret.</p>
+<h3 id="proxy-behaviour">Proxy behaviour<a class="anchor" href="#proxy-behaviour" aria-label="Link to this section">#</a></h3>
+<p>Every outbound call in the credential paths honours the proxy configuration, with two deliberate exceptions:</p>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Proxy treatment</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key Vault secret retrieval</td>
+<td>Routed through the configured proxy</td>
+</tr>
+<tr>
+<td>Certificate token exchange</td>
+<td>Routed through the configured proxy</td>
+</tr>
+<tr>
+<td>Graph connection from <code>-AccessToken</code></td>
+<td>Inherits the proxy set at initialisation</td>
+</tr>
+<tr>
+<td>IMDS (<code>169.254.169.254</code>)</td>
+<td><strong>Bypasses</strong> the proxy</td>
+</tr>
+<tr>
+<td><code>IDENTITY_ENDPOINT</code> (loopback)</td>
+<td><strong>Bypasses</strong> the proxy</td>
+</tr>
+</tbody>
+</table>
+<p>The managed identity endpoints are link-local and loopback addresses — routing them through a corporate proxy always fails. They are also added to the proxy bypass list automatically, so they stay reachable even when a proxy is configured globally.</p>
+<h3 id="powershell-version-support">PowerShell version support<a class="anchor" href="#powershell-version-support" aria-label="Link to this section">#</a></h3>
+<p>Everything runs on <strong>Windows PowerShell 5.1</strong> and <strong>PowerShell 7</strong>. Two paths branch to use a better PowerShell 7 facility, falling back cleanly on 5.1:</p>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>PowerShell 7</th>
+<th>Windows PowerShell 5.1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SecureString</code> → plain text</td>
+<td><code>ConvertFrom-SecureString -AsPlainText</code></td>
+<td>Marshals the value</td>
+</tr>
+<tr>
+<td>Bypassing the proxy for IMDS</td>
+<td><code>Invoke-RestMethod -NoProxy</code></td>
+<td><code>HttpWebRequest</code> with <code>Proxy = $null</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both paths are verified on each version, including RSA JWT signing for certificate authentication, which produces a validating signature identically on both.</p>
+<h3 id="constrained-language-mode">Constrained Language Mode<a class="anchor" href="#constrained-language-mode" aria-label="Link to this section">#</a></h3>
+<p>The credential functions avoid restricted .NET APIs wherever it costs nothing — file access uses cmdlets rather than <code>System.IO.File</code>, and secret handling uses the PowerShell 7 native conversion. Three things remain restricted:</p>
+<ul>
+<li>the two PowerShell 5.1 fallbacks in the table above</li>
+<li><code>-KeyVaultAuth Certificate</code>, because RSA signing needs cryptography APIs that CLM blocks</li>
+</ul>
+<blockquote>
+<p><strong>Be aware:</strong> the script <em>as a whole</em> cannot run under Constrained Language Mode regardless of the above. Building <code>.intunewin</code> packages requires file, path and compression APIs that CLM does not permit, and those calls predate this work. Reducing the credential surface lowers exposure — it does not make the script CLM-ready.</p>
+</blockquote>
+<hr />
+<h2 id="multi-tenant-configuration-file-v197">Multi-Tenant Configuration File (v1.97)<a class="anchor" href="#multi-tenant-configuration-file-v197" aria-label="Link to this section">#</a></h2>
+<p>Where apps are pushed to several tenants — Dev, Test and Production, or separate customer tenants — each environment's IDs and secret source can live in one file rather than being retyped on every run.</p>
+<p>The file holds one <code>&lt;spn&gt;</code> element per environment, identified by <code>&lt;tenantname&gt;</code>:</p>
+<pre><code class="language-xml">&lt;root&gt;
+  &lt;spn&gt;
+    &lt;tenantname&gt;Production&lt;/tenantname&gt;
+    &lt;tenantid&gt;11111111-1111-1111-1111-111111111111&lt;/tenantid&gt;
+    &lt;clientid&gt;aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&lt;/clientid&gt;
+    &lt;keyvaultname&gt;prod-vault&lt;/keyvaultname&gt;
+    &lt;keyvaultsecretname&gt;intune-app-secret&lt;/keyvaultsecretname&gt;
+    &lt;keyvaultauth&gt;ManagedIdentity&lt;/keyvaultauth&gt;
+    &lt;scopetag&gt;Production&lt;/scopetag&gt;
+  &lt;/spn&gt;
+  &lt;spn&gt;
+    &lt;tenantname&gt;Test&lt;/tenantname&gt;
+    &lt;tenantid&gt;22222222-2222-2222-2222-222222222222&lt;/tenantid&gt;
+    &lt;clientid&gt;bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb&lt;/clientid&gt;
+    &lt;clientsecretfile&gt;C:\Secure\test-secret.dpapi&lt;/clientsecretfile&gt;
+  &lt;/spn&gt;
+  &lt;spn&gt;
+    &lt;tenantname&gt;Dev&lt;/tenantname&gt;
+    &lt;tenantid&gt;33333333-3333-3333-3333-333333333333&lt;/tenantid&gt;
+    &lt;clientid&gt;cccccccc-cccc-cccc-cccc-cccccccccccc&lt;/clientid&gt;
+    &lt;certname&gt;DevAutomation&lt;/certname&gt;
+  &lt;/spn&gt;
+&lt;/root&gt;
+</code></pre>
+<p>Select an environment by name:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -TenantConfigFile &quot;.\tenants.xml&quot; -EnvironmentName &quot;Production&quot;
+</code></pre>
+<p>Each environment can use a <strong>different</strong> secret source — the example above has Production on Key Vault, Test on a DPAPI file and Dev on a certificate.</p>
+<h3 id="recognised-elements">Recognised elements<a class="anchor" href="#recognised-elements" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Element</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tenantname</code></td>
+<td>Lookup key for <code>-EnvironmentName</code> <em>(required)</em></td>
+</tr>
+<tr>
+<td><code>tenantid</code>, <code>clientid</code></td>
+<td>Entra ID identifiers <em>(required)</em></td>
+</tr>
+<tr>
+<td><code>certname</code></td>
+<td>Certificate subject for certificate authentication</td>
+</tr>
+<tr>
+<td><code>clientsecretfile</code></td>
+<td>Path to a DPAPI-protected secret file</td>
+</tr>
+<tr>
+<td><code>keyvaultname</code>, <code>keyvaultsecretname</code></td>
+<td>Key Vault retrieval</td>
+</tr>
+<tr>
+<td><code>keyvaultauth</code></td>
+<td><code>ManagedIdentity</code> (default) or <code>Certificate</code></td>
+</tr>
+<tr>
+<td><code>managedidentityclientid</code></td>
+<td>User-assigned managed identity</td>
+</tr>
+<tr>
+<td><code>proxyserver</code></td>
+<td>Outbound proxy URI (informational — pass <code>-ProxyUri</code> to apply)</td>
+</tr>
+<tr>
+<td><code>scopetag</code></td>
+<td>Default Intune scope tag</td>
+</tr>
+<tr>
+<td><code>encrpytedsecret</code></td>
+<td>Legacy obfuscated secret — see the warning below</td>
+</tr>
+</tbody>
+</table>
+<h3 id="behaviour">Behaviour<a class="anchor" href="#behaviour" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Explicit parameters always win.</strong> Anything passed on the command line overrides the file, so a single environment can be varied without editing it.</li>
+<li><code>-EnvironmentName</code> may be <strong>omitted</strong> when the file holds exactly one entry.</li>
+<li>Omitting it with several entries is an error that <strong>lists the available names</strong>, as is naming one that does not exist.</li>
+<li>A missing file or malformed XML is reported explicitly rather than failing later during authentication.</li>
+</ul>
+<h3 id="legacy-encrpytedsecret-values">Legacy <code>encrpytedsecret</code> values<a class="anchor" href="#legacy-encrpytedsecret-values" aria-label="Link to this section">#</a></h3>
+<p>Older SPN files stored the secret in an <code>&lt;encrpytedsecret&gt;</code> element, encrypted with an AES key derived from the <code>clientid</code> — <strong>which sits in plain text in the same file</strong>. Anyone holding the file can recover the secret offline, so this is obfuscation, not encryption.</p>
+<p>Such files are still read so existing setups keep working, but a warning is printed every run. To migrate:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile &quot;C:\Secure\prod-secret.dpapi&quot;
+</code></pre>
+<p>Then replace <code>&lt;encrpytedsecret&gt;</code> with <code>&lt;clientsecretfile&gt;</code>, or move the secret to Key Vault. Rotate the secret afterwards — the old value should be treated as compromised.</p>
+<hr />
+<h2 id="powershell-script-installer-type-v196">PowerShell Script Installer Type (v1.96)<a class="anchor" href="#powershell-script-installer-type-v196" aria-label="Link to this section">#</a></h2>
+<p>Intune's Win32 app <strong>Program</strong> tab now offers <code>Installer type: PowerShell script</code> and
+<code>Uninstaller type: PowerShell script</code> alongside the traditional command line. The script supports
+both, and they are configured independently — so <strong>all four combinations</strong> work exactly as they do
+in the portal.</p>
+<table>
+<thead>
+<tr>
+<th>Install</th>
+<th>Uninstall</th>
+<th>Configuration</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Command line</td>
+<td>Command line</td>
+<td>Default — nothing new required</td>
+</tr>
+<tr>
+<td><strong>Script</strong></td>
+<td>Command line</td>
+<td>Set <code>InstallScriptFile</code> only</td>
+</tr>
+<tr>
+<td>Command line</td>
+<td><strong>Script</strong></td>
+<td>Set <code>UninstallScriptFile</code> only</td>
+</tr>
+<tr>
+<td><strong>Script</strong></td>
+<td><strong>Script</strong></td>
+<td>Set both</td>
+</tr>
+</tbody>
+</table>
+<h3 id="configuration">Configuration<a class="anchor" href="#configuration" aria-label="Link to this section">#</a></h3>
+<p><strong>Config.xml:</strong></p>
+<pre><code class="language-xml">&lt;!-- Paths are relative to the package folder, or absolute --&gt;
+&lt;InstallScriptFile&gt;Scripts\Install.ps1&lt;/InstallScriptFile&gt;
+&lt;InstallScriptRunAs32Bit&gt;false&lt;/InstallScriptRunAs32Bit&gt;
+&lt;InstallScriptEnforceSignatureCheck&gt;false&lt;/InstallScriptEnforceSignatureCheck&gt;
+
+&lt;UninstallScriptFile&gt;Scripts\Uninstall.ps1&lt;/UninstallScriptFile&gt;
+&lt;UninstallScriptRunAs32Bit&gt;false&lt;/UninstallScriptRunAs32Bit&gt;
+&lt;UninstallScriptEnforceSignatureCheck&gt;false&lt;/UninstallScriptEnforceSignatureCheck&gt;
+</code></pre>
+<p><strong>Config.json:</strong></p>
+<pre><code class="language-json">{
+  &quot;installScriptFile&quot;: &quot;Scripts\\Install.ps1&quot;,
+  &quot;installScriptRunAs32Bit&quot;: false,
+  &quot;installScriptEnforceSignatureCheck&quot;: false,
+
+  &quot;uninstallScriptFile&quot;: &quot;Scripts\\Uninstall.ps1&quot;,
+  &quot;uninstallScriptRunAs32Bit&quot;: false,
+  &quot;uninstallScriptEnforceSignatureCheck&quot;: false
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>InstallScriptFile</code> / <code>UninstallScriptFile</code></td>
+<td><em>(none)</em></td>
+<td>Path to the <code>.ps1</code>. Absolute, or relative to the package folder. Omit to keep using the command line.</td>
+</tr>
+<tr>
+<td><code>*ScriptRunAs32Bit</code></td>
+<td><code>false</code></td>
+<td><code>true</code> runs the script in a 32-bit PowerShell host; <code>false</code> runs 64-bit.</td>
+</tr>
+<tr>
+<td><code>*ScriptEnforceSignatureCheck</code></td>
+<td><code>false</code></td>
+<td><code>true</code> requires the script to be signed before it will run.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="behaviour-1">Behaviour<a class="anchor" href="#behaviour-1" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>The command line is ignored where a script is set.</strong> Graph documents the script reference as
+<em>&quot;when null, the install command line is used instead&quot;</em> — so setting a script takes precedence.
+Graph still requires both command lines to be present, so if you configure a script without a
+matching <code>installCmdLine</code> / <code>uninstallCmdLine</code> the script generates a placeholder for you.</li>
+<li><strong>Scripts belong to the content version, not the app.</strong> They are uploaded after the <code>.intunewin</code>
+content is committed, and are automatically re-applied whenever content is replaced — so a
+content update will not silently drop your scripts.</li>
+<li><strong>Size limit:</strong> Intune caps script content at <strong>100 KB</strong>. Oversized scripts are rejected locally,
+before upload, with the raw and encoded sizes reported.</li>
+<li><strong><code>-WhatIf</code></strong> previews the script uploads without creating anything.</li>
+</ul>
+<h3 id="how-it-works">How It Works<a class="anchor" href="#how-it-works" aria-label="Link to this section">#</a></h3>
+<p>Each script is created against the app's committed content version:</p>
+<pre><code class="language-http">POST /beta/deviceAppManagement/mobileApps/{appId}/contentVersions/{contentVersionId}/scripts
+
+{
+  &quot;@odata.type&quot;: &quot;#microsoft.graph.win32LobAppInstallPowerShellScript&quot;,
+  &quot;displayName&quot;: &quot;Install.ps1&quot;,
+  &quot;content&quot;: &quot;&lt;base64&gt;&quot;,
+  &quot;enforceSignatureCheck&quot;: false,
+  &quot;runAs32Bit&quot;: false
+}
+</code></pre>
+<p>The returned script ID is then activated on the app:</p>
+<pre><code class="language-http">PATCH /beta/deviceAppManagement/mobileApps/{appId}
+
+{
+  &quot;activeInstallScript&quot;: {
+    &quot;@odata.type&quot;: &quot;microsoft.graph.mobileAppScriptReference&quot;,
+    &quot;targetId&quot;: &quot;&lt;script id&gt;&quot;
+  },
+  &quot;@odata.type&quot;: &quot;#microsoft.graph.win32LobApp&quot;
+}
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> This feature is only available in the Microsoft Graph <strong>beta</strong> endpoint, which the
+script already uses. It requires <code>DeviceManagementApps.ReadWrite.All</code>, which is already in the
+script's requested scopes — no permission changes are needed.</p>
+</blockquote>
+<hr />
+<h2 id="dependency-and-supersedence-fixes-v194">Dependency and Supersedence Fixes (v1.94)<a class="anchor" href="#dependency-and-supersedence-fixes-v194" aria-label="Link to this section">#</a></h2>
+<p>App dependencies and supersedence have been configurable since v1.5 (see <a href="#dependencies">Dependencies</a> and <a href="#supersedence">Supersedence</a>), but the relationships were <strong>never actually created in Intune</strong>. Version 1.94 fixes the underlying Graph calls. No configuration changes are required — existing <code>Config.xml</code> / <code>Config.json</code> files now work as documented.</p>
+<h3 id="what-was-broken">What Was Broken<a class="anchor" href="#what-was-broken" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Defect</th>
+<th>Symptom</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Parameter mismatch</td>
+<td><code>Set-IntuneAppDependency</code> / <code>Set-IntuneAppSupersedence</code> were called with parameter names the functions did not declare, so every call failed with a parameter-binding error</td>
+</tr>
+<tr>
+<td>App name passed as an app ID</td>
+<td>The config supplies display names, but the Graph payload requires an application GUID</td>
+</tr>
+<tr>
+<td>Unsupported endpoint</td>
+<td><code>POST /deviceAppManagement/mobileApps/{id}/relationships</code> is not supported for Win32 apps</td>
+</tr>
+<tr>
+<td><code>@odata.type</code> ordering</td>
+<td>The request body was an unordered hashtable, so the type annotation could be serialised after <code>targetId</code>, which Graph rejects</td>
+</tr>
+</tbody>
+</table>
+<p>The last defect produced this error, which is now resolved:</p>
+<pre><code class="language-text">HTTP 400 Bad Request
+{&quot;error&quot;:{&quot;code&quot;:&quot;ModelValidationFailure&quot;,&quot;message&quot;:&quot;The annotation 'odata.type' was found.
+ This annotation is either not recognized or not expected at the current position.&quot;}}
+</code></pre>
+<h3 id="the-supported-graph-call">The Supported Graph Call<a class="anchor" href="#the-supported-graph-call" aria-label="Link to this section">#</a></h3>
+<p>Relationships are now written with the <code>updateRelationships</code> action — the same call the Intune portal makes — with <code>@odata.type</code> as the first property of each relationship object:</p>
+<pre><code class="language-http">POST https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/{appId}/updateRelationships
+Content-Type: application/json
+
+{
+  &quot;relationships&quot;: [
+    {
+      &quot;@odata.type&quot;: &quot;#microsoft.graph.mobileAppDependency&quot;,
+      &quot;targetId&quot;: &quot;&lt;dependency app id&gt;&quot;,
+      &quot;dependencyType&quot;: &quot;autoInstall&quot;
+    },
+    {
+      &quot;@odata.type&quot;: &quot;#microsoft.graph.mobileAppSupersedence&quot;,
+      &quot;targetId&quot;: &quot;&lt;superseded app id&gt;&quot;,
+      &quot;supersedenceType&quot;: &quot;update&quot;
+    }
+  ]
+}
+</code></pre>
+<h3 id="relationships-are-merged-not-overwritten">Relationships Are Merged, Not Overwritten<a class="anchor" href="#relationships-are-merged-not-overwritten" aria-label="Link to this section">#</a></h3>
+<p><code>updateRelationships</code> <strong>replaces the entire child relationship set</strong> on the app. The script therefore reads the existing relationships first, keeps them, and posts the complete set with the new relationship merged in. Practical effects:</p>
+<ul>
+<li>Adding a dependency no longer removes existing supersedence entries (and vice versa)</li>
+<li>Re-running the script is idempotent — re-declaring an existing relationship updates its type rather than duplicating it</li>
+<li>Relationships where the app is the <strong>target</strong> rather than the source (<code>targetType = parent</code>) are left alone, because they belong to the other app</li>
+</ul>
+<h3 id="names-or-ids">Names or IDs<a class="anchor" href="#names-or-ids" aria-label="Link to this section">#</a></h3>
+<p>Dependency and supersedence targets may be given as either a display name or an application GUID. Names are resolved via a <code>displayName</code> lookup before the relationship is written; embedded apostrophes are escaped correctly, so names such as <code>Bob's App</code> work. If a target cannot be found, the script logs a warning and skips that relationship — the app upload itself still succeeds.</p>
+<h3 id="other-fixes">Other Fixes<a class="anchor" href="#other-fixes" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>An app can no longer be given a dependency or supersedence on <strong>itself</strong></li>
+<li><code>-WhatIf</code> is genuinely read-only for relationship changes: no <code>updateRelationships</code> call is issued, and the script no longer reports a relationship as added during a preview run</li>
+</ul>
+<hr />
+<h2 id="delegatedimport-parity-enhancements-v193">DelegatedImport Parity Enhancements (v1.93)<a class="anchor" href="#delegatedimport-parity-enhancements-v193" aria-label="Link to this section">#</a></h2>
+<p>Version 1.93 brings the upload pipeline to feature parity with the long-running DelegatedImport tooling. It hardens every Graph and Azure Storage exchange against transient cloud failures so long-running uploads can survive token expiration, network blips, and stuck app states without operator intervention.</p>
+<h3 id="automatic-401-token-refresh">Automatic 401 Token Refresh<a class="anchor" href="#automatic-401-token-refresh" aria-label="Link to this section">#</a></h3>
+<p><code>Invoke-GraphRequestWithRetry</code> now traps <code>HTTP 401 Unauthorized</code> responses, disconnects the current Graph session, re-authenticates using the connection parameters cached at sign-in (<code>$script:MgGraphConnectParams</code>), and retries the original request. Long-running uploads that outlive the access token continue without prompting the user.</p>
+<h3 id="expanded-transient-network-error-detection">Expanded Transient Network Error Detection<a class="anchor" href="#expanded-transient-network-error-detection" aria-label="Link to this section">#</a></h3>
+<p>The retry filter now matches a much wider set of HttpClient / SDK failure signatures, in addition to the existing <code>network</code>, <code>timeout</code>, and <code>connection</code> triggers:</p>
+<ul>
+<li><code>forcibly closed</code></li>
+<li><code>Error while copying content to a stream</code></li>
+<li><code>ResponseEnded</code></li>
+<li><code>response ended prematurely</code></li>
+<li><code>ended prematurely</code></li>
+<li><code>request was canceled</code></li>
+<li><code>send the request</code></li>
+</ul>
+<p>Any match is treated as retryable with exponential backoff.</p>
+<h3 id="per-chunk-transient-http-5xx-handling">Per-Chunk Transient HTTP 5xx Handling<a class="anchor" href="#per-chunk-transient-http-5xx-handling" aria-label="Link to this section">#</a></h3>
+<p><code>Send-FileToAzureStorage</code> retries each Azure Storage block upload up to <strong>5 times</strong> when it receives an <code>HTTP 500</code>, <code>502</code>, <code>503</code>, or <code>504</code>. The backoff between attempts is exponential (<code>10s × 2^(attempt-1)</code> → 10 s, 20 s, 40 s, 80 s, 160 s), giving Azure Storage a chance to recover from short-lived availability issues before the upload aborts.</p>
+<h3 id="wait-apppublishingstate-helper-and-stuck-app-recovery"><code>Wait-AppPublishingState</code> Helper and Stuck App Recovery<a class="anchor" href="#wait-apppublishingstate-helper-and-stuck-app-recovery" aria-label="Link to this section">#</a></h3>
+<p>After a failed upload attempt the script polls the app's <code>publishingState</code> via <code>Wait-AppPublishingState</code> (default 6 attempts × 10 s wait). If the app is stuck in <code>notPublished</code>, <code>Send-Win32Lob</code> deletes the stale <code>mobileApp</code> record, waits 5 seconds, recreates it, and retries the upload with a fresh app object. This automatically recovers from the long-standing &quot;stuck app&quot; failure mode where a partial commit prevents new content versions from being added.</p>
+<h3 id="escalating-upload-retry-backoff">Escalating Upload Retry Backoff<a class="anchor" href="#escalating-upload-retry-backoff" aria-label="Link to this section">#</a></h3>
+<p>When a full upload attempt fails, the delay before the next attempt now scales with the attempt number: <code>30 s × attempt</code> (30 s, 60 s, 90 s for the standard 3 attempts), replacing the previous flat 10 s wait. This gives Azure Storage and Intune service-side state more time to settle between retries.</p>
+<h3 id="origsource-source-robocopy-mirror"><code>OrigSource → Source</code> Robocopy Mirror<a class="anchor" href="#origsource-source-robocopy-mirror" aria-label="Link to this section">#</a></h3>
+<p>When a package folder contains both <code>OrigSource\</code> (the immutable golden copy) and <code>Source\</code> (the build staging folder), the script now mirrors <code>OrigSource\</code> into <code>Source\</code> at the start of every run:</p>
+<pre><code class="language-text">robocopy &quot;&lt;package&gt;\OrigSource&quot; &quot;&lt;package&gt;\Source&quot; /MIR /MT:4 /NJH /NJS /NP
+</code></pre>
+<p><code>/MIR</code> removes any files in <code>Source\</code> that no longer exist in <code>OrigSource\</code> (no drift) and <code>/MT:4</code> parallelises the copy across 4 threads. The previous behaviour — silently using <code>OrigSource\</code> only when <code>Source\</code> was missing — is preserved as a fallback when no <code>Source\</code> folder exists.</p>
+<hr />
+<h2 id="corporate-proxy-support-v193">Corporate Proxy Support (v1.93)<a class="anchor" href="#corporate-proxy-support-v193" aria-label="Link to this section">#</a></h2>
+<p>The script now embeds the DMAC proxy module so a single set of switches (or env vars) routes <strong>every</strong> outbound HTTP/S call through a corporate proxy. The same configuration covers MSAL.NET token acquisition, the Microsoft.Graph SDK's <code>HttpClient</code>, the Azure Storage block-blob SAS upload path, the GitHub <code>IntuneWinAppUtil.exe</code> download, and any in-script <code>Invoke-WebRequest</code> / <code>Invoke-RestMethod</code> calls.</p>
+<p>Proxy support is <strong>fully opt-in</strong>. When neither <code>-ProxyUri</code> nor <code>$env:DMAC_PROXY_URI</code> is set the script runs without any proxy plumbing and behaviour is unchanged from earlier versions.</p>
+<h3 id="when-to-use-it">When To Use It<a class="anchor" href="#when-to-use-it" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Workstations or build agents that must reach <code>graph.microsoft.com</code> and <code>login.microsoftonline.com</code> via a corporate forward proxy.</li>
+<li>Environments where direct egress is firewalled and a single intercepting proxy holds the TLS-inspection certificate trust.</li>
+<li>CI/CD pipelines (Azure DevOps, GitHub Actions) that need the proxy applied without an interactive credential prompt.</li>
+</ul>
+<h3 id="activation-modes">Activation Modes<a class="anchor" href="#activation-modes" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>How to enable</th>
+<th>Credential source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Explicit credential (prompt)</strong></td>
+<td><code>-ProxyUri http://proxy.contoso.com:443</code></td>
+<td><code>Get-Credential</code> prompt — captured once and reused across MSAL / Graph / Storage.</td>
+</tr>
+<tr>
+<td><strong>Explicit credential (silent)</strong></td>
+<td><code>-ProxyUri … -ProxyCredential $cred</code></td>
+<td>Pre-built <code>[PSCredential]</code> (build secret store, key vault, etc.).</td>
+</tr>
+<tr>
+<td><strong>Windows-integrated (Kerberos / NTLM)</strong></td>
+<td><code>-ProxyUri … -ProxyUseDefaultCredentials</code> or <code>$env:DMAC_PROXY_USE_DEFAULT_CREDENTIALS=true</code></td>
+<td>Caller's logon token — no prompt, no stored credential.</td>
+</tr>
+<tr>
+<td><strong>Env-var only (zero CLI flags)</strong></td>
+<td><code>setx DMAC_PROXY_URI http://proxy.contoso.com:443</code> (plus optionally <code>DMAC_PROXY_USE_DEFAULT_CREDENTIALS</code>)</td>
+<td>Whichever credential mode the env vars resolve to.</td>
+</tr>
+</tbody>
+</table>
+<p>If <code>-ProxyUri</code> (or <code>$env:DMAC_PROXY_URI</code>) is supplied but no <code>-ProxyCredential</code> and no <code>-ProxyUseDefaultCredentials</code> are given, the script prompts <strong>once</strong> via <code>Get-Credential</code> and reuses the result for every downstream call. In a non-interactive host (Get-Credential unavailable) it gracefully falls back to Windows-integrated authentication and logs a warning.</p>
+<h3 id="auto-fallback-to-direct-connectivity">Auto-Fallback to Direct Connectivity<a class="anchor" href="#auto-fallback-to-direct-connectivity" aria-label="Link to this section">#</a></h3>
+<p>The main flow calls <code>Initialize-DmacProxy -OnlyIfNeeded</code>, which <strong>probes direct connectivity to Graph / Entra ID first</strong> and only configures the proxy if the direct path fails. This means it is safe to permanently set <code>$env:DMAC_PROXY_URI</code> on a fleet of machines — those with direct egress will skip the proxy automatically and the log will read:</p>
+<pre><code class="language-text">Direct connectivity to Microsoft Graph / Entra ID OK - proxy not activated (auto-fallback).
+</code></pre>
+<h3 id="ci-non-interactive-detection">CI / Non-Interactive Detection<a class="anchor" href="#ci-non-interactive-detection" aria-label="Link to this section">#</a></h3>
+<p><code>Initialize-DmacProxy</code> automatically detects CI hosts by inspecting <code>$env:TF_BUILD</code>, <code>$env:GITHUB_ACTIONS</code>, <code>$env:CI</code>, and <code>$env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI</code>. In a detected CI run, if a credential is required but neither <code>-ProxyCredential</code> nor <code>-ProxyUseDefaultCredentials</code> is supplied, the script throws a descriptive error instead of hanging at a credential prompt.</p>
+<h3 id="what-gets-configured-under-the-hood">What Gets Configured Under The Hood<a class="anchor" href="#what-gets-configured-under-the-hood" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code>System.Net.WebRequest.DefaultWebProxy</code> (covers MSAL.NET and most legacy .NET HTTP calls).</li>
+<li><code>System.Net.Http.HttpClient.DefaultProxy</code> (PS 7+, covers the Microsoft.Graph SDK and modern <code>HttpClient</code> consumers).</li>
+<li><code>HTTPS_PROXY</code>, <code>HTTP_PROXY</code>, and <code>NO_PROXY</code> environment variables for the current process (covers SDKs that read env vars rather than .NET defaults — including the Azure Storage block-blob upload path).</li>
+<li>Per-call splat fallback via <code>Add-DmacProxyParameter</code> so <code>Invoke-WebRequest</code> / <code>Invoke-RestMethod</code> get <code>-Proxy</code> / <code>-ProxyCredential</code> / <code>-ProxyUseDefaultCredentials</code> injected when the .NET default proxy cannot be set (e.g., under PowerShell ConstrainedLanguage mode).</li>
+</ul>
+<p>All previous proxy / env-var values are saved at activation and restored when the script ends.</p>
+<h3 id="bypass-list">Bypass List<a class="anchor" href="#bypass-list" aria-label="Link to this section">#</a></h3>
+<p><code>-ProxyBypassList &quot;*.contoso.com&quot;,&quot;*.local&quot;</code> (or <code>$env:DMAC_PROXY_BYPASS=&quot;*.contoso.com;*.local&quot;</code>) adds explicit hostname patterns that should skip the proxy. The proxy also bypasses local-name addresses by default; pass <code>-NoProxyBypassLocal</code> (or set <code>$env:DMAC_PROXY_BYPASS_ON_LOCAL=false</code>) to turn that off.</p>
+<h3 id="environment-variable-reference">Environment Variable Reference<a class="anchor" href="#environment-variable-reference" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Env var</th>
+<th>Maps to</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DMAC_PROXY_URI</code></td>
+<td><code>-ProxyUri</code></td>
+<td><code>http://proxy.contoso.com:443</code></td>
+</tr>
+<tr>
+<td><code>DMAC_PROXY_USE_DEFAULT_CREDENTIALS</code></td>
+<td><code>-ProxyUseDefaultCredentials</code></td>
+<td><code>true</code> / <code>1</code> / <code>yes</code> / <code>on</code></td>
+</tr>
+<tr>
+<td><code>DMAC_PROXY_BYPASS</code></td>
+<td><code>-ProxyBypassList</code></td>
+<td><code>*.contoso.com;*.local</code></td>
+</tr>
+<tr>
+<td><code>DMAC_PROXY_BYPASS_ON_LOCAL</code></td>
+<td>inverse of <code>-NoProxyBypassLocal</code></td>
+<td><code>false</code> / <code>0</code> / <code>no</code> / <code>off</code> to disable</td>
+</tr>
+</tbody>
+</table>
+<h3 id="diagnostic-mode--testproxyconnectivity">Diagnostic Mode — <code>-TestProxyConnectivity</code><a class="anchor" href="#diagnostic-mode--testproxyconnectivity" aria-label="Link to this section">#</a></h3>
+<p><code>-TestProxyConnectivity</code> is an alternate execution path. It does <strong>not</strong> upload, modify, or delete anything — it only runs a two-phase connectivity report and exits.</p>
+<ul>
+<li><strong>Phase 1 — Direct</strong>: TCP-connect + HTTPS HEAD probe against <code>graph.microsoft.com:443</code> and <code>login.microsoftonline.com:443</code> with no proxy.</li>
+<li><strong>Phase 2 — Proxy</strong> (only if <code>-ProxyUri</code> or <code>$env:DMAC_PROXY_URI</code> resolves): same endpoints with the proxy configuration applied.</li>
+</ul>
+<p>The probe records per-endpoint TCP status, HTTPS status code, and round-trip durations. In proxy mode the raw TCP probe is reported as <code>SKIP</code> because HTTP <code>CONNECT</code> proxies cannot be traversed with a raw socket — the HTTPS probe is the meaningful test.</p>
+<p>Exit codes:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>All probed endpoints reachable (direct, or via proxy if proxy was set)</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>One or more endpoints unreachable</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Initialisation error (invalid proxy URI, missing credential, etc.)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="upload-resilience-and-feature-parity-v192">Upload Resilience and Feature Parity (v1.92)<a class="anchor" href="#upload-resilience-and-feature-parity-v192" aria-label="Link to this section">#</a></h2>
+<p>Version 1.92 focuses on making the Azure Storage upload pipeline robust against the most common cloud-side failure modes encountered in long-running, large-payload uploads.</p>
+<h3 id="sas-readiness-probing">SAS Readiness Probing<a class="anchor" href="#sas-readiness-probing" aria-label="Link to this section">#</a></h3>
+<p>Before chunked upload begins, <code>Send-FileToAzureStorage</code> issues a <code>GET ?comp=blocklist</code> against the supplied SAS URI to verify the token has propagated:</p>
+<ul>
+<li><strong>404 Not Found</strong> → SAS is valid; the blob simply does not exist yet → proceed.</li>
+<li><strong>403 Forbidden</strong> → SAS has not yet replicated → wait 10 s and probe again (up to 6 retries).</li>
+<li>Other responses → SAS treated as valid; upload proceeds.</li>
+</ul>
+<p>This single change eliminates the most common class of upload failure where the first block PUT is rejected because the SAS token has not propagated to the target storage region.</p>
+<h3 id="per-chunk-upload-retry-with-sas-renewal">Per-Chunk Upload Retry with SAS Renewal<a class="anchor" href="#per-chunk-upload-retry-with-sas-renewal" aria-label="Link to this section">#</a></h3>
+<p>Each block upload is now retried <strong>up to 5 times</strong> (previously 3):</p>
+<ul>
+<li><code>HTTP 403</code> → SAS token may have expired mid-upload → call <code>Update-AzureStorageUpload</code> to renew it, wait 5 s, retry.</li>
+<li><code>HTTP 500 / 502 / 503 / 504</code> → exponential backoff (<code>10s × 2^attempt</code>), retry.</li>
+</ul>
+<p>A background timer also proactively renews the SAS URI every ~7 minutes during long uploads to prevent expiry while chunks are still being written.</p>
+<h3 id="file-commit-retry-loop">File Commit Retry Loop<a class="anchor" href="#file-commit-retry-loop" aria-label="Link to this section">#</a></h3>
+<p>Calls to the <code>commit</code> endpoint sometimes fail with <code>HTTP 400</code> or &quot;SAS request&quot; errors when Azure Storage has not yet finalised the upload state. The commit is now retried <strong>up to 6 times with a 15 s wait</strong> between attempts, eliminating a common cause of &quot;successful upload but failed commit&quot; errors.</p>
+<h3 id="full-upload-attempt-retry-with-fresh-content-versions">Full Upload Attempt Retry with Fresh Content Versions<a class="anchor" href="#full-upload-attempt-retry-with-fresh-content-versions" aria-label="Link to this section">#</a></h3>
+<p>The entire upload is wrapped in a retry loop of <strong>up to 3 attempts</strong>, each one creating a brand new content version (<code>POST /contentVersions</code>) so it starts from a clean state. Combined with the stuck-app recovery introduced in v1.93, transient Azure-side failures rarely require manual restart.</p>
+<h3 id="http-412-precondition-failed-is-now-retryable">HTTP 412 Precondition Failed Is Now Retryable<a class="anchor" href="#http-412-precondition-failed-is-now-retryable" aria-label="Link to this section">#</a></h3>
+<p><code>Invoke-GraphRequestWithRetry</code> treats <code>HTTP 412</code> as a retryable response (10 s delay, normal retry limit). 412s typically indicate a content-version optimistic-concurrency conflict that resolves on retry.</p>
+<h3 id="smart-logo-handling">Smart Logo Handling<a class="anchor" href="#smart-logo-handling" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Auto-detection</strong></td>
+<td>If <code>logoFile</code> is omitted from the config, the script scans the package folder root for the first <code>*.png</code> / <code>*.jpg</code> / <code>*.jpeg</code> file and uses it as the app icon.</td>
+</tr>
+<tr>
+<td><strong>MIME type detection</strong></td>
+<td>Sets <code>image/jpeg</code> for <code>.jpg</code> / <code>.jpeg</code> files and <code>image/png</code> for <code>.png</code> files instead of hard-coding <code>image/png</code>.</td>
+</tr>
+<tr>
+<td><strong>Persistence PATCH</strong></td>
+<td>After the content commit, the script issues a dedicated PATCH to set <code>largeIcon</code>, ensuring the logo survives content replacement on existing apps that previously had no icon.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="app-deletion-v192">App Deletion (v1.92)<a class="anchor" href="#app-deletion-v192" aria-label="Link to this section">#</a></h2>
+<p>The new <code>-DeleteApp</code> switch removes one or many Intune Win32 applications without any other side effects (no <code>.intunewin</code> build, no assignments, no scope-tag changes). It pairs with a new <code>-AppNameToDelete</code> parameter that accepts multiple names directly or via the pipeline.</p>
+<h3 id="parameter-reference">Parameter Reference<a class="anchor" href="#parameter-reference" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-DeleteApp</code></td>
+<td>Switch</td>
+<td>Required to enter delete mode. Without it, <code>-AppNameToDelete</code> is ignored and the script behaves as an upload tool.</td>
+</tr>
+<tr>
+<td><code>-AppNameToDelete</code></td>
+<td>String[]</td>
+<td>One or more app display names to remove. Aliases: <code>DisplayName</code>, <code>Name</code>. Supports pipeline input.</td>
+</tr>
+<tr>
+<td><code>-PackagePath</code></td>
+<td>String[]</td>
+<td>Optional when <code>-AppNameToDelete</code> is supplied. When supplied alone, the <code>displayName</code> from the package's Config.json / Config.xml is used as the target.</td>
+</tr>
+<tr>
+<td><code>-WhatIf</code></td>
+<td>Switch</td>
+<td>Preview which apps would be deleted without making changes (full <code>ShouldProcess</code> integration).</td>
+</tr>
+<tr>
+<td><code>-Confirm</code></td>
+<td>Switch</td>
+<td>Prompt before each delete operation.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="behavior">Behavior<a class="anchor" href="#behavior" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Each name is resolved to an app via <code>Get-IntuneAppByDisplayName</code> (filtered server-side on <code>displayName</code>).</li>
+<li>If the app does not exist, the operation returns <code>Status: NotFound</code> and continues with the next name (does not abort the batch).</li>
+<li>On failure, the operation returns <code>Status: Error</code> with the underlying Graph exception message.</li>
+<li>Each delete is wrapped in <code>ShouldProcess</code>, so <code>-WhatIf</code> previews and <code>-Confirm</code> prompts are honoured automatically.</li>
+</ul>
+<h3 id="examples">Examples<a class="anchor" href="#examples" aria-label="Link to this section">#</a></h3>
+<p><strong>Delete the app referenced by a package's config file:</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -PackagePath &quot;C:\Packages\MyApp&quot; -DeleteApp
+</code></pre>
+<p><strong>Delete a single named app (no package required):</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;Old LOB App&quot;
+</code></pre>
+<p><strong>Delete several apps in one run:</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;Legacy App 1&quot;, &quot;Legacy App 2&quot;, &quot;Legacy App 3&quot;
+</code></pre>
+<p><strong>Pipeline input:</strong></p>
+<pre><code class="language-powershell">&quot;Old App A&quot;, &quot;Old App B&quot;, &quot;Old App C&quot; |
+    .\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; -DeleteApp
+</code></pre>
+<p><strong>Combine package + extra names:</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -DeleteApp -AppNameToDelete &quot;Previous Version of MyApp&quot;
+</code></pre>
+<p><strong>Preview without deleting:</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;ToBeRemoved&quot; -WhatIf
+</code></pre>
+<hr />
+<h2 id="config-file-upload-parameters-v191">Config File Upload Parameters (v1.91)<a class="anchor" href="#config-file-upload-parameters-v191" aria-label="Link to this section">#</a></h2>
+<p>Version 1.91 introduces the ability to specify upload parameters directly in Config.json or Config.xml files, reducing the number of command-line arguments needed.</p>
+<h3 id="parameter-precedence">Parameter Precedence<a class="anchor" href="#parameter-precedence" aria-label="Link to this section">#</a></h3>
+<p>When a parameter is specified in multiple places, the following precedence applies:</p>
+<ol>
+<li><strong>Command-line</strong> (highest priority) — always wins</li>
+<li><strong>Config file</strong> — used if not specified on the command line</li>
+<li><strong>Default value</strong> — used if not specified anywhere (only applies to <code>NewTagPath</code>, which defaults to <code>true</code>)</li>
+</ol>
+<h3 id="newtagpath-default-behavior">NewTagPath Default Behavior<a class="anchor" href="#newtagpath-default-behavior" aria-label="Link to this section">#</a></h3>
+<p><code>-NewTagPath</code> is now <strong>enabled by default</strong>. The tagfile detection path uses <code>%PROGRAMDATA%\Microsoft\IntuneManagementExtension\Logs</code> so that tag files are captured during Intune diagnostic log collection. To revert to the legacy path (<code>%PROGRAMDATA%\Microsoft\IntuneApps\&lt;PackageName&gt;</code>), set <code>newTagPath</code> to <code>false</code> in your config file.</p>
+<h3 id="configjson-example-with-upload-parameters">Config.json Example with Upload Parameters<a class="anchor" href="#configjson-example-with-upload-parameters" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-json">{
+  &quot;appType&quot;: &quot;PS1&quot;,
+  &quot;ruleType&quot;: &quot;TAGFILE&quot;,
+  &quot;returnCodeType&quot;: &quot;DEFAULT&quot;,
+  &quot;installExperience&quot;: &quot;System&quot;,
+  &quot;packageName&quot;: &quot;Install-MyApp&quot;,
+  &quot;displayName&quot;: &quot;My Application&quot;,
+  &quot;description&quot;: &quot;Application description&quot;,
+  &quot;publisher&quot;: &quot;Contoso&quot;,
+  &quot;category&quot;: &quot;Business&quot;,
+  &quot;entraGroupName&quot;: &quot;App-MyApp-Install&quot;,
+  &quot;scopetag&quot;: &quot;Production&quot;,
+
+  &quot;requiredEntraGroupName&quot;: [&quot;Win-Devices-All&quot;, &quot;CloudPC-Devices-All&quot;],
+  &quot;availableEntraGroupName&quot;: &quot;CloudPC-Users-All&quot;,
+  &quot;replaceExistingContent&quot;: true,
+  &quot;skipPackageRemoval&quot;: true,
+  &quot;newTagPath&quot;: true
+}
+</code></pre>
+<h3 id="configxml-example-with-upload-parameters">Config.xml Example with Upload Parameters<a class="anchor" href="#configxml-example-with-upload-parameters" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-xml">&lt;IntuneWin_Settings&gt;
+    &lt;!-- ... other settings ... --&gt;
+    &lt;RequiredEntraGroupName&gt;Win-Devices-All, CloudPC-Devices-All&lt;/RequiredEntraGroupName&gt;
+    &lt;AvailableEntraGroupName&gt;CloudPC-Users-All&lt;/AvailableEntraGroupName&gt;
+    &lt;ReplaceExistingContent&gt;true&lt;/ReplaceExistingContent&gt;
+    &lt;SkipPackageRemoval&gt;true&lt;/SkipPackageRemoval&gt;
+    &lt;NewTagPath&gt;true&lt;/NewTagPath&gt;
+&lt;/IntuneWin_Settings&gt;
+</code></pre>
+<h3 id="supported-upload-parameters-in-config-files">Supported Upload Parameters in Config Files<a class="anchor" href="#supported-upload-parameters-in-config-files" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Config.json Property</th>
+<th>Config.xml Element</th>
+<th>Type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-NewTagPath</code></td>
+<td><code>newTagPath</code></td>
+<td><code>&lt;NewTagPath&gt;</code></td>
+<td>Boolean (default: <code>true</code>)</td>
+</tr>
+<tr>
+<td><code>-RequiredAADGroupName</code></td>
+<td><code>requiredEntraGroupName</code> / <code>requiredAADGroupName</code></td>
+<td><code>&lt;RequiredEntraGroupName&gt;</code> / <code>&lt;RequiredAADGroupName&gt;</code></td>
+<td>String/Array (comma-separated)</td>
+</tr>
+<tr>
+<td><code>-AvailableAADGroupName</code></td>
+<td><code>availableEntraGroupName</code> / <code>availableAADGroupName</code></td>
+<td><code>&lt;AvailableEntraGroupName&gt;</code> / <code>&lt;AvailableAADGroupName&gt;</code></td>
+<td>String/Array (comma-separated)</td>
+</tr>
+<tr>
+<td><code>-UninstallAADGroupName</code></td>
+<td><code>uninstallEntraGroupName</code> / <code>uninstallAADGroupName</code></td>
+<td><code>&lt;UninstallEntraGroupName&gt;</code> / <code>&lt;UninstallAADGroupName&gt;</code></td>
+<td>String/Array (comma-separated)</td>
+</tr>
+<tr>
+<td><code>-ReplaceExistingContent</code></td>
+<td><code>replaceExistingContent</code></td>
+<td><code>&lt;ReplaceExistingContent&gt;</code></td>
+<td>Boolean</td>
+</tr>
+<tr>
+<td><code>-SkipPackageRemoval</code></td>
+<td><code>skipPackageRemoval</code></td>
+<td><code>&lt;SkipPackageRemoval&gt;</code></td>
+<td>Boolean</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="script-optimizations-v19">Script Optimizations (v1.9)<a class="anchor" href="#script-optimizations-v19" aria-label="Link to this section">#</a></h2>
+<p>Version 1.9 introduces significant internal optimizations to improve reliability, error handling, and maintainability.</p>
+<h3 id="automatic-graph-api-retry-logic">Automatic Graph API Retry Logic<a class="anchor" href="#automatic-graph-api-retry-logic" aria-label="Link to this section">#</a></h3>
+<p>The script now includes built-in retry logic for Microsoft Graph API calls via the <code>Invoke-GraphRequestWithRetry</code> helper function:</p>
+<ul>
+<li><strong>Throttling handling</strong> - Automatically detects HTTP 429 responses and waits the appropriate time before retrying</li>
+<li><strong>Server error recovery</strong> - Retries on 5xx server errors with exponential backoff</li>
+<li><strong>Network resilience</strong> - Handles transient network issues gracefully</li>
+<li><strong>Configurable retries</strong> - Default of 3 retry attempts with 2-second initial delay</li>
+</ul>
+<h3 id="enhanced-configuration-validation">Enhanced Configuration Validation<a class="anchor" href="#enhanced-configuration-validation" aria-label="Link to this section">#</a></h3>
+<p>The <code>Test-ConfigurationValidity</code> function provides centralized validation before processing:</p>
+<ul>
+<li><strong>AppType validation</strong> - Ensures valid application types (MSI, EXE, PS1, Edge)</li>
+<li><strong>Path validation</strong> - Verifies package paths exist before processing</li>
+<li><strong>Group name uniqueness</strong> - Prevents duplicate group names across Required, Available, and Uninstall</li>
+<li><strong>Config file detection</strong> - Checks for Config.json or Config.xml presence</li>
+</ul>
+<h3 id="whatif-support">WhatIf Support<a class="anchor" href="#whatif-support" aria-label="Link to this section">#</a></h3>
+<p>The script now fully supports the <code>-WhatIf</code> parameter to preview operations:</p>
+<pre><code class="language-powershell"># Preview what would happen without making changes
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; -IntuneAdmin &quot;admin@contoso.com&quot; -WhatIf
+</code></pre>
+<p>WhatIf mode shows:</p>
+<ul>
+<li>Applications that would be uploaded, updated, or deleted</li>
+<li>Entra ID groups that would be created</li>
+<li>Assignments that would be applied or cleared</li>
+</ul>
+<h3 id="improved-error-handling">Improved Error Handling<a class="anchor" href="#improved-error-handling" aria-label="Link to this section">#</a></h3>
+<p>Version 1.9 includes comprehensive error handling improvements:</p>
+<ul>
+<li><strong>Proper control flow</strong> - Replaced improper <code>break</code> statements with appropriate <code>return</code> or <code>throw</code> statements</li>
+<li><strong>Consistent error patterns</strong> - Standardized error handling across all functions</li>
+<li><strong>Better error messages</strong> - More descriptive error information for troubleshooting</li>
+<li><strong>Graceful failure handling</strong> - Script continues or exits appropriately based on error severity</li>
+</ul>
+<hr />
+<h2 id="automatic-tool-download-and-update-v17">Automatic Tool Download and Update (v1.7)<a class="anchor" href="#automatic-tool-download-and-update-v17" aria-label="Link to this section">#</a></h2>
+<p>Version 1.7 introduces automatic download and update functionality for <code>IntuneWinAppUtil.exe</code>. The script automatically manages the Microsoft Win32 Content Prep Tool, eliminating the need for manual downloads.</p>
+<h3 id="tool-download-process">Tool Download Process<a class="anchor" href="#tool-download-process" aria-label="Link to this section">#</a></h3>
+<ol>
+<li><strong>Tool Check</strong>: When the script runs, it checks if <code>IntuneWinAppUtil.exe</code> exists at the expected location</li>
+<li><strong>Auto-Download</strong>: If the tool is not found, it is automatically downloaded from GitHub</li>
+<li><strong>Version Check</strong>: If the tool exists, the script queries the GitHub API to check for updates</li>
+<li><strong>Auto-Update</strong>: If a newer version is available on GitHub, it is automatically downloaded and replaces the old version</li>
+<li><strong>User Notification</strong>: The script provides clear feedback about the tool status:
+<ul>
+<li>Current local version</li>
+<li>Whether an update is available</li>
+<li>Download progress and success/failure status</li>
+</ul>
+</li>
+</ol>
+<h3 id="tool-download-examples">Tool Download Examples<a class="anchor" href="#tool-download-examples" aria-label="Link to this section">#</a></h3>
+<p><strong>When tool needs to be downloaded:</strong></p>
+<pre><code class="language-text">Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe not found at: C:\Scripts\IntuneWinAppUtil.exe
+Downloading from GitHub...
+IntuneWinAppUtil.exe downloaded successfully!
+  Version: 1.8.6.0
+</code></pre>
+<p><strong>When tool is up to date:</strong></p>
+<pre><code class="language-text">Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe found at: C:\Scripts\IntuneWinAppUtil.exe
+  Local version: 1.8.6.0
+  Local file date: 2024-11-15 10:30:00 UTC
+Checking GitHub for updates...
+  GitHub last commit date: 2024-11-15 09:00:00 UTC
+Local version is up to date. No update required.
+</code></pre>
+<p><strong>When update is available:</strong></p>
+<pre><code class="language-text">Validating IntuneWinAppUtil.exe...
+IntuneWinAppUtil.exe found at: C:\Scripts\IntuneWinAppUtil.exe
+  Local version: 1.8.5.0
+  Local file date: 2024-10-01 08:00:00 UTC
+Checking GitHub for updates...
+  GitHub last commit date: 2024-11-15 09:00:00 UTC
+A newer version is available on GitHub. Downloading update...
+  Downloaded version: 1.8.6.0
+IntuneWinAppUtil.exe has been updated successfully!
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> The script uses the GitHub API to check for updates. If the API is unavailable (e.g., due to rate limiting or network issues), the script will continue with the existing local version.</p>
+</blockquote>
+<hr />
+<h2 id="exe-file-validation-v17">EXE File Validation (v1.7)<a class="anchor" href="#exe-file-validation-v17" aria-label="Link to this section">#</a></h2>
+<p>Version 1.7 introduces automatic validation of EXE installer file references. The script verifies that the EXE file specified in <code>installCmdLine</code> actually exists in the Source folder, helping catch common configuration errors before upload.</p>
+<h3 id="validation-process">Validation Process<a class="anchor" href="#validation-process" aria-label="Link to this section">#</a></h3>
+<ol>
+<li><strong>File Check</strong>: Extracts the EXE filename from <code>installCmdLine</code> and checks if it exists in the Source folder</li>
+<li><strong>Fuzzy Matching</strong>: If not found, searches for the closest matching EXE file using Levenshtein distance algorithm</li>
+<li><strong>User Prompt</strong>: Offers to update the config file with the correct filename</li>
+<li><strong>Config Update</strong>: Automatically updates <code>installCmdLine</code> and <code>PackageName</code> if user accepts</li>
+</ol>
+<h3 id="exe-validation-examples">EXE Validation Examples<a class="anchor" href="#exe-validation-examples" aria-label="Link to this section">#</a></h3>
+<p><strong>When EXE file is not found:</strong></p>
+<pre><code class="language-text">Validating EXE file reference...
+EXE file not found: Setup-1.0.exe
+Searching for similar files in Source folder...
+Found potential match: Setup-2.0.exe (similarity: 85%)
+Use Setup-2.0.exe instead? (Y/N) - Auto-selecting in 30 seconds...
+Y
+Updating config file with corrected filename...
+Updated installCmdLine: Setup-2.0.exe /SILENT
+Updated PackageName: Setup-2.0
+</code></pre>
+<p><strong>When EXE file exists:</strong></p>
+<pre><code class="language-text">Validating EXE file reference...
+EXE file found: Setup.exe
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> EXE validation only applies to EXE package types. MSI, PS1, and Edge apps are not affected.</p>
+</blockquote>
+<hr />
+<h2 id="automatic-version-detection-v16">Automatic Version Detection (v1.6)<a class="anchor" href="#automatic-version-detection-v16" aria-label="Link to this section">#</a></h2>
+<p>Version 1.6 introduces automatic version detection for EXE and MSI installers. The script detects the version from the installer file and compares it to the <code>displayVersion</code> in your config file.</p>
+<h3 id="version-detection-process">Version Detection Process<a class="anchor" href="#version-detection-process" aria-label="Link to this section">#</a></h3>
+<ol>
+<li><strong>EXE files</strong>: Uses <code>FileVersionInfo.GetVersionInfo()</code> to read <code>FileVersion</code> or <code>ProductVersion</code></li>
+<li><strong>MSI files</strong>: Uses Windows Installer COM object to query <code>ProductVersion</code> from the database</li>
+<li><strong>Version comparison</strong>: Compares detected version with <code>displayVersion</code> in Config.xml/Config.json</li>
+<li><strong>User prompt</strong>: If versions differ, prompts user to accept the detected version (Y/N)</li>
+<li><strong>30-second timeout</strong>: Auto-selects based on context:
+<ul>
+<li>If config has a version → keeps config version</li>
+<li>If config version is empty → uses detected version</li>
+</ul>
+</li>
+<li><strong>Config update</strong>: Automatically updates the config file when user accepts or config is empty</li>
+</ol>
+<h3 id="version-detection-example">Version Detection Example<a class="anchor" href="#version-detection-example" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-text">Checking installer version for EXE package...
+Detected version [2.1.0.456] from installer file
+Config displayVersion is [2.0.0]
+Versions are different. Use detected version [2.1.0.456]? (Y/N) - Auto-selecting in 30 seconds...
+(25 seconds remaining) Y
+User accepted detected version. Updating config file...
+Successfully updated config file with version: 2.1.0.456
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> Version detection only applies to EXE and MSI package types. PS1 and Edge apps are not affected.</p>
+</blockquote>
+<hr />
+<h2 id="extended-settings-v15">Extended Settings (v1.5)<a class="anchor" href="#extended-settings-v15" aria-label="Link to this section">#</a></h2>
+<p>Version 1.5 introduces comprehensive extended settings that provide full control over Win32 app configuration via the Microsoft Graph API. All extended settings are <strong>optional</strong> - if not specified, sensible defaults are used.</p>
+<h3 id="extended-settings-overview">Extended Settings Overview<a class="anchor" href="#extended-settings-overview" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Settings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>App Information</strong></td>
+<td><code>isFeatured</code>, <code>informationUrl</code>, <code>privacyInformationUrl</code>, <code>developer</code>, <code>owner</code>, <code>notes</code></td>
+</tr>
+<tr>
+<td><strong>Install Experience</strong></td>
+<td><code>maxRunTimeInMinutes</code>, <code>deviceRestartBehavior</code></td>
+</tr>
+<tr>
+<td><strong>System Requirements</strong></td>
+<td><code>minimumFreeDiskSpaceInMB</code>, <code>minimumMemoryInMB</code>, <code>minimumNumberOfProcessors</code>, <code>minimumCpuSpeedInMHz</code>, <code>allowedArchitectures</code>, <code>minimumSupportedOS</code></td>
+</tr>
+<tr>
+<td><strong>Return Codes</strong></td>
+<td><code>customReturnCodes</code></td>
+</tr>
+<tr>
+<td><strong>Dependencies</strong></td>
+<td><code>dependencies</code>, <code>dependencyType</code></td>
+</tr>
+<tr>
+<td><strong>Supersedence</strong></td>
+<td><code>supersedence</code>, <code>supersedenceType</code></td>
+</tr>
+<tr>
+<td><strong>Script Detection</strong></td>
+<td><code>detectionScriptFile</code>, <code>detectionScriptEnforceSignatureCheck</code>, <code>detectionScriptRunAs32Bit</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="app-information-settings">App Information Settings<a class="anchor" href="#app-information-settings" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>isFeatured</code></td>
+<td>Boolean</td>
+<td><code>false</code></td>
+<td>Show this app as a featured app in Company Portal</td>
+</tr>
+<tr>
+<td><code>informationUrl</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>URL for more information about the app</td>
+</tr>
+<tr>
+<td><code>privacyInformationUrl</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>URL for privacy information</td>
+</tr>
+<tr>
+<td><code>developer</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Developer name</td>
+</tr>
+<tr>
+<td><code>owner</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Owner name</td>
+</tr>
+<tr>
+<td><code>notes</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Additional notes about the app</td>
+</tr>
+</tbody>
+</table>
+<h3 id="install-experience-settings">Install Experience Settings<a class="anchor" href="#install-experience-settings" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Type</th>
+<th>Default</th>
+<th>Values</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>maxRunTimeInMinutes</code></td>
+<td>Integer</td>
+<td><code>60</code></td>
+<td>1-1440</td>
+<td>Maximum time the install is allowed to run</td>
+</tr>
+<tr>
+<td><code>deviceRestartBehavior</code></td>
+<td>String</td>
+<td><code>suppress</code></td>
+<td><code>basedOnReturnCode</code>, <code>allow</code>, <code>suppress</code>, <code>force</code></td>
+<td>How to handle device restarts after install</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Restart Behavior Values:</strong></p>
+<ul>
+<li><code>basedOnReturnCode</code> - Restart based on the return code from the installer</li>
+<li><code>allow</code> - Allow restart if requested by the installer</li>
+<li><code>suppress</code> - Suppress restart requests from the installer (default)</li>
+<li><code>force</code> - Force a restart after installation</li>
+</ul>
+<h3 id="system-requirements-settings">System Requirements Settings<a class="anchor" href="#system-requirements-settings" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>minimumFreeDiskSpaceInMB</code></td>
+<td>Integer</td>
+<td>0 (not enforced)</td>
+<td>Minimum free disk space required in MB</td>
+</tr>
+<tr>
+<td><code>minimumMemoryInMB</code></td>
+<td>Integer</td>
+<td>0 (not enforced)</td>
+<td>Minimum physical memory required in MB</td>
+</tr>
+<tr>
+<td><code>minimumNumberOfProcessors</code></td>
+<td>Integer</td>
+<td>0 (not enforced)</td>
+<td>Minimum number of logical processors required</td>
+</tr>
+<tr>
+<td><code>minimumCpuSpeedInMHz</code></td>
+<td>Integer</td>
+<td>0 (not enforced)</td>
+<td>Minimum CPU speed required in MHz</td>
+</tr>
+<tr>
+<td><code>allowedArchitectures</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Comma-separated list: <code>x64</code>, <code>x86</code>, <code>arm</code>, <code>arm64</code></td>
+</tr>
+<tr>
+<td><code>minimumSupportedOS</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Minimum Windows version (see table below)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Supported OS Version Values:</strong></p>
+<p>The script accepts either the short key (e.g., <code>v10_21H2</code>) <strong>or</strong> the full display name (e.g., <code>Windows 10 21H2</code>). Older releases (up to and including <code>v10_21H1</code>) use Graph's <code>minimumSupportedOperatingSystem</code> boolean property; releases <code>v10_21H2</code> and newer (all Windows 11 builds) use the newer <code>minimumSupportedWindowsRelease</code> string property automatically.</p>
+<table>
+<thead>
+<tr>
+<th>Short Value</th>
+<th>Full Display Name</th>
+<th>Graph Property Used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v10_1507</code></td>
+<td>Windows 10 1507</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1607</code></td>
+<td>Windows 10 1607</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1703</code></td>
+<td>Windows 10 1703</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1709</code></td>
+<td>Windows 10 1709</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1803</code></td>
+<td>Windows 10 1803</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1809</code></td>
+<td>Windows 10 1809</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1903</code></td>
+<td>Windows 10 1903 (19H1)</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_1909</code></td>
+<td>Windows 10 1909 (19H2)</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_2004</code></td>
+<td>Windows 10 2004 (20H1)</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_20H2</code></td>
+<td>Windows 10 20H2</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_21H1</code></td>
+<td>Windows 10 21H1</td>
+<td><code>minimumSupportedOperatingSystem</code> (boolean)</td>
+</tr>
+<tr>
+<td><code>v10_21H2</code></td>
+<td>Windows 10 21H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v10_22H2</code></td>
+<td>Windows 10 22H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_21H2</code></td>
+<td>Windows 11 21H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_22H2</code></td>
+<td>Windows 11 22H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_23H2</code></td>
+<td>Windows 11 23H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_24H2</code></td>
+<td>Windows 11 24H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_25H2</code></td>
+<td>Windows 11 25H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+<tr>
+<td><code>v11_26H2</code></td>
+<td>Windows 11 26H2</td>
+<td><code>minimumSupportedWindowsRelease</code> (string)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Fallback behavior:</strong> If a supplied value is not yet known to the Graph schema (for example a future Windows release the SDK has not learned about), the script logs a warning and falls back to <strong><code>v10_21H1</code></strong> so the upload still succeeds. Update the value once the newer release is recognised.</p>
+</blockquote>
+<h3 id="custom-return-codes">Custom Return Codes<a class="anchor" href="#custom-return-codes" aria-label="Link to this section">#</a></h3>
+<p>Custom return codes allow you to define how specific exit codes from the installer should be handled.</p>
+<p><strong>Config.xml Format:</strong></p>
+<pre><code class="language-xml">&lt;!-- Comma-separated code:type pairs --&gt;
+&lt;CustomReturnCodes&gt;3010:softReboot,1641:hardReboot,1618:retry&lt;/CustomReturnCodes&gt;
+</code></pre>
+<p><strong>Config.json Format:</strong></p>
+<pre><code class="language-json">{
+  &quot;customReturnCodes&quot;: [
+    { &quot;returnCode&quot;: 3010, &quot;type&quot;: &quot;softReboot&quot; },
+    { &quot;returnCode&quot;: 1641, &quot;type&quot;: &quot;hardReboot&quot; },
+    { &quot;returnCode&quot;: 1618, &quot;type&quot;: &quot;retry&quot; }
+  ]
+}
+</code></pre>
+<p><strong>Return Code Types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>failed</code></td>
+<td>Installation failed</td>
+</tr>
+<tr>
+<td><code>success</code></td>
+<td>Installation succeeded</td>
+</tr>
+<tr>
+<td><code>softReboot</code></td>
+<td>Soft reboot required (can be deferred)</td>
+</tr>
+<tr>
+<td><code>hardReboot</code></td>
+<td>Hard reboot required (immediate)</td>
+</tr>
+<tr>
+<td><code>retry</code></td>
+<td>Retry the installation</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dependencies">Dependencies<a class="anchor" href="#dependencies" aria-label="Link to this section">#</a></h3>
+<p>Dependencies allow you to specify other Win32 apps that must be installed before this app.</p>
+<p><strong>Config.xml Format:</strong></p>
+<pre><code class="language-xml">&lt;!-- Comma-separated list of app display names --&gt;
+&lt;Dependencies&gt;Microsoft Visual C++ Redistributable,Microsoft .NET Runtime 8.0&lt;/Dependencies&gt;
+&lt;DependencyType&gt;autoInstall&lt;/DependencyType&gt;
+</code></pre>
+<p><strong>Config.json Format:</strong></p>
+<pre><code class="language-json">{
+  &quot;dependencies&quot;: [
+    &quot;Microsoft Visual C++ Redistributable&quot;,
+    &quot;Microsoft .NET Runtime 8.0&quot;
+  ],
+  &quot;dependencyType&quot;: &quot;autoInstall&quot;
+}
+</code></pre>
+<p><strong>Dependency Types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>autoInstall</code></td>
+<td>Automatically install the dependency if not present (default)</td>
+</tr>
+<tr>
+<td><code>detect</code></td>
+<td>Only check if the dependency is installed, don't auto-install</td>
+</tr>
+</tbody>
+</table>
+<h4 id="different-types-for-different-apps-v195">Different Types for Different Apps (v1.95)<a class="anchor" href="#different-types-for-different-apps-v195" aria-label="Link to this section">#</a></h4>
+<p>The single <code>&lt;DependencyType&gt;</code> above applies to every app in the list. To give each app its own
+type, use <strong>either</strong> of the following — both can be mixed with the shared-type form above.</p>
+<p><strong>Option 1 — repeat the element pair.</strong> Each <code>&lt;Dependencies&gt;</code> is matched with the
+<code>&lt;DependencyType&gt;</code> in the same position:</p>
+<pre><code class="language-xml">&lt;Dependencies&gt;Application 1.0&lt;/Dependencies&gt;
+&lt;DependencyType&gt;autoInstall&lt;/DependencyType&gt;
+&lt;Dependencies&gt;Application 2.0&lt;/Dependencies&gt;
+&lt;DependencyType&gt;detect&lt;/DependencyType&gt;
+</code></pre>
+<p><strong>Option 2 — inline <code>Name:Type</code>.</strong> Uses the same convention as <code>CustomReturnCodes</code>, and is usually
+the tidier option for longer lists:</p>
+<pre><code class="language-xml">&lt;Dependencies&gt;Application 1.0:autoInstall,Application 2.0:detect&lt;/Dependencies&gt;
+</code></pre>
+<p>An inline type always wins over <code>&lt;DependencyType&gt;</code>, so you can set the common case once and
+override only the exceptions:</p>
+<pre><code class="language-xml">&lt;!-- Everything auto-installs except Application 3.0, which is only detected --&gt;
+&lt;Dependencies&gt;Application 1.0,Application 2.0,Application 3.0:detect&lt;/Dependencies&gt;
+&lt;DependencyType&gt;autoInstall&lt;/DependencyType&gt;
+</code></pre>
+<p><strong>Config.json</strong> supports the inline form too, plus an array of objects:</p>
+<pre><code class="language-json">{
+  &quot;dependencies&quot;: [
+    { &quot;name&quot;: &quot;Application 1.0&quot;, &quot;type&quot;: &quot;autoInstall&quot; },
+    { &quot;name&quot;: &quot;Application 2.0&quot;, &quot;type&quot;: &quot;detect&quot; }
+  ]
+}
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> Dependencies are processed after the app is created/uploaded. The target apps must already exist in Intune with matching display names.</p>
+<p>An app display name that itself contains a colon is safe — the text after the final colon is only
+treated as a type when it is exactly <code>autoInstall</code> or <code>detect</code>.</p>
+<p>Relationship creation was broken before v1.94 — see <a href="#dependency-and-supersedence-fixes-v194">Dependency and Supersedence Fixes (v1.94)</a>.</p>
+</blockquote>
+<h3 id="supersedence">Supersedence<a class="anchor" href="#supersedence" aria-label="Link to this section">#</a></h3>
+<p>Supersedence allows you to specify apps that this app should replace (upgrade or uninstall-then-replace).</p>
+<p><strong>Config.xml Format:</strong></p>
+<pre><code class="language-xml">&lt;!-- Comma-separated list of app display names to supersede --&gt;
+&lt;Supersedence&gt;Old App v1.0,Old App v2.0&lt;/Supersedence&gt;
+&lt;SupersedenceType&gt;update&lt;/SupersedenceType&gt;
+</code></pre>
+<p><strong>Config.json Format:</strong></p>
+<pre><code class="language-json">{
+  &quot;supersedence&quot;: [
+    &quot;Old App v1.0&quot;,
+    &quot;Old App v2.0&quot;
+  ],
+  &quot;supersedenceType&quot;: &quot;update&quot;
+}
+</code></pre>
+<p><strong>Supersedence Types:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>update</code></td>
+<td>Upgrade the old app to this app (keeps detection, upgrades content)</td>
+</tr>
+<tr>
+<td><code>replace</code></td>
+<td>Uninstall the old app first, then install this app</td>
+</tr>
+</tbody>
+</table>
+<h4 id="different-types-for-different-apps-v195-1">Different Types for Different Apps (v1.95)<a class="anchor" href="#different-types-for-different-apps-v195-1" aria-label="Link to this section">#</a></h4>
+<p>Supersedence supports exactly the same per-app syntax as dependencies — repeat the element pair,
+or use inline <code>Name:Type</code>:</p>
+<pre><code class="language-xml">&lt;!-- Repeated pairs, matched by position --&gt;
+&lt;Supersedence&gt;Old App 1.0&lt;/Supersedence&gt;
+&lt;SupersedenceType&gt;update&lt;/SupersedenceType&gt;
+&lt;Supersedence&gt;Old App 2.0&lt;/Supersedence&gt;
+&lt;SupersedenceType&gt;replace&lt;/SupersedenceType&gt;
+
+&lt;!-- Or inline, equivalent to the above --&gt;
+&lt;Supersedence&gt;Old App 1.0:update,Old App 2.0:replace&lt;/Supersedence&gt;
+</code></pre>
+<pre><code class="language-json">{
+  &quot;supersedence&quot;: [
+    { &quot;name&quot;: &quot;Old App 1.0&quot;, &quot;type&quot;: &quot;update&quot; },
+    { &quot;name&quot;: &quot;Old App 2.0&quot;, &quot;type&quot;: &quot;replace&quot; }
+  ]
+}
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> Supersedence relationships are processed after the app is created/uploaded. The superseded apps must already exist in Intune.</p>
+<p>Relationship creation was broken before v1.94 — see <a href="#dependency-and-supersedence-fixes-v194">Dependency and Supersedence Fixes (v1.94)</a>.</p>
+</blockquote>
+<h3 id="powershell-script-detection">PowerShell Script Detection<a class="anchor" href="#powershell-script-detection" aria-label="Link to this section">#</a></h3>
+<p>As an alternative to TAGFILE, FILE, or REGISTRY detection, you can use a custom PowerShell script for detection.</p>
+<p><strong>Config.xml Format:</strong></p>
+<pre><code class="language-xml">&lt;DetectionScriptFile&gt;Detection\Detect-MyApp.ps1&lt;/DetectionScriptFile&gt;
+&lt;DetectionScriptEnforceSignatureCheck&gt;false&lt;/DetectionScriptEnforceSignatureCheck&gt;
+&lt;DetectionScriptRunAs32Bit&gt;false&lt;/DetectionScriptRunAs32Bit&gt;
+</code></pre>
+<p><strong>Config.json Format:</strong></p>
+<pre><code class="language-json">{
+  &quot;detectionScriptFile&quot;: &quot;Detection/Detect-MyApp.ps1&quot;,
+  &quot;detectionScriptEnforceSignatureCheck&quot;: false,
+  &quot;detectionScriptRunAs32Bit&quot;: false
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>detectionScriptFile</code></td>
+<td>String</td>
+<td>(empty)</td>
+<td>Path to detection script relative to package folder</td>
+</tr>
+<tr>
+<td><code>detectionScriptEnforceSignatureCheck</code></td>
+<td>Boolean</td>
+<td><code>false</code></td>
+<td>Require the script to be signed</td>
+</tr>
+<tr>
+<td><code>detectionScriptRunAs32Bit</code></td>
+<td>Boolean</td>
+<td><code>false</code></td>
+<td>Run the script as a 32-bit process</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Detection Script Requirements:</strong></p>
+<ul>
+<li>The script must exit with code 0 for &quot;detected&quot; (app installed)</li>
+<li>Any non-zero exit code means &quot;not detected&quot; (app not installed)</li>
+<li>Write output to STDOUT for logging purposes</li>
+</ul>
+<p><strong>Example Detection Script:</strong></p>
+<pre><code class="language-powershell"># Detect-MyApp.ps1
+$appPath = &quot;C:\Program Files\MyApp\MyApp.exe&quot;
+if (Test-Path $appPath) {
+    Write-Output &quot;MyApp detected at $appPath&quot;
+    exit 0
+} else {
+    Write-Output &quot;MyApp not found&quot;
+    exit 1
+}
+</code></pre>
+<h3 id="complete-configjson-example-with-extended-settings">Complete Config.json Example with Extended Settings<a class="anchor" href="#complete-configjson-example-with-extended-settings" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;./../pawintuneapp.schema.json&quot;,
+  &quot;appType&quot;: &quot;EXE&quot;,
+  &quot;ruleType&quot;: &quot;FILE&quot;,
+  &quot;filePath&quot;: &quot;C:\\Program Files\\MyApp&quot;,
+  &quot;returnCodeType&quot;: &quot;DEFAULT&quot;,
+  &quot;installExperience&quot;: &quot;System&quot;,
+  &quot;packageName&quot;: &quot;Setup&quot;,
+  &quot;displayVersion&quot;: &quot;2.0.0&quot;,
+  &quot;displayName&quot;: &quot;My Application v2.0&quot;,
+  &quot;description&quot;: &quot;Enterprise application for productivity&quot;,
+  &quot;publisher&quot;: &quot;Contoso&quot;,
+  &quot;category&quot;: &quot;Business&quot;,
+  &quot;logoFile&quot;: &quot;Logo.png&quot;,
+  &quot;entraGroupName&quot;: &quot;App-MyApp-Required&quot;,
+  &quot;scopetag&quot;: &quot;CloudPC-Apps&quot;,
+  &quot;installCmdLine&quot;: &quot;Setup.exe /quiet&quot;,
+  &quot;uninstallCmdLine&quot;: &quot;Setup.exe /uninstall /quiet&quot;,
+
+  &quot;isFeatured&quot;: true,
+  &quot;informationUrl&quot;: &quot;https://contoso.com/myapp&quot;,
+  &quot;privacyInformationUrl&quot;: &quot;https://contoso.com/privacy&quot;,
+  &quot;developer&quot;: &quot;Contoso Development Team&quot;,
+  &quot;owner&quot;: &quot;IT Department&quot;,
+  &quot;notes&quot;: &quot;Approved for production deployment&quot;,
+
+  &quot;maxRunTimeInMinutes&quot;: 120,
+  &quot;deviceRestartBehavior&quot;: &quot;suppress&quot;,
+
+  &quot;minimumFreeDiskSpaceInMB&quot;: 500,
+  &quot;minimumMemoryInMB&quot;: 4096,
+  &quot;minimumNumberOfProcessors&quot;: 2,
+  &quot;minimumCpuSpeedInMHz&quot;: 1000,
+  &quot;allowedArchitectures&quot;: &quot;x64&quot;,
+  &quot;minimumSupportedOS&quot;: &quot;v10_21H2&quot;,
+
+  &quot;customReturnCodes&quot;: [
+    { &quot;returnCode&quot;: 3010, &quot;type&quot;: &quot;softReboot&quot; },
+    { &quot;returnCode&quot;: 1641, &quot;type&quot;: &quot;hardReboot&quot; }
+  ],
+
+  &quot;dependencies&quot;: [
+    &quot;Microsoft Visual C++ Redistributable&quot;,
+    &quot;Microsoft .NET Runtime 8.0&quot;
+  ],
+  &quot;dependencyType&quot;: &quot;autoInstall&quot;,
+
+  &quot;supersedence&quot;: [
+    &quot;My Application v1.0&quot;
+  ],
+  &quot;supersedenceType&quot;: &quot;update&quot;
+}
+</code></pre>
+<h3 id="complete-configxml-example-with-extended-settings">Complete Config.xml Example with Extended Settings<a class="anchor" href="#complete-configxml-example-with-extended-settings" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;
+&lt;CONFIG&gt;
+    &lt;Azure_Settings&gt;
+        &lt;baseUrl&gt;https://graph.microsoft.com/beta/deviceAppManagement/&lt;/baseUrl&gt;
+        &lt;logRequestUris&gt;$true&lt;/logRequestUris&gt;
+        &lt;logHeaders&gt;$false&lt;/logHeaders&gt;
+        &lt;logContent&gt;$true&lt;/logContent&gt;
+        &lt;azureStorageUploadChunkSizeInMb&gt;6l&lt;/azureStorageUploadChunkSizeInMb&gt;
+        &lt;sleep&gt;5&lt;/sleep&gt;
+    &lt;/Azure_Settings&gt;
+    &lt;IntuneWin_Settings&gt;
+        &lt;AppType&gt;EXE&lt;/AppType&gt;
+        &lt;installCmdLine&gt;Setup.exe /quiet&lt;/installCmdLine&gt;
+        &lt;uninstallCmdLine&gt;Setup.exe /uninstall /quiet&lt;/uninstallCmdLine&gt;
+        &lt;RuleType&gt;FILE&lt;/RuleType&gt;
+        &lt;FilePath&gt;C:\Program Files\MyApp&lt;/FilePath&gt;
+        &lt;ReturnCodeType&gt;DEFAULT&lt;/ReturnCodeType&gt;
+        &lt;InstallExperience&gt;System&lt;/InstallExperience&gt;
+        &lt;PackageName&gt;Setup&lt;/PackageName&gt;
+        &lt;displayName&gt;My Application v2.0&lt;/displayName&gt;
+        &lt;displayVersion&gt;2.0.0&lt;/displayVersion&gt;
+        &lt;Description&gt;Enterprise application for productivity&lt;/Description&gt;
+        &lt;Publisher&gt;Contoso&lt;/Publisher&gt;
+        &lt;Category&gt;Business&lt;/Category&gt;
+        &lt;LogoFile&gt;Logo.png&lt;/LogoFile&gt;
+        &lt;EntraGroupName&gt;App-MyApp-Required&lt;/EntraGroupName&gt;
+        &lt;ScopeTag&gt;CloudPC-Apps&lt;/ScopeTag&gt;
+
+        &lt;!-- Extended Settings --&gt;
+        &lt;IsFeatured&gt;true&lt;/IsFeatured&gt;
+        &lt;InformationUrl&gt;https://contoso.com/myapp&lt;/InformationUrl&gt;
+        &lt;PrivacyInformationUrl&gt;https://contoso.com/privacy&lt;/PrivacyInformationUrl&gt;
+        &lt;Developer&gt;Contoso Development Team&lt;/Developer&gt;
+        &lt;Owner&gt;IT Department&lt;/Owner&gt;
+        &lt;Notes&gt;Approved for production deployment&lt;/Notes&gt;
+
+        &lt;MaxRunTimeInMinutes&gt;120&lt;/MaxRunTimeInMinutes&gt;
+        &lt;DeviceRestartBehavior&gt;suppress&lt;/DeviceRestartBehavior&gt;
+
+        &lt;MinimumFreeDiskSpaceInMB&gt;500&lt;/MinimumFreeDiskSpaceInMB&gt;
+        &lt;MinimumMemoryInMB&gt;4096&lt;/MinimumMemoryInMB&gt;
+        &lt;MinimumNumberOfProcessors&gt;2&lt;/MinimumNumberOfProcessors&gt;
+        &lt;MinimumCpuSpeedInMHz&gt;1000&lt;/MinimumCpuSpeedInMHz&gt;
+        &lt;AllowedArchitectures&gt;x64&lt;/AllowedArchitectures&gt;
+        &lt;MinimumSupportedOS&gt;v10_21H2&lt;/MinimumSupportedOS&gt;
+
+        &lt;CustomReturnCodes&gt;3010:softReboot,1641:hardReboot&lt;/CustomReturnCodes&gt;
+
+        &lt;Dependencies&gt;Microsoft Visual C++ Redistributable,Microsoft .NET Runtime 8.0&lt;/Dependencies&gt;
+        &lt;DependencyType&gt;autoInstall&lt;/DependencyType&gt;
+
+        &lt;Supersedence&gt;My Application v1.0&lt;/Supersedence&gt;
+        &lt;SupersedenceType&gt;update&lt;/SupersedenceType&gt;
+    &lt;/IntuneWin_Settings&gt;
+&lt;/CONFIG&gt;
+</code></pre>
+<hr />
+<h2 id="assignment-behavior-v17">Assignment Behavior (v1.7)<a class="anchor" href="#assignment-behavior-v17" aria-label="Link to this section">#</a></h2>
+<p>Version 1.7 introduces enhanced assignment behavior settings to optimize the app deployment experience.</p>
+<h3 id="delivery-optimization-priority">Delivery Optimization Priority<a class="anchor" href="#delivery-optimization-priority" aria-label="Link to this section">#</a></h3>
+<p>All assignment types (Required, Available, and Uninstall) now use <strong>foreground</strong> delivery optimization priority. This setting prioritizes the app download, resulting in faster delivery to devices.</p>
+<table>
+<thead>
+<tr>
+<th>Priority Setting</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>foreground</code></td>
+<td>Prioritized download for faster app delivery (v1.7)</td>
+</tr>
+<tr>
+<td><code>notConfigured</code></td>
+<td>Default Windows delivery optimization behavior</td>
+</tr>
+</tbody>
+</table>
+<h3 id="user-notification-settings">User Notification Settings<a class="anchor" href="#user-notification-settings" aria-label="Link to this section">#</a></h3>
+<p>The script now applies intelligent notification settings based on the assignment intent:</p>
+<table>
+<thead>
+<tr>
+<th>Assignment Intent</th>
+<th>Notifications</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Required</strong></td>
+<td>Hidden</td>
+<td>Silent installation without user prompts</td>
+</tr>
+<tr>
+<td><strong>Available</strong></td>
+<td>Hidden</td>
+<td>App appears in Company Portal without install toasts</td>
+</tr>
+<tr>
+<td><strong>Uninstall</strong></td>
+<td>Shown</td>
+<td>User notified when app is being removed</td>
+</tr>
+</tbody>
+</table>
+<p>This configuration provides a streamlined experience:</p>
+<ul>
+<li><strong>Required apps</strong> install silently without interrupting users</li>
+<li><strong>Available apps</strong> are discoverable in Company Portal without unwanted notifications</li>
+<li><strong>Uninstall actions</strong> notify users so they understand why an app is being removed</li>
+</ul>
+<h3 id="assignment-settings-summary">Assignment Settings Summary<a class="anchor" href="#assignment-settings-summary" aria-label="Link to this section">#</a></h3>
+<p>The following settings are applied automatically to all Win32 app assignments:</p>
+<pre><code class="language-json">{
+  &quot;settings&quot;: {
+    &quot;@odata.type&quot;: &quot;#microsoft.graph.win32LobAppAssignmentSettings&quot;,
+    &quot;notifications&quot;: &quot;hideAll&quot;,
+    &quot;deliveryOptimizationPriority&quot;: &quot;foreground&quot;,
+    &quot;installTimeSettings&quot;: {
+      &quot;useLocalTime&quot;: false,
+      &quot;deadlineDateTime&quot;: null
+    }
+  }
+}
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> For Uninstall assignments, <code>notifications</code> is set to <code>showAll</code> instead of <code>hideAll</code>.</p>
+</blockquote>
+<blockquote>
+<p><strong>Note:</strong> Exclusion group assignments do not include the <code>settings</code> property as it is not supported by the Microsoft Graph API.</p>
+</blockquote>
+<hr />
+<h2 id="graph-connection-management-v17">Graph Connection Management (v1.7)<a class="anchor" href="#graph-connection-management-v17" aria-label="Link to this section">#</a></h2>
+<p>Version 1.7 introduces improved Microsoft Graph connection management to support batch processing of multiple packages.</p>
+<h3 id="connection-behavior-by-authentication-method">Connection Behavior by Authentication Method<a class="anchor" href="#connection-behavior-by-authentication-method" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Authentication Method</th>
+<th>Default Behavior</th>
+<th>Override</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-IntuneAdmin</code></td>
+<td>Connection <strong>preserved</strong> after script</td>
+<td>Add <code>-DisconnectGraph</code> to disconnect</td>
+</tr>
+<tr>
+<td><code>-ClientSecret</code></td>
+<td>Connection <strong>always disconnected</strong></td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><code>-CertName</code></td>
+<td>Connection <strong>always disconnected</strong></td>
+<td>N/A</td>
+</tr>
+</tbody>
+</table>
+<h3 id="benefits-of-preserved-connections">Benefits of Preserved Connections<a class="anchor" href="#benefits-of-preserved-connections" aria-label="Link to this section">#</a></h3>
+<p>When using <code>-IntuneAdmin</code>, the Graph connection is preserved by default, enabling:</p>
+<ul>
+<li><strong>Batch processing</strong>: Upload multiple packages without re-authentication</li>
+<li><strong>Faster execution</strong>: No authentication delay between packages</li>
+<li><strong>Pipeline support</strong>: Pass multiple paths to <code>-PackagePath</code></li>
+</ul>
+<h3 id="connection-management-examples">Connection Management Examples<a class="anchor" href="#connection-management-examples" aria-label="Link to this section">#</a></h3>
+<p><strong>Run multiple packages with single authentication:</strong></p>
+<pre><code class="language-powershell"># First package - authenticates once
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\App1&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+
+# Second package - reuses existing connection (no auth prompt)
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\App2&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+
+# Last package - disconnect when done
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\App3&quot; -IntuneAdmin &quot;admin@contoso.com&quot; -DisconnectGraph
+</code></pre>
+<p><strong>Explicitly disconnect after each run:</strong></p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DisconnectGraph
+</code></pre>
+<hr />
+<h2 id="usage-examples">Usage Examples<a class="anchor" href="#usage-examples" aria-label="Link to this section">#</a></h2>
+<h3 id="basic-package-upload">Basic Package Upload<a class="anchor" href="#basic-package-upload" aria-label="Link to this section">#</a></h3>
+<h4 id="upload-with-interactive-authentication">Upload with Interactive Authentication<a class="anchor" href="#upload-with-interactive-authentication" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<h4 id="upload-with-service-principal">Upload with Service Principal<a class="anchor" href="#upload-with-service-principal" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret &quot;YourClientSecret&quot;
+</code></pre>
+<h3 id="package-creation-only">Package Creation Only<a class="anchor" href="#package-creation-only" aria-label="Link to this section">#</a></h3>
+<h4 id="create-package-without-uploading">Create Package Without Uploading<a class="anchor" href="#create-package-without-uploading" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -IntuneWinPackageOnly
+</code></pre>
+<h4 id="create-package-and-keep-after-upload">Create Package and Keep After Upload<a class="anchor" href="#create-package-and-keep-after-upload" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -SkipPackageRemoval
+</code></pre>
+<h3 id="group-assignments">Group Assignments<a class="anchor" href="#group-assignments" aria-label="Link to this section">#</a></h3>
+<blockquote>
+<p><strong>Note:</strong> Both <code>-RequiredAADGroupName</code> and <code>-RequiredEntraGroupName</code> work identically. The Entra aliases are preferred for new scripts.</p>
+</blockquote>
+<h4 id="upload-with-required-group-assignment">Upload with Required Group Assignment<a class="anchor" href="#upload-with-required-group-assignment" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -RequiredEntraGroupName &quot;App-MyApp-Required&quot;
+</code></pre>
+<h4 id="upload-with-multiple-group-assignments">Upload with Multiple Group Assignments<a class="anchor" href="#upload-with-multiple-group-assignments" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -RequiredEntraGroupName &quot;App-MyApp-Required&quot; `
+    -AvailableEntraGroupName &quot;App-MyApp-Available&quot; `
+    -UninstallEntraGroupName &quot;App-MyApp-Uninstall&quot;
+</code></pre>
+<h4 id="upload-without-group-assignments">Upload Without Group Assignments<a class="anchor" href="#upload-without-group-assignments" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -SkipGroupAssignment
+</code></pre>
+<h4 id="update-groups-only-existing-app">Update Groups Only (Existing App)<a class="anchor" href="#update-groups-only-existing-app" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -AssignGroupsOnly `
+    -RequiredEntraGroupName &quot;App-MyApp-Required&quot;
+</code></pre>
+<h3 id="scope-tags">Scope Tags<a class="anchor" href="#scope-tags" aria-label="Link to this section">#</a></h3>
+<h4 id="upload-with-scope-tag">Upload with Scope Tag<a class="anchor" href="#upload-with-scope-tag" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -ScopeTagName &quot;CloudPC-Apps&quot;
+</code></pre>
+<h4 id="upload-with-scope-tag-and-no-groups">Upload with Scope Tag and No Groups<a class="anchor" href="#upload-with-scope-tag-and-no-groups" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -SkipGroupAssignment `
+    -ScopeTagName &quot;Production&quot;
+</code></pre>
+<h3 id="multiple-packages">Multiple Packages<a class="anchor" href="#multiple-packages" aria-label="Link to this section">#</a></h3>
+<h4 id="upload-multiple-packages-pipeline">Upload Multiple Packages (Pipeline)<a class="anchor" href="#upload-multiple-packages-pipeline" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">@(&quot;C:\Packages\App1&quot;, &quot;C:\Packages\App2&quot;, &quot;C:\Packages\App3&quot;) | ForEach-Object {
+    .\Upload-IntuneWin.ps1 -PackagePath $_ `
+        -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+        -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+        -ClientSecret &quot;YourClientSecret&quot;
+}
+</code></pre>
+<h3 id="custom-intunewinapputil-path">Custom IntuneWinAppUtil Path<a class="anchor" href="#custom-intunewinapputil-path" aria-label="Link to this section">#</a></h3>
+<h4 id="specify-custom-tool-location">Specify Custom Tool Location<a class="anchor" href="#specify-custom-tool-location" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -IntuneWinAppUtilPath &quot;C:\Tools\Win32ContentPrepTool&quot;
+</code></pre>
+<h3 id="diagnostics-mode">Diagnostics Mode<a class="anchor" href="#diagnostics-mode" aria-label="Link to this section">#</a></h3>
+<h4 id="use-new-tag-path-for-log-capture">Use New Tag Path for Log Capture<a class="anchor" href="#use-new-tag-path-for-log-capture" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -NewTagPath
+</code></pre>
+<h3 id="corporate-proxy">Corporate Proxy<a class="anchor" href="#corporate-proxy" aria-label="Link to this section">#</a></h3>
+<h4 id="upload-through-a-corporate-proxy-interactive-credential-prompt">Upload Through a Corporate Proxy (Interactive Credential Prompt)<a class="anchor" href="#upload-through-a-corporate-proxy-interactive-credential-prompt" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -ProxyUri &quot;http://proxy.contoso.com:443&quot;
+</code></pre>
+<p>The script prompts once for the proxy credential and reuses it for MSAL, Graph SDK, Azure Storage upload, and the GitHub <code>IntuneWinAppUtil.exe</code> download.</p>
+<h4 id="service-principal-upload-through-proxy-with-windows-integrated-auth">Service-Principal Upload Through Proxy with Windows-Integrated Auth<a class="anchor" href="#service-principal-upload-through-proxy-with-windows-integrated-auth" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret &quot;YourClientSecret&quot; `
+    -ProxyUri &quot;http://proxy.contoso.com:443&quot; `
+    -ProxyUseDefaultCredentials
+</code></pre>
+<h4 id="env-var-only-proxy-configuration-no-cli-flags">Env-Var-Only Proxy Configuration (No CLI Flags)<a class="anchor" href="#env-var-only-proxy-configuration-no-cli-flags" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">[Environment]::SetEnvironmentVariable(&quot;DMAC_PROXY_URI&quot;, &quot;http://proxy.contoso.com:443&quot;, &quot;User&quot;)
+[Environment]::SetEnvironmentVariable(&quot;DMAC_PROXY_USE_DEFAULT_CREDENTIALS&quot;, &quot;true&quot;, &quot;User&quot;)
+
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; -IntuneAdmin &quot;admin@contoso.com&quot;
+</code></pre>
+<p>Because <code>Initialize-DmacProxy -OnlyIfNeeded</code> probes the direct path first, the proxy is only activated when direct Graph / Entra ID connectivity actually fails — safe to set globally on a mixed fleet.</p>
+<h4 id="proxy-connectivity-diagnostic">Proxy Connectivity Diagnostic<a class="anchor" href="#proxy-connectivity-diagnostic" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri &quot;http://proxy.contoso.com:443&quot;
+</code></pre>
+<p>Runs the direct-vs-proxy connectivity report against Graph and Entra ID. Exit code <code>0</code> = PASS, <code>1</code> = FAIL, <code>2</code> = init error. No upload or modification occurs.</p>
+<h3 id="replace-existing-application-content">Replace Existing Application Content<a class="anchor" href="#replace-existing-application-content" aria-label="Link to this section">#</a></h3>
+<h4 id="update-package-content-only">Update Package Content Only<a class="anchor" href="#update-package-content-only" aria-label="Link to this section">#</a></h4>
+<p>When an application already exists in Intune and you need to update just the installer package while keeping all existing configuration (assignments, detection rules, requirements, scope tags, etc.):</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -ReplaceExistingContent
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> The application must already exist in Intune with a matching <code>displayName</code> from the Config.xml or Config.json. All existing configuration is preserved - only the IntuneWin package content is updated.</p>
+</blockquote>
+<h4 id="automatic-logo-addition">Automatic Logo Addition<a class="anchor" href="#automatic-logo-addition" aria-label="Link to this section">#</a></h4>
+<p>When using <code>-ReplaceExistingContent</code>, the script automatically detects if:</p>
+<ol>
+<li>The existing app in Intune has no logo configured</li>
+<li>A logo file is specified in the Config.json or Config.xml (via <code>logoFile</code> or <code>LogoFile</code>)</li>
+<li>The logo file exists in the package folder</li>
+</ol>
+<p>If all conditions are met, the logo will be automatically added to the existing application. The script:</p>
+<ol>
+<li>Loads the logo file from the package folder and encodes it to Base64</li>
+<li>Makes a separate Graph API call to fetch the <code>largeIcon</code> property (which is not returned by default)</li>
+<li>Uses a PATCH request to update the app with the logo</li>
+</ol>
+<p><strong>Supported image formats:</strong></p>
+<ul>
+<li>PNG files (<code>.png</code>) - recommended</li>
+<li>JPEG files (<code>.jpg</code>, <code>.jpeg</code>)</li>
+</ul>
+<p>The script logs detailed information about logo detection:</p>
+<pre><code class="language-text">Checking logo status...
+Logo not loaded yet, checking for logo file at: C:\Packages\MyApp\Logo.png
+Logo file found, loading...
+Logo icon loaded successfully (Base64 length: 12345)
+Fetching existing application largeIcon property...
+Fetching largeIcon from: https://graph.microsoft.com/Beta/deviceAppManagement/mobileApps/{id}/?$select=largeIcon
+Existing app has icon: False
+Config defines icon: True
+Adding logo to existing application...
+Using image type: image/png
+Logo PATCH URI: https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/{id}
+Logo added successfully
+</code></pre>
+<p>If the existing app already has a logo, it will be preserved:</p>
+<pre><code class="language-text">Existing app already has a logo - preserving existing logo
+Existing icon type: image/png
+Existing icon value length: 12345
+</code></pre>
+<h4 id="replace-content-and-add-assignments-if-none-exist">Replace Content and Add Assignments (If None Exist)<a class="anchor" href="#replace-content-and-add-assignments-if-none-exist" aria-label="Link to this section">#</a></h4>
+<p>When replacing content, if the existing application has <strong>no assignments</strong>, you can provide assignment groups and they will be applied:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret &quot;YourClientSecret&quot; `
+    -AvailableEntraGroupName &quot;App-MyApp-Available&quot; `
+    -ScopeTagName &quot;Production&quot; `
+    -ReplaceExistingContent
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> If the existing application already has assignments, they are preserved and the provided group parameters are ignored. This ensures existing deployment configurations are not accidentally overwritten.</p>
+</blockquote>
+<h3 id="replace-existing-assignments">Replace Existing Assignments<a class="anchor" href="#replace-existing-assignments" aria-label="Link to this section">#</a></h3>
+<h4 id="replace-assignments-only-no-content-change">Replace Assignments Only (No Content Change)<a class="anchor" href="#replace-assignments-only-no-content-change" aria-label="Link to this section">#</a></h4>
+<p>When you need to completely replace the assignments on an existing application without changing the package content:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -ReplaceExistingAssignments `
+    -AvailableEntraGroupName &quot;App-MyApp-Available&quot;
+</code></pre>
+<p>This will:</p>
+<ol>
+<li>Clear all existing assignments from the application</li>
+<li>Apply the new assignment(s) specified</li>
+</ol>
+<h4 id="replace-both-content-and-assignments">Replace Both Content and Assignments<a class="anchor" href="#replace-both-content-and-assignments" aria-label="Link to this section">#</a></h4>
+<p>Combine <code>-ReplaceExistingContent</code> with <code>-ReplaceExistingAssignments</code> to update both:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret &quot;YourClientSecret&quot; `
+    -ReplaceExistingContent `
+    -ReplaceExistingAssignments `
+    -RequiredEntraGroupName &quot;App-MyApp-Required&quot; `
+    -AvailableEntraGroupName &quot;App-MyApp-Available&quot;
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> <code>-ReplaceExistingAssignments</code> requires at least one assignment group parameter (<code>-RequiredAADGroupName</code>, <code>-AvailableAADGroupName</code>, or <code>-UninstallAADGroupName</code>).</p>
+</blockquote>
+<h3 id="app-deletion-examples-v192">App Deletion Examples (v1.92)<a class="anchor" href="#app-deletion-examples-v192" aria-label="Link to this section">#</a></h3>
+<h4 id="delete-a-single-app-by-name">Delete a Single App by Name<a class="anchor" href="#delete-a-single-app-by-name" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;Old LOB App&quot;
+</code></pre>
+<h4 id="delete-multiple-apps-in-one-call">Delete Multiple Apps in One Call<a class="anchor" href="#delete-multiple-apps-in-one-call" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;Legacy App 1&quot;, &quot;Legacy App 2&quot;, &quot;Legacy App 3&quot;
+</code></pre>
+<h4 id="delete-via-pipeline-input">Delete via Pipeline Input<a class="anchor" href="#delete-via-pipeline-input" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">&quot;Old App A&quot;, &quot;Old App B&quot;, &quot;Old App C&quot; |
+    .\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; -DeleteApp
+</code></pre>
+<h4 id="delete-the-app-referenced-by-a-packages-config">Delete the App Referenced by a Package's Config<a class="anchor" href="#delete-the-app-referenced-by-a-packages-config" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -PackagePath &quot;C:\Packages\MyApp&quot; -DeleteApp
+</code></pre>
+<h4 id="preview-without-deleting--whatif">Preview Without Deleting (<code>-WhatIf</code>)<a class="anchor" href="#preview-without-deleting--whatif" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -IntuneAdmin &quot;admin@contoso.com&quot; `
+    -DeleteApp -AppNameToDelete &quot;ToBeRemoved&quot; -WhatIf
+</code></pre>
+<h3 id="complete-production-example">Complete Production Example<a class="anchor" href="#complete-production-example" aria-label="Link to this section">#</a></h3>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 `
+    -PackagePath &quot;C:\Packages\Office365&quot; `
+    -ClientID &quot;12345678-1234-1234-1234-123456789012&quot; `
+    -TenantID &quot;87654321-4321-4321-4321-210987654321&quot; `
+    -ClientSecret $env:INTUNE_SECRET `
+    -RequiredEntraGroupName &quot;All-CloudPC-Devices&quot; `
+    -AvailableEntraGroupName &quot;Office-SelfService&quot; `
+    -ScopeTagName &quot;CloudPC-Apps&quot; `
+    -SkipPackageRemoval
+</code></pre>
+<hr />
+<h2 id="supported-application-types">Supported Application Types<a class="anchor" href="#supported-application-types" aria-label="Link to this section">#</a></h2>
+<h3 id="msi-applications">MSI Applications<a class="anchor" href="#msi-applications" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Automatic detection rule using MSI product code</li>
+<li>Install/Uninstall commands auto-generated from MSI</li>
+<li>Product version comparison support</li>
+</ul>
+<h3 id="exe-applications">EXE Applications<a class="anchor" href="#exe-applications" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Custom install and uninstall command lines</li>
+<li>File, Registry, or PowerShell script detection</li>
+<li>Full control over detection logic</li>
+</ul>
+<h3 id="ps1-powershell-script-applications">PS1 (PowerShell Script) Applications<a class="anchor" href="#ps1-powershell-script-applications" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>PowerShell script-based installation</li>
+<li>Script detection support</li>
+<li>Runs in system or user context</li>
+</ul>
+<h3 id="edge-browser">Edge Browser<a class="anchor" href="#edge-browser" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Microsoft Edge browser deployment</li>
+<li>Channel selection (Stable, Beta, Dev, Canary)</li>
+<li>Simplified deployment without .intunewin</li>
+</ul>
+<hr />
+<h2 id="detection-rules">Detection Rules<a class="anchor" href="#detection-rules" aria-label="Link to this section">#</a></h2>
+<h3 id="available-detection-types">Available Detection Types<a class="anchor" href="#available-detection-types" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Rule Type</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TAGFILE</code></td>
+<td>Checks for a specific tag file</td>
+<td>Simple presence detection</td>
+</tr>
+<tr>
+<td><code>FILE</code></td>
+<td>Checks for file existence, version, or size</td>
+<td>Application files</td>
+</tr>
+<tr>
+<td><code>REGISTRY</code></td>
+<td>Checks registry key or value</td>
+<td>Registry-based apps</td>
+</tr>
+<tr>
+<td><code>MSI</code></td>
+<td>Uses MSI product code</td>
+<td>MSI installers</td>
+</tr>
+</tbody>
+</table>
+<h3 id="detection-rule-examples">Detection Rule Examples<a class="anchor" href="#detection-rule-examples" aria-label="Link to this section">#</a></h3>
+<h4 id="file-detection">File Detection<a class="anchor" href="#file-detection" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-xml">&lt;RuleType&gt;FILE&lt;/RuleType&gt;
+&lt;FilePath&gt;C:\Program Files\MyApp&lt;/FilePath&gt;
+&lt;FileName&gt;MyApp.exe&lt;/FileName&gt;
+&lt;FileVersion&gt;1.0.0&lt;/FileVersion&gt;
+</code></pre>
+<h4 id="registry-detection">Registry Detection<a class="anchor" href="#registry-detection" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-xml">&lt;RuleType&gt;REGISTRY&lt;/RuleType&gt;
+&lt;RegistryKeyPath&gt;HKLM\SOFTWARE\MyApp&lt;/RegistryKeyPath&gt;
+&lt;RegistryValue&gt;Version&lt;/RegistryValue&gt;
+</code></pre>
+<hr />
+<h2 id="group-assignment-details">Group Assignment Details<a class="anchor" href="#group-assignment-details" aria-label="Link to this section">#</a></h2>
+<h3 id="assignment-intent-types">Assignment Intent Types<a class="anchor" href="#assignment-intent-types" aria-label="Link to this section">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Intent</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Required</strong></td>
+<td>App is automatically installed on assigned devices</td>
+</tr>
+<tr>
+<td><strong>Available</strong></td>
+<td>App appears in Company Portal for user installation. Users can also uninstall the app themselves</td>
+</tr>
+<tr>
+<td><strong>Uninstall</strong></td>
+<td>App is automatically removed from assigned devices</td>
+</tr>
+</tbody>
+</table>
+<h3 id="available-uninstall-feature">Available Uninstall Feature<a class="anchor" href="#available-uninstall-feature" aria-label="Link to this section">#</a></h3>
+<p>The &quot;Allow available uninstall&quot; option (<code>allowAvailableUninstall</code>) is set on every Win32 application at the app level. This allows users to:</p>
+<ul>
+<li>Install the app from the Company Portal (when assigned as Available)</li>
+<li>Uninstall the app from the Company Portal when they no longer need it</li>
+</ul>
+<p>Providing users with self-service control over optional applications without requiring administrator intervention.</p>
+<p>From <strong>v1.92</strong> the value is <strong>configurable per app</strong> via the <code>allowAvailableUninstall</code> property in <code>Config.json</code> / <code>Config.xml</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Value (case-insensitive)</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>true</code>, <code>&quot;true&quot;</code>, <code>&quot;yes&quot;</code></td>
+<td>Enabled</td>
+</tr>
+<tr>
+<td><code>false</code>, <code>&quot;false&quot;</code>, <code>&quot;no&quot;</code></td>
+<td>Disabled</td>
+</tr>
+<tr>
+<td>Property omitted</td>
+<td><strong>Enabled (default)</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Example (<code>Config.json</code>):</p>
+<pre><code class="language-json">{
+  &quot;displayName&quot;: &quot;Internal Line-of-Business App&quot;,
+  &quot;allowAvailableUninstall&quot;: false
+}
+</code></pre>
+<blockquote>
+<p><strong>Note:</strong> This is a property on the Win32 app itself, not on individual assignments. The setting enables uninstall capability for any &quot;Available&quot; assignments the app receives.</p>
+</blockquote>
+<h3 id="group-creation">Group Creation<a class="anchor" href="#group-creation" aria-label="Link to this section">#</a></h3>
+<p>If specified groups don't exist, the script will create them automatically as security groups in Entra ID.</p>
+<hr />
+<h2 id="scope-tag-configuration">Scope Tag Configuration<a class="anchor" href="#scope-tag-configuration" aria-label="Link to this section">#</a></h2>
+<h3 id="how-scope-tags-work">How Scope Tags Work<a class="anchor" href="#how-scope-tags-work" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Scope tags control which administrators can see and manage the application</li>
+<li>The <code>-ScopeTagName</code> parameter overrides any <code>ScopeTag</code> or <code>scopetag</code> setting in config files</li>
+<li><strong>Multiple scope tags are supported</strong>: pass an array to <code>-ScopeTagName</code> or use a comma-separated string in the config file (e.g., <code>&quot;scopeTag&quot;: &quot;CloudPC-Apps, Production-Apps&quot;</code>)</li>
+<li>If a scope tag doesn't exist in the tenant, it will be created automatically</li>
+<li>The supplied scope tag set replaces all existing tags on the app (including <code>Default</code>)</li>
+</ul>
+<h3 id="scope-tag-best-practices">Scope Tag Best Practices<a class="anchor" href="#scope-tag-best-practices" aria-label="Link to this section">#</a></h3>
+<ol>
+<li>Use consistent naming conventions (e.g., <code>CloudPC-Apps</code>, <code>Production-Apps</code>)</li>
+<li>Align scope tags with RBAC role assignments</li>
+<li>Document scope tag assignments for governance</li>
+</ol>
+<hr />
+<h2 id="troubleshooting">Troubleshooting<a class="anchor" href="#troubleshooting" aria-label="Link to this section">#</a></h2>
+<h3 id="common-issues">Common Issues<a class="anchor" href="#common-issues" aria-label="Link to this section">#</a></h3>
+<h4 id="intunewinapputilexe-not-found">IntuneWinAppUtil.exe Not Found<a class="anchor" href="#intunewinapputilexe-not-found" aria-label="Link to this section">#</a></h4>
+<p>Ensure the tool is in the script directory or specify the path:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -IntuneWinAppUtilPath &quot;C:\Tools&quot;
+</code></pre>
+<h4 id="authentication-failures">Authentication Failures<a class="anchor" href="#authentication-failures" aria-label="Link to this section">#</a></h4>
+<p>Verify your credentials and permissions:</p>
+<pre><code class="language-powershell"># Test Graph connection
+Connect-MgGraph -Scopes &quot;DeviceManagementApps.ReadWrite.All&quot;
+Get-MgContext
+</code></pre>
+<h4 id="407-proxy-authentication-required"><code>(407) Proxy Authentication Required</code><a class="anchor" href="#407-proxy-authentication-required" aria-label="Link to this section">#</a></h4>
+<pre><code class="language-text">Invoke-RestMethod : The remote server returned an error: (407) Proxy Authentication Required.
+</code></pre>
+<p>The machine is routing outbound traffic through a proxy that demands credentials, and the token
+request to Entra ID never reaches Microsoft. From v1.95 the script detects this, retries once using
+your Windows credentials, and — if that still fails — stops with guidance rather than continuing
+with no token.</p>
+<p>Run with an explicit proxy:</p>
+<pre><code class="language-powershell"># Windows-integrated (NTLM/Negotiate) proxy authentication
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ProxyUri 'http://your-proxy:8080' -ProxyUseDefaultCredentials
+
+# Explicit proxy account
+.\Upload-IntuneWin.ps1 -PackagePath &quot;C:\Packages\MyApp&quot; `
+    -ProxyUri 'http://your-proxy:8080' -ProxyCredential (Get-Credential)
+</code></pre>
+<p>Or set it once for the session so every run picks it up:</p>
+<pre><code class="language-powershell">$env:DMAC_PROXY_URI = 'http://your-proxy:8080'
+</code></pre>
+<p>Confirm the proxy path before running a real upload — this reports direct vs proxied connectivity to
+Graph and Entra ID and exits <code>0 = PASS</code>, <code>1 = FAIL</code>, <code>2 = init error</code>:</p>
+<pre><code class="language-powershell">.\Upload-IntuneWin.ps1 -TestProxyConnectivity -ProxyUri 'http://your-proxy:8080'
+</code></pre>
+<blockquote>
+<p><strong>Before v1.95</strong> this error was non-terminating: the run carried on with an empty token, threw two
+further binding errors, and still printed <code>Successfully authenticated to Microsoft Graph</code>. If you
+see that combination, you are on an older build — upgrade rather than chasing the binding errors,
+which are only symptoms.</p>
+</blockquote>
+<h4 id="package-upload-fails">Package Upload Fails<a class="anchor" href="#package-upload-fails" aria-label="Link to this section">#</a></h4>
+<p>Check the log file at:</p>
+<pre><code class="language-text">%LocalAppData%\Microsoft\IntuneApps\Upload-IntuneWin\Upload-IntuneWin_[date].log
+</code></pre>
+<h4 id="group-assignment-errors">Group Assignment Errors<a class="anchor" href="#group-assignment-errors" aria-label="Link to this section">#</a></h4>
+<p>Ensure you have permissions to create and manage groups:</p>
+<ul>
+<li><code>Group.ReadWrite.All</code> permission required</li>
+</ul>
+<h4 id="logo-not-being-added-when-using--replaceexistingcontent">Logo Not Being Added When Using -ReplaceExistingContent<a class="anchor" href="#logo-not-being-added-when-using--replaceexistingcontent" aria-label="Link to this section">#</a></h4>
+<p>If the logo isn't being added when updating an existing application, check the log file for these diagnostic messages:</p>
+<ol>
+<li><p><strong>Logo file not specified in config:</strong></p>
+<pre><code class="language-text">No logo file specified in config
+</code></pre>
+<p>Solution: Add <code>logoFile</code> (Config.json) or <code>LogoFile</code> (Config.xml) to your configuration.</p>
+</li>
+<li><p><strong>Logo file not found:</strong></p>
+<pre><code class="language-text">Warning: Logo file specified in config but not found at: C:\Packages\MyApp\Logo.png
+</code></pre>
+<p>Solution: Ensure the logo file exists at the specified path in your package folder.</p>
+</li>
+<li><p><strong>Logo file failed to encode:</strong></p>
+<pre><code class="language-text">Warning: Logo file found but failed to encode to Base64
+</code></pre>
+<p>Solution: Verify the logo file is a valid PNG, JPG, or JPEG image.</p>
+</li>
+<li><p><strong>Failed to fetch existing logo status:</strong></p>
+<pre><code class="language-text">Error fetching largeIcon: &lt;error message&gt;
+</code></pre>
+<p>Solution: This may indicate a permission or network issue. Ensure you have <code>DeviceManagementApps.ReadWrite.All</code> permissions.</p>
+</li>
+<li><p><strong>Logo PATCH request failed:</strong></p>
+<pre><code class="language-text">Warning: Failed to add logo - &lt;error message&gt;
+</code></pre>
+<p>Solution: Check the full error message in the log. Common causes include:</p>
+<ul>
+<li>Invalid image format (must be PNG or JPEG)</li>
+<li>Image file too large</li>
+<li>Network/API timeout</li>
+</ul>
+</li>
+<li><p><strong>Existing app already has a logo:</strong></p>
+<pre><code class="language-text">Existing app already has a logo - preserving existing logo
+Existing icon type: image/png
+Existing icon value length: 12345
+</code></pre>
+<p>This is expected behavior - existing logos are preserved to prevent accidental overwrites.</p>
+</li>
+</ol>
+<h3 id="log-file-location">Log File Location<a class="anchor" href="#log-file-location" aria-label="Link to this section">#</a></h3>
+<p>Logs are written to:</p>
+<pre><code class="language-text">%LocalAppData%\Microsoft\IntuneApps\Upload-IntuneWin\Upload-IntuneWin_DD-MM-YYYY.log
+</code></pre>
+<h3 id="getting-help">Getting Help<a class="anchor" href="#getting-help" aria-label="Link to this section">#</a></h3>
+<p>Display the built-in help:</p>
+<pre><code class="language-powershell">Get-Help .\Upload-IntuneWin.ps1 -Full
+</code></pre>
+<p>List all examples:</p>
+<pre><code class="language-powershell">Get-Help .\Upload-IntuneWin.ps1 -Examples
+</code></pre>
+<hr />
+<h2 id="related-resources">Related Resources<a class="anchor" href="#related-resources" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><a href="https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool">Microsoft Win32 Content Prep Tool</a></li>
+<li><a href="https://learn.microsoft.com/mem/intune/apps/apps-win32-app-management">Win32 app management in Intune</a></li>
+<li><a href="https://learn.microsoft.com/graph/api/resources/intune-apps-mobileapp">Microsoft Graph API - Intune Apps</a></li>
+</ul>
+<hr />
+<p><strong>Script Version</strong>: 1.93
+<strong>Last Updated</strong>: March 2026
+<strong>Author</strong>: Greg Nottage</p>
+
+    <footer>Generated 04 August 2026 &middot; Upload-IntuneWin.ps1 v1.97</footer>
+  </main>
+</div>
+
+<button class="totop" id="totop" title="Back to top" aria-label="Back to top">&uarr;</button>
+
+<script>
+(function(){
+  "use strict";
+
+  // Tables get a scroll container so wide ones don't break the layout
+  document.querySelectorAll("main table").forEach(function(t){
+    var w = document.createElement("div");
+    w.className = "table-wrap";
+    t.parentNode.insertBefore(w, t);
+    w.appendChild(t);
+  });
+
+  // Tint callouts by their leading keyword
+  document.querySelectorAll("main blockquote").forEach(function(b){
+    var s = (b.textContent || "").slice(0, 60).toLowerCase();
+    if (s.indexOf("warning") > -1 || s.indexOf("before v") > -1 || s.indexOf("caution") > -1) b.classList.add("warn");
+    else if (s.indexOf("tip") > -1) b.classList.add("tip");
+  });
+
+  function esc(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // One pass over the escaped text, so inserted markup can never be re-matched by a later rule.
+  var GRAMMAR = {
+    powershell: [
+      { re: "#[^\\n]*",                cls: "tok-com" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" },
+      { re: "'[^'\\n]*'",              cls: "tok-str" },
+      { re: "\\$[A-Za-z_][\\w:]*",     cls: "tok-var" },
+      { re: "\\B-[A-Za-z]\\w*",        cls: "tok-par" }
+    ],
+    json: [
+      { re: "\"[^\"\\n]*\"(?=\\s*:)",  cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" },
+      { re: "\\b(?:true|false|null)\\b", cls: "tok-key" },
+      { re: "-?\\b\\d+(?:\\.\\d+)?\\b", cls: "tok-num" }
+    ],
+    xml: [
+      { re: "&lt;!--[\\s\\S]*?--&gt;", cls: "tok-com" },
+      { re: "&lt;\\/?[A-Za-z_][\\w.:-]*", cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" }
+    ],
+    http: [
+      { re: "^(?:GET|POST|PATCH|PUT|DELETE)\\b", cls: "tok-key" },
+      { re: "\"[^\"\\n]*\"(?=\\s*:)",  cls: "tok-par" },
+      { re: "\"[^\"\\n]*\"",           cls: "tok-str" }
+    ]
+  };
+  GRAMMAR.ps1 = GRAMMAR.powershell;
+  GRAMMAR.html = GRAMMAR.xml;
+
+  function highlight(code, lang){
+    var out = esc(code);
+    var rules = GRAMMAR[lang];
+    if (!rules) { return out; }
+    var re = new RegExp(rules.map(function(r){ return "(" + r.re + ")"; }).join("|"), "gm");
+    return out.replace(re, function(){
+      for (var i = 1; i <= rules.length; i++){
+        if (arguments[i] !== undefined){
+          return '<span class="' + rules[i-1].cls + '">' + arguments[i] + '</span>';
+        }
+      }
+      return arguments[0];
+    });
+  }
+
+  document.querySelectorAll("main pre > code").forEach(function(c){
+    var cls = c.className || "";
+    var m = cls.match(/language-([\w-]+)/);
+    var lang = m ? m[1].toLowerCase() : "";
+    var raw = c.textContent;
+    if (lang) { c.innerHTML = highlight(raw, lang); }
+
+    var btn = document.createElement("button");
+    btn.className = "copy";
+    btn.type = "button";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", function(){
+      navigator.clipboard.writeText(raw).then(function(){
+        btn.textContent = "Copied";
+        btn.classList.add("done");
+        setTimeout(function(){ btn.textContent = "Copy"; btn.classList.remove("done"); }, 1400);
+      });
+    });
+    c.parentNode.appendChild(btn);
+  });
+
+  // Highlight the section currently in view
+  var links = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+  var byId = {};
+  links.forEach(function(a){ byId[a.getAttribute("href").slice(1)] = a; });
+  var targets = Object.keys(byId).map(function(id){ return document.getElementById(id); }).filter(Boolean);
+
+  if ("IntersectionObserver" in window && targets.length){
+    var visible = new Set();
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) visible.add(e.target.id); else visible.delete(e.target.id);
+      });
+      var first = targets.filter(function(t){ return visible.has(t.id); })[0];
+      if (first){
+        links.forEach(function(a){ a.classList.remove("active"); });
+        var a = byId[first.id];
+        if (a){ a.classList.add("active"); }
+      }
+    }, { rootMargin: "0px 0px -75% 0px", threshold: 0 });
+    targets.forEach(function(t){ io.observe(t); });
+  }
+
+  var top = document.getElementById("totop");
+  window.addEventListener("scroll", function(){
+    top.classList.toggle("show", window.scrollY > 600);
+  }, { passive: true });
+  top.addEventListener("click", function(){ window.scrollTo({ top: 0, behavior: "smooth" }); });
+})();
+</script>
+</body>
+</html>

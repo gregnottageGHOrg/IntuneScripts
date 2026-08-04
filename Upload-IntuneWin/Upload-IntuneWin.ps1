@@ -240,11 +240,129 @@
 
     Shows what would happen when deleting an application without actually deleting it.
 
+.EXAMPLE
+    $token = (Get-MgContext | Out-Null; "eyJ0eXAi...") | ConvertTo-SecureString -AsPlainText -Force
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -AccessToken $token
+
+    Uploads using a Graph access token acquired elsewhere. Lets an orchestrating script own
+    authentication - useful when the token comes from a managed identity, a certificate flow,
+    or a secret store that this script should not need to know about.
+
+.EXAMPLE
+    $getToken = {
+        $body = @{
+            grant_type    = 'client_credentials'
+            scope         = 'https://graph.microsoft.com/.default'
+            client_id     = $env:APP_CLIENT_ID
+            client_secret = $env:APP_CLIENT_SECRET
+        }
+        (Invoke-RestMethod -Method POST -Body $body `
+            -Uri "https://login.microsoftonline.com/$env:APP_TENANT_ID/oauth2/v2.0/token").access_token
+    }
+    $token = & $getToken | ConvertTo-SecureString -AsPlainText -Force
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" -AccessToken $token -TokenRefreshScript $getToken
+
+    Long-running upload that renews its own token. -TokenRefreshScript is invoked automatically
+    if Graph returns HTTP 401 mid-run, so large packages are not lost to token expiry. Without
+    it, an expired token ends the run with an actionable message rather than prompting.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile "C:\Secure\app-secret.dpapi"
+
+    Prompts for the client secret, encrypts it with Windows DPAPI, writes it to the given
+    path and exits. Run this ONCE as the identity that will perform uploads - DPAPI binds
+    the file to that account on that machine, so a file created by you will not decrypt
+    under a different service account or on a different host.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+        -ClientID "12345678-1234-1234-1234-123456789012" `
+        -TenantID "87654321-4321-4321-4321-210987654321" `
+        -ClientSecretFile "C:\Secure\app-secret.dpapi"
+
+    App-only upload reading the secret from the DPAPI-protected file, so the secret never
+    appears in the command line, shell history or the process list.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+        -ClientID "12345678-1234-1234-1234-123456789012" `
+        -TenantID "87654321-4321-4321-4321-210987654321" `
+        -KeyVaultName "my-vault" -KeyVaultSecretName "intune-app-secret"
+
+    Retrieves the client secret from Azure Key Vault using the host's managed identity.
+    Nothing secret is stored on the machine at all. Requires the managed identity to hold
+    'Key Vault Secrets User' (or a Get-secret access policy) on the vault.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+        -ClientID "12345678-1234-1234-1234-123456789012" `
+        -TenantID "87654321-4321-4321-4321-210987654321" `
+        -KeyVaultName "my-vault" -KeyVaultSecretName "intune-app-secret" `
+        -KeyVaultAuth Certificate -CertName "IntuneAutomation"
+
+    Key Vault retrieval outside Azure, where no managed identity exists. The certificate
+    signs a JWT client assertion to obtain the vault token, so no secret is needed to
+    fetch the secret.
+
+.EXAMPLE
+    .\Upload-IntuneWin.ps1 -PackagePath "C:\Packages\MyApp" `
+        -ClientID "12345678-1234-1234-1234-123456789012" `
+        -TenantID "87654321-4321-4321-4321-210987654321" `
+        -KeyVaultName "my-vault" -KeyVaultSecretName "intune-app-secret" `
+        -ManagedIdentityClientId "11111111-2222-3333-4444-555555555555"
+
+    Uses a specific user-assigned managed identity for Key Vault access, for hosts that
+    carry more than one.
+
 .NOTES
     File Name      : Upload-IntuneWin.ps1
-    Version        : 1.96
+    Version        : 1.97
     Prerequisite   : Microsoft.Graph.Authentication module
                      IntuneWinAppUtil.exe (Microsoft Win32 Content Prep Tool) - automatically downloaded if not present
+
+    Caller-Supplied Authentication (v1.97):
+    - -AccessToken [SecureString]: run against a Graph token acquired by an orchestrating script,
+      so authentication, proxy negotiation and secret retrieval can live outside this script.
+      Takes precedence over -IntuneAdmin, -CertName and -ClientSecret.
+    - -TokenRefreshScript [ScriptBlock]: invoked on HTTP 401 to obtain a fresh token, keeping
+      long uploads alive across token expiry. Must return a String or SecureString.
+    - Supplying -AccessToken without -TokenRefreshScript ends the run on expiry with an
+      actionable message; it never falls back to an interactive prompt, so unattended runs
+      cannot hang waiting for sign-in.
+
+    Secure Client Secret Sources (v1.97):
+    Three ways to supply a client secret without putting it on the command line, in
+    precedence order. All are self-contained - no Az or SecretManagement modules required.
+    - -KeyVaultName / -KeyVaultSecretName: fetches the secret from Azure Key Vault over REST.
+      -KeyVaultAuth selects how the vault itself is authenticated:
+        ManagedIdentity (default) - uses the host identity via IMDS, or IDENTITY_ENDPOINT on
+                                    App Service / Functions / Container Apps. Use
+                                    -ManagedIdentityClientId to pick a user-assigned identity.
+        Certificate               - signs an RS256 JWT client assertion with -CertName, for
+                                    hosts outside Azure that have no managed identity.
+    - -ClientSecretFile: reads a DPAPI-protected file created by -ProtectSecret.
+    - -ClientSecret: the existing literal string parameter.
+    DPAPI CAVEAT: -ProtectSecret encrypts under the current user on the current machine.
+    The file will NOT decrypt under a different account or on a different host, so create
+    it as the identity that runs the upload. Key Vault has no such restriction and is the
+    better fit for shared build agents.
+
+    Proxy, PowerShell Version and Language Mode (v1.97):
+    - PROXY: every outbound call made by the credential paths honours the proxy configuration.
+      Key Vault and the certificate token exchange route through Add-IntuneWinProxyParameter, and
+      Connect-MgGraph inherits the proxy set during initialisation. The managed identity
+      endpoints (169.254.169.254 and the loopback IDENTITY_ENDPOINT) deliberately BYPASS the
+      proxy - they are link-local/loopback and proxying them always fails. Those addresses are
+      also added to the proxy bypass list automatically.
+    - VERSIONS: everything runs on Windows PowerShell 5.1 and PowerShell 7. Two paths branch
+      to use a better PowerShell 7 facility, falling back on 5.1:
+        SecureString -> plain text : PS7 ConvertFrom-SecureString -AsPlainText; 5.1 marshals it
+        IMDS proxy bypass          : PS7 Invoke-RestMethod -NoProxy; 5.1 uses HttpWebRequest
+    - LANGUAGE MODE: the credential functions are Constrained Language Mode safe EXCEPT the
+      two PowerShell 5.1 fallbacks above and -KeyVaultAuth Certificate (RSA signing needs
+      cryptography APIs CLM blocks). Note that the SCRIPT AS A WHOLE cannot run in CLM
+      regardless - creating .intunewin packages needs file, path and compression APIs that CLM
+      does not permit. CLM safety here reduces the surface, it does not make the script CLM-ready.
 
     Upload Resilience & Feature Parity (v1.92):
     Backported improvements from the CI/CD pipeline solution for parity:
@@ -465,6 +583,40 @@ param(
     )]
     [string] $CertName,
 
+    [Parameter(HelpMessage = 'Path to a multi-tenant SPN configuration file holding one <spn> entry per environment. Supplies TenantID, ClientID and the secret source so they need not be passed individually. Any parameter given explicitly on the command line overrides the file.')]
+    [Alias("SpnFile", "TenantConfig")]
+    [string] $TenantConfigFile,
+
+    [Parameter(HelpMessage = 'Which environment to select from -TenantConfigFile, matched against its <tenantname> element. Optional when the file holds exactly one entry.')]
+    [Alias("TenantName", "Environment")]
+    [string] $EnvironmentName,
+
+    [Parameter(HelpMessage = 'Path to a DPAPI-protected file containing the client secret, created with -ProtectSecret. Keeps the secret off the command line. The file can only be read by the account and machine that created it.')]
+    [string] $ClientSecretFile,
+
+    [Parameter(HelpMessage = 'Alternate execution path: prompt for a client secret, encrypt it with Windows DPAPI, write it to the path given by -ClientSecretFile, and exit. Run this once as the identity that will perform uploads.')]
+    [switch] $ProtectSecret,
+
+    [Parameter(HelpMessage = 'Azure Key Vault name to retrieve the client secret from (the label only, e.g. my-vault). Requires -KeyVaultSecretName. Takes precedence over -ClientSecretFile and -ClientSecret.')]
+    [string] $KeyVaultName,
+
+    [Parameter(HelpMessage = 'Name of the Key Vault secret holding the client secret.')]
+    [string] $KeyVaultSecretName,
+
+    [Parameter(HelpMessage = 'How to authenticate to Key Vault. ManagedIdentity (default) uses the host managed identity. Certificate uses -CertName with -ClientID and -TenantID to sign a client assertion.')]
+    [ValidateSet('ManagedIdentity', 'Certificate')]
+    [string] $KeyVaultAuth = 'ManagedIdentity',
+
+    [Parameter(HelpMessage = 'Client ID of a user-assigned managed identity to use for Key Vault access. Omit to use the system-assigned identity.')]
+    [string] $ManagedIdentityClientId,
+
+    [Parameter(HelpMessage = 'Pre-acquired Microsoft Graph access token, supplied as a SecureString. Lets an orchestrating script own authentication (and any proxy or credential handling) and hand this script a ready-to-use session. Takes precedence over -IntuneAdmin, -CertName and -ClientSecret.')]
+    [Alias("Token", "GraphToken")]
+    [securestring] $AccessToken,
+
+    [Parameter(HelpMessage = 'Scriptblock invoked when the Graph token expires mid-run (HTTP 401). Must return a fresh access token as a String or SecureString. Only meaningful alongside -AccessToken: without it an expired token ends the run rather than prompting interactively.')]
+    [scriptblock] $TokenRefreshScript,
+
     [Parameter(HelpMessage = 'Creates the .IntuneWin file only')]
     [switch] $IntuneWinPackageOnly,
 
@@ -531,7 +683,7 @@ param(
     # the proxy server, MSAL.NET token acquisition, the Microsoft.Graph SDK's
     # HttpClient (via HTTPS_PROXY / HTTP_PROXY env vars), the Azure Storage
     # block-blob SAS upload path, and the GitHub IntuneWinAppUtil download.
-    [Parameter(HelpMessage = 'Absolute URI of the outbound HTTP/HTTPS proxy (e.g., http://saas-proxy.contoso.com:443). Falls back to $env:INTUNEWIN_PROXY_URI. When neither is set the script runs WITHOUT proxy.')]
+    [Parameter(HelpMessage = 'Absolute URI of the outbound HTTP/HTTPS proxy (e.g., http://proxy.contoso.com:443). Falls back to $env:INTUNEWIN_PROXY_URI. When neither is set the script runs WITHOUT proxy.')]
     [Alias('Proxy', 'HttpsProxy')]
     [uri] $ProxyUri,
 
@@ -554,8 +706,10 @@ $script:exitCode = 0
 $script:contentReplaced = $false
 $script:noExistingAssignments = $false
 $script:replaceAssignmentsMode = $false
+$script:UsingCallerSuppliedToken = $false
+$script:TokenRefreshScript = $null
 
-$BuildVer = "1.96"
+$BuildVer = "1.97"
 $ProgramFiles = $env:ProgramFiles
 $ScriptName = $myInvocation.MyCommand.Name
 $ScriptName = $ScriptName.Substring(0, $ScriptName.Length - 4)
@@ -889,6 +1043,11 @@ function Set-IntuneWinProxyConfiguration {
     $cleanBypass = @()
     foreach ($entry in $BypassList) {
         if (-not [string]::IsNullOrWhiteSpace($entry)) { $cleanBypass += $entry.Trim() }
+    }
+
+    # Managed identity endpoints are link-local / loopback; proxying them always fails
+    foreach ($miEndpoint in '169.254.169.254', '127.0.0.1', 'localhost') {
+        if ($cleanBypass -notcontains $miEndpoint) { $cleanBypass += $miEndpoint }
     }
 
     $proxyAddress = $ProxyUri.AbsoluteUri.TrimEnd('/')
@@ -1652,16 +1811,35 @@ NAME: Invoke-GraphRequestWithRetry
                 $retryAfter = 5
                 Write-Log -Message "Token expired (401). Attempting to refresh Graph session..." -LogLevel 2
                 try {
-                    Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-                    Start-Sleep -Seconds 2
-                    # Reconnect using the same parameters that were used for the original connection
-                    if ($script:MgGraphConnectParams) {
-                        Invoke-MgGraphConnect -ConnectParams $script:MgGraphConnectParams
+                    if ($script:TokenRefreshScript) {
+                        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+                        Start-Sleep -Seconds 2
+                        if (Invoke-TokenRefreshScript) {
+                            Write-Log -Message "Graph session refreshed successfully."
+                        }
+                        else {
+                            $isRetryable = $false
+                            Write-Log -Message "TokenRefreshScript could not supply a fresh token - aborting." -LogLevel 3
+                        }
+                    }
+                    elseif ($script:UsingCallerSuppliedToken) {
+                        # A caller-supplied token cannot be renewed here, and prompting would hang
+                        # an unattended run - fail with an actionable message instead.
+                        $isRetryable = $false
+                        Write-Log -Message "The supplied -AccessToken has expired and no -TokenRefreshScript was provided. Re-run with a fresh token, or pass -TokenRefreshScript so the token can be renewed automatically." -LogLevel 3
                     }
                     else {
-                        Connect-MgGraph -NoWelcome -ErrorAction Stop
+                        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+                        Start-Sleep -Seconds 2
+                        # Reconnect using the same parameters that were used for the original connection
+                        if ($script:MgGraphConnectParams) {
+                            Invoke-MgGraphConnect -ConnectParams $script:MgGraphConnectParams
+                        }
+                        else {
+                            Connect-MgGraph -NoWelcome -ErrorAction Stop
+                        }
+                        Write-Log -Message "Graph session refreshed successfully."
                     }
-                    Write-Log -Message "Graph session refreshed successfully."
                 }
                 catch {
                     Write-Log -Message "Graph session refresh failed: $($_.Exception.Message)" -LogLevel 3
@@ -8995,6 +9173,551 @@ function New-IntuneWin32AppIcon {
 
 ####################################################
 
+function ConvertFrom-SecureStringToPlainText {
+    <#
+.SYNOPSIS
+Converts a SecureString to plain text, using the best method the host supports.
+.DESCRIPTION
+PowerShell 7 has a native conversion that also works under Constrained Language Mode.
+Windows PowerShell 5.1 has no equivalent, so it marshals the value instead - which is
+blocked in Constrained Language Mode. Callers needing CLM support must run PowerShell 7.
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][securestring] $SecureString)
+
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        return (ConvertFrom-SecureString -SecureString $SecureString -AsPlainText)
+    }
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+    try { return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+####################################################
+
+function ConvertTo-Base64Url {
+    <#
+.SYNOPSIS
+Base64url-encodes a byte array (RFC 7515 - no padding, URL-safe alphabet).
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][byte[]] $Bytes)
+
+    return ([Convert]::ToBase64String($Bytes) -replace '\+', '-' -replace '/', '_' -replace '=', '')
+}
+
+####################################################
+
+function Protect-ClientSecretFile {
+    <#
+.SYNOPSIS
+Writes a client secret to disk encrypted with Windows DPAPI.
+.DESCRIPTION
+Uses ConvertFrom-SecureString without a -Key, which encrypts under DPAPI and binds the
+ciphertext to the CURRENT USER on the CURRENT MACHINE. The file cannot be decrypted by
+another account or on another machine - that is the security property, and also the
+operational constraint: create the file as the identity that will run the upload.
+.PARAMETER Path
+Destination file path.
+.PARAMETER Secret
+The secret to protect. When omitted the caller is prompted, so the value never appears
+in the command line or shell history.
+#>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $false)][securestring] $Secret
+    )
+
+    if (-not $Secret) {
+        $Secret = Read-Host -Prompt 'Enter the client secret to protect' -AsSecureString
+    }
+    if ($Secret.Length -eq 0) { throw "No secret supplied - nothing to protect." }
+
+    $parent = Split-Path -Path $Path -Parent
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    if ($PSCmdlet.ShouldProcess($Path, 'Write DPAPI-protected secret')) {
+        # Set-Content keeps this Constrained-Language-safe; DPAPI output is hex, so ASCII is lossless
+        $cipher = ConvertFrom-SecureString -SecureString $Secret
+        Set-Content -LiteralPath $Path -Value $cipher -Encoding ASCII -NoNewline
+        Write-Log -Message "Wrote DPAPI-protected secret to $Path (bound to $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME)"
+    }
+}
+
+####################################################
+
+function Unprotect-ClientSecretFile {
+    <#
+.SYNOPSIS
+Reads a DPAPI-protected client secret file and returns the plain-text secret.
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Client secret file not found: $Path"
+    }
+
+    $cipher = (Get-Content -LiteralPath $Path -Raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($cipher)) { throw "Client secret file is empty: $Path" }
+
+    try {
+        $secure = ConvertTo-SecureString -String $cipher -ErrorAction Stop
+    }
+    catch {
+        # DPAPI ciphertext is bound to user + machine, so this is the usual failure mode.
+        throw ("Unable to decrypt '$Path'. DPAPI-protected files can only be read by the account " +
+            "and machine that created them (currently $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME). " +
+            "Re-create it with -ProtectSecret as the identity that runs this script. Error: $($_.Exception.Message)")
+    }
+
+    return (ConvertFrom-SecureStringToPlainText -SecureString $secure)
+}
+
+####################################################
+
+function Get-ManagedIdentityToken {
+    <#
+.SYNOPSIS
+Acquires an access token for a resource using an Azure managed identity.
+.DESCRIPTION
+Supports both managed identity endpoints, with no module dependency:
+  - App Service / Functions / Container Apps, via IDENTITY_ENDPOINT + IDENTITY_HEADER
+  - Azure VMs and Scale Sets, via the IMDS endpoint at 169.254.169.254
+The IMDS call deliberately bypasses any configured proxy - 169.254.169.254 is a
+link-local address and routing it through a corporate proxy always fails.
+.PARAMETER Resource
+Resource URI to request a token for, e.g. https://vault.azure.net
+.PARAMETER ClientId
+Optional client ID of a user-assigned managed identity. Omit to use the system-assigned identity.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Resource,
+        [Parameter(Mandatory = $false)][string] $ClientId
+    )
+
+    $escaped = [uri]::EscapeDataString($Resource)
+    $isPS7 = $PSVersionTable.PSVersion.Major -ge 7
+
+    if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
+        $uri = "$($env:IDENTITY_ENDPOINT)?api-version=2019-08-01&resource=$escaped"
+        if ($ClientId) { $uri += "&client_id=$([uri]::EscapeDataString($ClientId))" }
+        Write-Log -Message "Requesting managed identity token from the App Service identity endpoint for $Resource"
+
+        $identityParams = @{
+            Uri         = $uri
+            Headers     = @{ 'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER }
+            Method      = 'GET'
+            ErrorAction = 'Stop'
+        }
+        # The identity endpoint is loopback - never route it through a proxy
+        if ($isPS7) { $identityParams['NoProxy'] = $true }
+
+        try { $response = Invoke-RestMethod @identityParams }
+        catch {
+            throw ("Managed identity token request failed at the App Service identity endpoint for '$Resource'. " +
+                "Error: $($_.Exception.Message)")
+        }
+        if ([string]::IsNullOrWhiteSpace($response.access_token)) { throw "Managed identity endpoint returned no access token for '$Resource'." }
+        return $response.access_token
+    }
+
+    $uri = "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$escaped"
+    if ($ClientId) { $uri += "&client_id=$([uri]::EscapeDataString($ClientId))" }
+    Write-Log -Message "Requesting managed identity token from IMDS for $Resource"
+
+    if ($isPS7) {
+        # -NoProxy keeps this path Constrained-Language-safe
+        try {
+            $response = Invoke-RestMethod -Uri $uri -Headers @{ Metadata = 'true' } -Method GET `
+                -TimeoutSec 10 -NoProxy -ErrorAction Stop
+        }
+        catch {
+            throw ("Managed identity token request failed for '$Resource'. This host may not have a managed " +
+                "identity assigned, or IMDS is unreachable. Error: $($_.Exception.Message)")
+        }
+        $token = $response.access_token
+    }
+    else {
+        # Windows PowerShell has no -NoProxy, so drop to HttpWebRequest to null the proxy explicitly
+        $request = [System.Net.HttpWebRequest]::Create($uri)
+        $request.Method = 'GET'
+        $request.Proxy = $null
+        $request.Timeout = 10000
+        $request.Headers.Add('Metadata', 'true')
+
+        try {
+            $response = $request.GetResponse()
+            try {
+                $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+                try { $json = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            }
+            finally { $response.Dispose() }
+        }
+        catch {
+            throw ("Managed identity token request failed for '$Resource'. This host may not have a managed " +
+                "identity assigned, or IMDS is unreachable. Error: $($_.Exception.Message)")
+        }
+
+        $token = ($json | ConvertFrom-Json).access_token
+    }
+
+    if ([string]::IsNullOrWhiteSpace($token)) { throw "Managed identity endpoint returned no access token for '$Resource'." }
+    return $token
+}
+
+####################################################
+
+function Get-CertificateAssertionToken {
+    <#
+.SYNOPSIS
+Acquires an access token for a resource using certificate (client assertion) authentication.
+.DESCRIPTION
+Builds and signs an RS256 JWT client assertion per RFC 7523 and exchanges it at the Entra ID
+token endpoint. No modules required - the certificate's private key does the signing.
+.PARAMETER Resource
+Resource URI to request a token for, e.g. https://vault.azure.net
+.PARAMETER TenantId
+Entra ID tenant ID.
+.PARAMETER ClientId
+Application (client) ID of the app registration the certificate is registered against.
+.PARAMETER CertificateName
+Certificate subject (with or without a CN= prefix) to locate in CurrentUser\My then LocalMachine\My.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Resource,
+        [Parameter(Mandatory = $true)][string] $TenantId,
+        [Parameter(Mandatory = $true)][string] $ClientId,
+        [Parameter(Mandatory = $true)][string] $CertificateName
+    )
+
+    $subject = if ($CertificateName -notmatch '^CN=') { "CN=$CertificateName" } else { $CertificateName }
+    $cert = $null
+    foreach ($store in 'Cert:\CurrentUser\My', 'Cert:\LocalMachine\My') {
+        $cert = Get-ChildItem -Path $store -ErrorAction SilentlyContinue |
+        Where-Object { $_.Subject -eq $subject -and $_.HasPrivateKey } |
+        Sort-Object NotAfter -Descending | Select-Object -First 1
+        if ($cert) { break }
+    }
+    if (-not $cert) { throw "Certificate '$subject' with a private key was not found in CurrentUser\My or LocalMachine\My." }
+    if ($cert.NotAfter -lt (Get-Date)) { throw "Certificate '$subject' expired on $($cert.NotAfter)." }
+
+    $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $now = [DateTimeOffset]::UtcNow
+
+    $header = @{ alg = 'RS256'; typ = 'JWT'; x5t = (ConvertTo-Base64Url -Bytes $cert.GetCertHash()) }
+    $payload = @{
+        aud = $tokenEndpoint
+        iss = $ClientId
+        sub = $ClientId
+        jti = [guid]::NewGuid().ToString()
+        nbf = $now.ToUnixTimeSeconds()
+        exp = $now.AddMinutes(10).ToUnixTimeSeconds()
+    }
+
+    $encode = { param($o) ConvertTo-Base64Url -Bytes ([System.Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))) }
+    $unsigned = "$(& $encode $header).$(& $encode $payload)"
+
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+    if (-not $rsa) { throw "Unable to access the private key for certificate '$subject'." }
+    $signature = $rsa.SignData(
+        [System.Text.Encoding]::UTF8.GetBytes($unsigned),
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+        [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+
+    $assertion = "$unsigned.$(ConvertTo-Base64Url -Bytes $signature)"
+
+    $tokenParams = @{
+        Uri    = $tokenEndpoint
+        Method = 'POST'
+        Body   = @{
+            client_id             = $ClientId
+            client_assertion_type = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+            client_assertion      = $assertion
+            scope                 = "$($Resource.TrimEnd('/'))/.default"
+            grant_type            = 'client_credentials'
+        }
+    }
+    Add-IntuneWinProxyParameter -Parameters $tokenParams
+
+    Write-Log -Message "Requesting token for $Resource using certificate '$subject' (thumbprint $($cert.Thumbprint))"
+    $response = Invoke-RestMethod @tokenParams -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($response.access_token)) { throw "Certificate authentication returned no access token for '$Resource'." }
+    return $response.access_token
+}
+
+####################################################
+
+function Get-KeyVaultSecretValue {
+    <#
+.SYNOPSIS
+Retrieves a secret from Azure Key Vault over REST.
+.DESCRIPTION
+Calls the Key Vault data plane directly so no Az modules are required, keeping this script
+self-contained. The vault token is obtained by managed identity or certificate assertion.
+.PARAMETER VaultName
+Key Vault name (the label only, not the full DNS name).
+.PARAMETER SecretName
+Name of the secret to retrieve.
+.PARAMETER AccessToken
+Bearer token for the https://vault.azure.net audience.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $VaultName,
+        [Parameter(Mandatory = $true)][string] $SecretName,
+        [Parameter(Mandatory = $true)][string] $AccessToken
+    )
+
+    $vaultParams = @{
+        Uri     = "https://$VaultName.vault.azure.net/secrets/$SecretName" + '?api-version=7.4'
+        Method  = 'GET'
+        Headers = @{ Authorization = "Bearer $AccessToken" }
+    }
+    Add-IntuneWinProxyParameter -Parameters $vaultParams
+
+    Write-Log -Message "Retrieving secret '$SecretName' from Key Vault '$VaultName'"
+    try {
+        $response = Invoke-RestMethod @vaultParams -ErrorAction Stop
+    }
+    catch {
+        $status = $null
+        try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = $null }
+        $hint = switch ($status) {
+            403 { " The identity has a token but no 'Get' permission on secrets - grant the 'Key Vault Secrets User' role or an access policy." }
+            404 { " Secret '$SecretName' does not exist in vault '$VaultName'." }
+            default { '' }
+        }
+        throw "Key Vault request failed$(if($status){" (HTTP $status)"}).$hint Error: $($_.Exception.Message)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($response.value)) { throw "Key Vault secret '$SecretName' is empty." }
+    return $response.value
+}
+
+####################################################
+
+function Unprotect-LegacyXmlSecret {
+    <#
+.SYNOPSIS
+Decrypts a legacy <encrpytedsecret> value from an existing SPN configuration file.
+.DESCRIPTION
+BACKWARDS COMPATIBILITY ONLY. Older SPN files encrypted the secret with an AES key derived
+from the clientid - which is stored in plain text in the same file. Anyone holding the file
+can therefore recover the secret offline, so this provides obfuscation, not protection.
+Supported so existing files keep working; the caller is warned and pointed at -ProtectSecret.
+.PARAMETER Cipher
+The encrypted string from the configuration file.
+.PARAMETER ClientId
+The clientid the key was derived from.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Cipher,
+        [Parameter(Mandatory = $true)][string] $ClientId
+    )
+
+    if ($ClientId.Length -lt 32) { throw "Legacy secret decryption needs a clientid of at least 32 characters." }
+
+    # Mirrors the original key derivation: first 32 chars of the clientid as ASCII bytes
+    $keyMaterial = $ClientId.Substring(0, 32)
+    $key = [System.Text.Encoding]::ASCII.GetBytes($keyMaterial)
+
+    try {
+        $secure = ConvertTo-SecureString -String $Cipher -Key $key -ErrorAction Stop
+    }
+    catch {
+        throw "Unable to decrypt the legacy <encrpytedsecret> value. Verify the clientid matches the one used to encrypt it. Error: $($_.Exception.Message)"
+    }
+
+    return (ConvertFrom-SecureStringToPlainText -SecureString $secure)
+}
+
+####################################################
+
+function Get-TenantConfigEntry {
+    <#
+.SYNOPSIS
+Reads one environment's connection settings from a multi-tenant SPN configuration file.
+.DESCRIPTION
+The file holds one <spn> element per environment, each identified by <tenantname>, so a
+single file can serve Dev, Test and Production. Returns a normalised object; the caller
+decides how the secret is ultimately obtained.
+
+Recognised elements per <spn>:
+  tenantname            Lookup key for -EnvironmentName (required)
+  tenantid, clientid    Entra IDs (required)
+  certname                          Certificate subject for certificate auth
+  clientsecretfile                  Path to a DPAPI-protected secret file
+  keyvaultname, keyvaultsecretname  Key Vault retrieval
+  keyvaultauth                      ManagedIdentity (default) or Certificate
+  managedidentityclientid           User-assigned managed identity
+  proxyserver                       Outbound proxy URI
+  scopetag                          Default Intune scope tag
+  encrpytedsecret                   Legacy obfuscated secret (discouraged - see notes)
+.PARAMETER Path
+Path to the configuration file.
+.PARAMETER EnvironmentName
+Which <tenantname> to select. Optional when the file holds exactly one entry.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $false)][string] $EnvironmentName
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { throw "Tenant configuration file not found: $Path" }
+
+    try { [xml]$doc = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop }
+    catch { throw "Tenant configuration file is not valid XML: $Path. Error: $($_.Exception.Message)" }
+
+    $entries = @($doc.root.spn)
+    if ($entries.Count -eq 0) { throw "No <spn> entries found in $Path." }
+
+    $names = @($entries | ForEach-Object { [string]$_.tenantname })
+
+    if ($EnvironmentName) {
+        $entry = $entries | Where-Object { ([string]$_.tenantname).Trim() -eq $EnvironmentName.Trim() } | Select-Object -First 1
+        if (-not $entry) {
+            throw "Environment '$EnvironmentName' not found in $Path. Available: $($names -join ', ')"
+        }
+    }
+    elseif ($entries.Count -eq 1) {
+        $entry = $entries[0]
+    }
+    else {
+        throw "$Path defines $($entries.Count) environments - specify which one with -EnvironmentName. Available: $($names -join ', ')"
+    }
+
+    $get = { param($n) $v = [string]$entry.$n; if ([string]::IsNullOrWhiteSpace($v)) { $null } else { $v.Trim() } }
+
+    return [pscustomobject]@{
+        EnvironmentName         = & $get 'tenantname'
+        TenantId                = & $get 'tenantid'
+        ClientId                = & $get 'clientid'
+        CertName                = & $get 'certname'
+        ClientSecretFile        = & $get 'clientsecretfile'
+        KeyVaultName            = & $get 'keyvaultname'
+        KeyVaultSecretName      = & $get 'keyvaultsecretname'
+        KeyVaultAuth            = & $get 'keyvaultauth'
+        ManagedIdentityClientId = & $get 'managedidentityclientid'
+        ProxyServer             = & $get 'proxyserver'
+        ScopeTag                = & $get 'scopetag'
+        LegacySecret            = & $get 'encrpytedsecret'
+        AvailableEnvironments   = $names
+    }
+}
+
+####################################################
+
+function Resolve-ClientSecret {
+    <#
+.SYNOPSIS
+Resolves the client secret from whichever source the caller configured.
+.DESCRIPTION
+Precedence: -KeyVaultName, then -ClientSecretFile, then a literal -ClientSecret.
+Returns $null when no secret source was configured, leaving other auth methods to run.
+#>
+    [CmdletBinding()]
+    param()
+
+    if ($KeyVaultName) {
+        if (-not $KeyVaultSecretName) { throw "-KeyVaultName requires -KeyVaultSecretName." }
+
+        $vaultToken = switch ($KeyVaultAuth) {
+            'Certificate' {
+                if (-not $CertName) { throw "-KeyVaultAuth Certificate requires -CertName." }
+                if (-not $TenantID) { throw "-KeyVaultAuth Certificate requires -TenantID." }
+                if (-not $ClientID) { throw "-KeyVaultAuth Certificate requires -ClientID." }
+                Get-CertificateAssertionToken -Resource 'https://vault.azure.net' -TenantId $TenantID -ClientId $ClientID -CertificateName $CertName
+            }
+            default { Get-ManagedIdentityToken -Resource 'https://vault.azure.net' -ClientId $ManagedIdentityClientId }
+        }
+
+        return Get-KeyVaultSecretValue -VaultName $KeyVaultName -SecretName $KeyVaultSecretName -AccessToken $vaultToken
+    }
+
+    if ($ClientSecretFile) {
+        return Unprotect-ClientSecretFile -Path $ClientSecretFile
+    }
+
+    return $null
+}
+
+####################################################
+
+function Connect-GraphWithAccessToken {
+    <#
+.SYNOPSIS
+Seeds a Microsoft Graph session from a caller-supplied access token.
+.DESCRIPTION
+Used by the -AccessToken parameter set so an orchestrating script can own authentication
+(including proxy negotiation and secret retrieval) and hand this script a ready session.
+.PARAMETER Token
+The Graph access token as a SecureString.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [securestring] $Token
+    )
+
+    # Connect-MgGraph changed -AccessToken from [string] to [securestring] in SDK v2
+    $targetParameter = (Get-Command Connect-MgGraph).Parameters['AccessToken']
+    if ($targetParameter.ParameterType -eq [securestring]) {
+        Connect-MgGraph -AccessToken $Token -NoWelcome -ErrorAction Stop
+    }
+    else {
+        Connect-MgGraph -AccessToken (ConvertFrom-SecureStringToPlainText -SecureString $Token) -NoWelcome -ErrorAction Stop
+    }
+}
+
+####################################################
+
+function Invoke-TokenRefreshScript {
+    <#
+.SYNOPSIS
+Re-seeds the Graph session by invoking the caller-supplied -TokenRefreshScript.
+.DESCRIPTION
+Returns $true only when a fresh token was obtained and the session re-established, so the
+401 handler can fall through to its other strategies when no refresh script was supplied.
+#>
+    # Token endpoints return the access_token as a plain string, so conversion is unavoidable here.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'The refresh scriptblock may return a plain string token; it is converted to a SecureString immediately.')]
+    [CmdletBinding()]
+    param()
+
+    if (-not $script:TokenRefreshScript) { return $false }
+
+    try {
+        $fresh = & $script:TokenRefreshScript
+        if (-not $fresh) {
+            Write-Log -Message "TokenRefreshScript returned no token." -LogLevel 3
+            return $false
+        }
+
+        $secure = if ($fresh -is [securestring]) { $fresh }
+        else { ConvertTo-SecureString -String ([string]$fresh) -AsPlainText -Force }
+
+        Connect-GraphWithAccessToken -Token $secure
+        Write-Log -Message "Graph session re-seeded from TokenRefreshScript."
+        return $true
+    }
+    catch {
+        Write-Log -Message "TokenRefreshScript failed: $($_.Exception.Message)" -LogLevel 3
+        return $false
+    }
+}
+
+####################################################
+
 function Invoke-MgGraphConnect {
     <#
 .SYNOPSIS
@@ -9229,6 +9952,29 @@ Write-Log -Message "Starting $ScriptName version $BuildVer" -WriteEventLog
 # inherits the proxy from the start.
 ####################################################
 
+# -ProtectSecret: alternate path. Prompt for a client secret, DPAPI-encrypt it to
+# -ClientSecretFile, and exit. No package or Graph connection is required.
+if ($ProtectSecret) {
+    try {
+        if (-not $ClientSecretFile) {
+            Write-Host "Error: -ProtectSecret requires -ClientSecretFile to specify where to write the protected secret." -ForegroundColor Red
+            exit 2
+        }
+        Protect-ClientSecretFile -Path $ClientSecretFile
+        Write-Host ''
+        Write-Host "Protected secret written to: $ClientSecretFile" -ForegroundColor Green
+        Write-Host "Readable only by $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME." -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host 'Use it with:' -ForegroundColor Cyan
+        Write-Host "  .\Upload-IntuneWin.ps1 -PackagePath <path> -ClientID <id> -TenantID <id> -ClientSecretFile `"$ClientSecretFile`"" -ForegroundColor White
+        exit 0
+    }
+    catch {
+        Write-Host "Failed to protect the secret: $($_.Exception.Message)" -ForegroundColor Red
+        exit 2
+    }
+}
+
 # -TestProxyConnectivity: alternate path. Validate direct vs proxy connectivity
 # to Microsoft Graph + Entra ID, print a report, exit with 0/1/2.
 if ($TestProxyConnectivity) {
@@ -9380,7 +10126,17 @@ if ($DeleteApp) {
 
     # Authenticate to Graph
     Write-Log -Message "Authenticating for delete operation..."
-    if ($IntuneAdmin) {
+    if ($AccessToken) {
+        Write-Host "Using caller-supplied access token" -ForegroundColor Green
+        Connect-GraphWithAccessToken -Token $AccessToken
+        $script:UsingCallerSuppliedToken = $true
+        $script:TokenRefreshScript = $TokenRefreshScript
+        if ($null -eq (Get-MgContext)) {
+            Invoke-Cleanup -ForceDisconnect
+            throw "The supplied -AccessToken did not establish a Graph session."
+        }
+    }
+    elseif ($IntuneAdmin) {
         Write-Host "Using IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
 
         $requiredScopes = @(
@@ -9466,7 +10222,7 @@ if ($DeleteApp) {
         }
     }
     else {
-        Write-Host "Error: No authentication method specified. Use -IntuneAdmin, -ClientSecret, or -CertName." -ForegroundColor Red
+        Write-Host "Error: No authentication method specified. Use -AccessToken, -IntuneAdmin, -ClientSecret, or -CertName." -ForegroundColor Red
         return 1
     }
 
@@ -9714,12 +10470,86 @@ if (-not($RequiredAADGroupName -or $AvailableAADGroupName -or $UninstallAADGroup
 Write-Log -Message "Path to IntuneWinAppUtil: [$IntuneWinAppUtil]"
 Write-Log -Message "SourcePath: [$SourcePath]"
 
+# Apply the selected environment from the multi-tenant config file. Anything passed
+# explicitly on the command line wins, so a file value never overrides an operator.
+if ($TenantConfigFile) {
+    $tenantEntry = Get-TenantConfigEntry -Path $TenantConfigFile -EnvironmentName $EnvironmentName
+    Write-Host "Using environment '$($tenantEntry.EnvironmentName)' from $TenantConfigFile" -ForegroundColor Green
+    Write-Log -Message "Tenant config: environment '$($tenantEntry.EnvironmentName)' of [$($tenantEntry.AvailableEnvironments -join ', ')]"
+
+    foreach ($map in @(
+            @{ Param = 'TenantID'; Value = $tenantEntry.TenantId }
+            @{ Param = 'ClientID'; Value = $tenantEntry.ClientId }
+            @{ Param = 'CertName'; Value = $tenantEntry.CertName }
+            @{ Param = 'ClientSecretFile'; Value = $tenantEntry.ClientSecretFile }
+            @{ Param = 'KeyVaultName'; Value = $tenantEntry.KeyVaultName }
+            @{ Param = 'KeyVaultSecretName'; Value = $tenantEntry.KeyVaultSecretName }
+            @{ Param = 'KeyVaultAuth'; Value = $tenantEntry.KeyVaultAuth }
+            @{ Param = 'ManagedIdentityClientId'; Value = $tenantEntry.ManagedIdentityClientId }
+        )) {
+        if ($map.Value -and -not $PSBoundParameters.ContainsKey($map.Param)) {
+            Set-Variable -Name $map.Param -Value $map.Value -Scope Script
+            Write-Log -Message "Tenant config supplied -$($map.Param)"
+        }
+    }
+
+    if ($tenantEntry.ProxyServer -and -not $PSBoundParameters.ContainsKey('ProxyUri')) {
+        Write-Log -Message "Tenant config lists proxy '$($tenantEntry.ProxyServer)' - pass -ProxyUri to route traffic through it" -LogLevel 2
+    }
+    if ($tenantEntry.ScopeTag -and -not $PSBoundParameters.ContainsKey('ScopeTagName') -and -not $ScopeTagName) {
+        $ScopeTagName = @($tenantEntry.ScopeTag)
+        Write-Log -Message "Tenant config supplied -ScopeTagName '$($tenantEntry.ScopeTag)'"
+    }
+
+    if ($tenantEntry.LegacySecret -and -not $ClientSecret -and -not $ClientSecretFile -and -not $KeyVaultName) {
+        Write-Host ''
+        Write-Host 'WARNING: this environment uses a legacy <encrpytedsecret> value.' -ForegroundColor Yellow
+        Write-Host '  Its encryption key is derived from the clientid stored in the same file, so anyone' -ForegroundColor Yellow
+        Write-Host '  holding the file can recover the secret. Treat it as plain text.' -ForegroundColor Yellow
+        Write-Host '  Migrate with:  .\Upload-IntuneWin.ps1 -ProtectSecret -ClientSecretFile <path>' -ForegroundColor Yellow
+        Write-Host '  then replace <encrpytedsecret> with <clientsecretfile>, or use Key Vault.' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Log -Message 'Legacy <encrpytedsecret> in use - key is derivable from the file itself. Migrate to -ClientSecretFile or Key Vault.' -LogLevel 2
+        $ClientSecret = Unprotect-LegacyXmlSecret -Cipher $tenantEntry.LegacySecret -ClientId $ClientID
+    }
+}
+
+# Pull the secret from Key Vault or a DPAPI file before the auth chain evaluates $ClientSecret
+if ($KeyVaultName -or $ClientSecretFile) {
+    $resolvedSecret = Resolve-ClientSecret
+    if ($resolvedSecret) {
+        $ClientSecret = $resolvedSecret
+        $source = if ($KeyVaultName) { "Key Vault '$KeyVaultName'" } else { "DPAPI file '$ClientSecretFile'" }
+        Write-Host "Client secret resolved from $source" -ForegroundColor Green
+        Write-Log -Message "Client secret resolved from $source"
+    }
+}
+
 #region auth
 if ($IntuneWinPackageOnly) {
     Write-Log -Message "IntuneWinPackageOnly param used, skipping authentication..."
 }
 else {
-    if ($IntuneAdmin) {
+    if ($AccessToken) {
+        Write-Host "`nUsing caller-supplied access token" -ForegroundColor Green
+        Connect-GraphWithAccessToken -Token $AccessToken
+        $script:UsingCallerSuppliedToken = $true
+        $script:TokenRefreshScript = $TokenRefreshScript
+
+        $postContext = Get-MgContext
+        if ($null -eq $postContext) {
+            Write-Log -Message "Connect-MgGraph accepted the supplied token but no context was established" -LogLevel 3
+            Invoke-Cleanup -ForceDisconnect
+            throw "The supplied -AccessToken did not establish a Graph session."
+        }
+
+        Write-Host "Successfully authenticated to Microsoft Graph" -ForegroundColor Green
+        Write-Log -Message "Authenticated via caller-supplied token. ClientId: $($postContext.ClientId), AuthType: $($postContext.AuthType)"
+        if (-not $TokenRefreshScript) {
+            Write-Log -Message "No -TokenRefreshScript supplied - an expired token will end the run instead of being renewed." -LogLevel 2
+        }
+    }
+    elseif ($IntuneAdmin) {
         Write-Host "`nUsing IntuneAdmin: $IntuneAdmin" -ForegroundColor Green
 
         # Required scopes for Intune app management and Entra ID group operations
@@ -9906,7 +10736,7 @@ else {
     }
     else {
         Invoke-Cleanup -ForceDisconnect
-        throw "Please specify either a valid certificate name or client secret for authentication"
+        throw "No authentication method specified. Use -AccessToken, -IntuneAdmin, -CertName or -ClientSecret."
     }
 
     # After authentication, update description with user info stamp
